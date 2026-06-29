@@ -1,0 +1,6 @@
+package-as: Daseeki-Raid-Mechanics
+license-output: LICENSE
+ignore:
+  - README.md
+  - CHANGELOG.md
+  - .github

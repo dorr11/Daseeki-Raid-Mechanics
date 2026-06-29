@@ -1,0 +1,26 @@
+## Interface: 11507, 11508
+## Title: Daseeki Raid Mechanics
+## Notes: Per-raid, per-fight boss mechanic alerts (timer bars, center warnings, sounds)
+## Author: Daseeki
+## SavedVariables: DaseekiRaidMechanicsDB
+## OptionalDeps: Daseeki-Core
+## Version: 1.0.0
+
+core.lua
+theme.lua
+media.lua
+soundpacks.lua
+encounters.lua
+data_naxxramas.lua
+alerts.lua
+engine.lua
+modules.lua
+mod_loatheb_healers.lua
+mod_fourhorsemen_rotation.lua
+mod_fourhorsemen_tracker.lua
+mod_gothik_waves.lua
+mod_razuvious_understudy.lua
+thaddius.lua
+soundpicker.lua
+options.lua
+slash.lua
