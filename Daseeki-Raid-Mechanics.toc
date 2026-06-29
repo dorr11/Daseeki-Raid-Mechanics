@@ -2,6 +2,7 @@
 ## Title: Daseeki Raid Mechanics
 ## Notes: Per-raid, per-fight boss mechanic alerts (timer bars, center warnings, sounds)
 ## Author: Daseeki
+## X-Curse-Project-ID: 1592413
 ## SavedVariables: DaseekiRaidMechanicsDB
 ## OptionalDeps: Daseeki-Core
 ## Version: 1.0.0
