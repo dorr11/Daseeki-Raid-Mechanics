@@ -838,19 +838,61 @@ function Addon:BuildGeneralOptions(panel)
         function(v) Addon.db.settings.autoDebug = v and true or false; Addon:UpdateAutoDebug() end)
 
     DS.MakeSeparator(panel, 8, 130, 420, 0)
-    DS.MakeLabel(panel, "|cffffffffBoss Death|r", nil, 8, 138)
-    DS.MakeLabel(panel, "Play a sound when a boss dies.", nil, 8, 158):SetTextColor(0.6, 0.6, 0.6)
-    DS.MakeCheckbox(panel, "Boss-death sound", 8, 178,
+    DS.MakeLabel(panel, "|cffffffffDebug Only|r", nil, 8, 138)
+    DS.MakeLabel(panel, "Silences ALL Raid Mechanics output (Ability Tracker, On Cast / Personal", nil, 8, 158)
+        :SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeLabel(panel, "Damage Notifications, custom widgets, boss-death sound) and just logs", nil, 8, 174)
+        :SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeLabel(panel, "combat-log events to chat — use this to gather real fight timing data", nil, 8, 190)
+        :SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeLabel(panel, "without the addon's current (possibly wrong) guesses firing alongside it.", nil, 8, 206)
+        :SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeCheckbox(panel, "Debug Only", 8, 230,
+        function() return Addon.db.settings.debugOnly end,
+        function(v)
+            Addon.db.settings.debugOnly = v and true or false
+            Addon:UpdateAutoDebug()
+            print("|cff66ccff[DRM]|r Debug Only " .. (v and "|cff00ff00ON|r — all mechanic output silenced; combat events log while in 20/40-man raids."
+                or "|cffff0000OFF|r — mechanics resumed."))
+        end)
+    DS.MakeButton(panel, "View Debug Log", 8, 256, 130, 22, function()
+        -- Re-read the hub live (parity with slash.lua) in case Daseeki Core unloaded.
+        local DS2 = _G.DaseekiSuite
+        if not (DS2 and DS2.ShowTextDialog) then
+            print("|cff66ccff[DRM]|r Install |cffffffffDaseeki Core|r to view the log.")
+            return
+        end
+        local n = Addon:DebugLogLineCount()
+        if n == 0 then
+            print("|cff66ccff[DRM]|r No debug log captured yet. Enable Debug Only (or |cffffffff/drm debug|r) and pull a boss first.")
+        else
+            DS2.ShowTextDialog("DRM Debug Log (" .. n .. " lines, all sessions)", Addon:BuildFullDebugLogText(), true)
+        end
+    end)
+    DS.MakeButton(panel, "Clear Log", 146, 256, 100, 22, function()
+        if Addon.db then Addon.db.debugLive = {} end
+        print("|cff66ccff[DRM]|r Current (live) debug log cleared. Saved sessions kept -- use |cffffffffClear Saved Sessions|r to wipe those too.")
+    end)
+    -- Wipes all finalized past sittings (same as /drm clearsessions); the live log is kept.
+    DS.MakeButton(panel, "Clear Saved Sessions", 252, 256, 160, 22, function()
+        if Addon.db then Addon.db.debugSessions = {} end
+        print("|cff66ccff[DRM]|r All saved debug sessions cleared. (The current live log is kept -- use |cffffffffClear Log|r for that.)")
+    end)
+
+    DS.MakeSeparator(panel, 8, 302, 420, 0)
+    DS.MakeLabel(panel, "|cffffffffBoss Death|r", nil, 8, 310)
+    DS.MakeLabel(panel, "Play a sound when a boss dies.", nil, 8, 330):SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeCheckbox(panel, "Boss-death sound", 8, 350,
         function() return Addon.db.settings.deathSound end,
         function(v) Addon.db.settings.deathSound = v and true or false end)
-    DS.MakeLabel(panel, "Sound", nil, 8, 210)
-    panel.deathSoundBtn = DS.MakeButton(panel, "None", 64, 206, 150, 22, function()
+    DS.MakeLabel(panel, "Sound", nil, 8, 382)
+    panel.deathSoundBtn = DS.MakeButton(panel, "None", 64, 378, 150, 22, function()
         Addon:ShowSoundPicker(Addon.db.settings.deathSoundKey or "raidwarning", function(key)
             Addon.db.settings.deathSoundKey = key
             panel.deathSoundBtn:SetText(Addon:GetSoundName(key))
         end, panel.deathSoundBtn)
     end)
-    DS.MakeButton(panel, "Test", 220, 206, 56, 22, function()
+    DS.MakeButton(panel, "Test", 220, 378, 56, 22, function()
         Addon:PlaySoundByKey(Addon.db.settings.deathSoundKey or "raidwarning", true)
     end)
 end

@@ -4,8 +4,8 @@
 ## Author: Daseeki
 ## X-Curse-Project-ID: 1592413
 ## SavedVariables: DaseekiRaidMechanicsDB
-## OptionalDeps: Daseeki-Core
-## Version: 1.0.0
+## OptionalDeps: Daseeki-Core, DBM-Core
+## Version: 1.1.0
 
 core.lua
 theme.lua
@@ -15,6 +15,7 @@ encounters.lua
 data_naxxramas.lua
 alerts.lua
 engine.lua
+dbm_bridge.lua
 modules.lua
 mod_loatheb_healers.lua
 mod_fourhorsemen_rotation.lua

@@ -30,6 +30,34 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         Addon.debug = not Addon.debug
         p("Debug capture " .. (Addon.debug and "|cff00ff00ON|r — boss casts and monster yells/emotes will print." or "|cffff0000OFF|r."))
 
+    elseif msg == "debugonly" then
+        local v = not Addon.db.settings.debugOnly
+        Addon.db.settings.debugOnly = v
+        if Addon.UpdateAutoDebug then Addon:UpdateAutoDebug() end
+        p("Debug Only " .. (v and "|cff00ff00ON|r — all mechanic output silenced; combat events log while in 20/40-man raids." or "|cffff0000OFF|r — mechanics resumed."))
+
+    elseif msg == "log" then
+        local DS = _G.DaseekiSuite
+        if not (DS and DS.ShowTextDialog) then p("Install |cffffffffDaseeki Core|r to view the log.") return end
+        local n = Addon:DebugLogLineCount()
+        if n == 0 then
+            p("No debug log captured yet. Enable |cffffffffdebug|r or |cffffffffdebugonly|r and pull a boss first.")
+        else
+            DS.ShowTextDialog("DRM Debug Log (" .. n .. " lines, all sessions)", Addon:BuildFullDebugLogText(), true)
+        end
+
+    elseif msg == "savelog" then
+        Addon.FinalizeDebugSession("manual save")
+        p("Current sitting saved as a session (if it had any data).")
+
+    elseif msg == "clearlog" then
+        if Addon.db then Addon.db.debugLive = {} end
+        p("Current (live) debug log cleared. Past saved sessions are untouched -- use |cffffffff/drm clearsessions|r to wipe those too.")
+
+    elseif msg == "clearsessions" then
+        if Addon.db then Addon.db.debugSessions = {} end
+        p("All saved debug sessions cleared.")
+
     elseif msg == "enable" then
         Addon.db.settings.enabled = true
         p("Alerts |cff00ff00enabled|r.")
@@ -39,6 +67,6 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         p("Alerts |cffff0000disabled|r.")
 
     else
-        p("usage: |cffffffff/drm|r [options | test | lock | debug | enable | disable]")
+        p("usage: |cffffffff/drm|r [options | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
     end
 end

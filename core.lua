@@ -26,6 +26,7 @@ local DEFAULT_SETTINGS = {
     autoDebug    = false,   -- auto-enable /drm debug logging in 20/40-man raids
     deathSound    = false,  -- play a sound when a boss npc dies
     deathSoundKey = "raidwarning",
+    debugOnly     = false,  -- kill-switch: silence ALL mechanic output, just log combat-log data
 }
 
 -- Hardcoded fallbacks when neither the DB override nor the data file specify a value.
@@ -64,6 +65,13 @@ function Addon:Init()
 
     db.mechanics = db.mechanics or {}   -- key -> override table (see GetMechanicConfig)
     db.modules   = db.modules or {}     -- moduleId -> { enabled, ...config } (see modules.lua)
+    -- Debug log: persisted to SavedVariables (NOT a transient in-memory table) so it
+    -- survives /reload and disk-writes automatically on logout, like everything else
+    -- here. debugLive = the in-progress current raid sitting; debugSessions = past
+    -- sittings finalized (tagged with raidId) on logout/leaving the raid — see
+    -- engine.lua FinalizeDebugSession.
+    db.debugLive     = db.debugLive or {}
+    db.debugSessions = db.debugSessions or {}
     db.settings.locked = true           -- unlock is a transient positioning mode; never start unlocked
     -- Config model changed in v2: drop stale overrides from the v1 (bar/warning/sound) model.
     if (db.dbVersion or 1) < DB_VERSION then
@@ -114,6 +122,15 @@ function Addon:GetMechanicConfig(key, mechDef)
     return cfg
 end
 
+-- Debug Only mode: a blanket kill-switch checked by every alert/cooldown/module
+-- dispatch path in engine.lua — silences ALL mechanic output (visuals, sounds,
+-- custom widgets) while combat-log debug capture keeps running, so real fights can
+-- be used to gather accurate timing data without the addon's (possibly wrong)
+-- guesses firing alongside it.
+function Addon:IsDebugOnly()
+    return Addon.db and Addon.db.settings and Addon.db.settings.debugOnly == true
+end
+
 -- Persist a single override field for a mechanic key.
 function Addon:SetMechanicOption(key, field, value)
     local m = Addon.db.mechanics[key]
@@ -133,6 +150,12 @@ function Addon:OnLogin()
     if Addon.InitEngine then Addon:InitEngine() end       -- engine.lua
     if Addon.RegisterOptions then Addon:RegisterOptions() end  -- options.lua
     print("|cff66ccffDaseeki Raid Mechanics|r loaded. Type |cffffffff/drm|r for options.")
+    -- Persistent reminder so Debug Only (a blanket alert kill-switch) is never left on
+    -- silently across sessions. Pairs with the on-screen indicator (engine.lua).
+    if Addon:IsDebugOnly() then
+        print("|cff66ccff[DRM]|r |cffff8800Reminder:|r Debug Only is ON — ALL mechanic alerts are silenced (combat data is only being logged). Turn it off in |cffffffff/drm|r -> General, or with |cffffffff/drm debugonly|r.")
+    end
+    if Addon.UpdateDebugOnlyIndicator then Addon:UpdateDebugOnlyIndicator() end
 end
 
 -- ── Events ───────────────────────────────────────────────────────────────────--
