@@ -1,4 +1,4 @@
-## Interface: 11507, 11508
+## Interface: 11507, 11508, 11509
 ## Title: Daseeki Raid Mechanics
 ## Notes: Per-raid, per-fight boss mechanic alerts (timer bars, center warnings, sounds)
 ## Author: Daseeki
