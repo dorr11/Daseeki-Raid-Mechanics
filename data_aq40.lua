@@ -173,7 +173,8 @@ Addon:RegisterRaid({
             -- DBM-source (unverified live).
             { id = "shatter", name = "Shatter", icon = "Interface\\Icons\\Spell_Frost_FrostShock",
               trigger = { type = "emote", text = "looks ready to shatter" }, barColor = BLUE,
-              style = "flash", warningText = "SHATTER!", sound = "raidwarning" },
+              style = "flash", warningText = "SHATTER!", sound = "raidwarning",
+              special = true },  -- everyone must burst NOW — act-now tier
             -- Globs crawl back together after a shatter — kill window ends when this lands.
             { id = "rejoin", name = "Rejoin (reform)", icon = "Interface\\Icons\\INV_Misc_Slime_01",
               trigger = { type = "cast", spellID = 25896 }, barColor = GREEN, barDuration = 16.5, -- DBM bar 16.5
@@ -206,7 +207,8 @@ Addon:RegisterRaid({
               warning = true, warningText = "Huhuran Berserk soon — spread!", sound = "raidwarning" }, -- DBM-source prewarn at 35%
             { id = "berserk", name = "Berserk (30%)", icon = "Interface\\Icons\\Spell_Shadow_UnholyFrenzy",
               trigger = { type = "aura", spellID = 26068 }, barColor = RED,
-              style = "flash", warningText = "Berserk — max ranged spread!", sound = "raidwarning" },
+              style = "flash", warningText = "Berserk — max ranged spread!", sound = "raidwarning",
+              special = true },  -- P2 spread check: grouped ranged die — act-now tier
         }},
 
         -- ── Twin Emperors ─────────────────────────────────────────────────────
@@ -217,7 +219,8 @@ Addon:RegisterRaid({
             { id = "teleport", name = "Twin Teleport", icon = "Interface\\Icons\\Spell_Arcane_Blink",
               trigger = { type = "cast", spellID = 800 }, barColor = BLUE,
               mode = "cooldown", style = "icon", cooldown = 29, firstCast = 31, glowThreshold = 5, -- DBM 29.1-30.8; first ~30.8 from pull
-              winWarning = true, winSound = true, warningText = "Teleport soon — swap sides!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Teleport soon — swap sides!", sound = "raidwarning",
+              countdownVoice = true },  -- side-swap positioning (29s cycle)
             -- Vek'nilash tank debuff. log-verified 2026-07-26: iv 8.1-43.7; DBM 9.7-11.2.
             { id = "unbalancing", name = "Unbalancing Strike", icon = "Interface\\Icons\\Ability_Warrior_Disarm",
               trigger = { type = "cast", spellID = 26613, npcID = 15275 }, barColor = ORANGE,
@@ -283,7 +286,8 @@ Addon:RegisterRaid({
             { id = "darkglarecd", name = "Dark Glare (next)", icon = "Interface\\Icons\\Spell_Shadow_Charm",
               trigger = { type = "cast", spellID = 26029, npcID = 15589 }, barColor = RED,
               mode = "cooldown", style = "icon", cooldown = 86, firstCast = 48, glowThreshold = 5, -- DBM 48 first, 86 cycle
-              winWarning = true, winSound = true, warningText = "Dark Glare soon — position!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Dark Glare soon — position!", sound = "raidwarning",
+              countdownVoice = true },  -- pre-rotate out of the beam path (86s cycle)
             -- The 39s rotating-beam window itself (DBM "Dark Glare ends" 39.0).
             { id = "darkglare", name = "Dark Glare (rotating)", icon = "Interface\\Icons\\Spell_Shadow_Charm",
               trigger = { type = "cast", spellID = 26029, npcID = 15589 }, barColor = RED,
@@ -314,7 +318,8 @@ Addon:RegisterRaid({
             -- "Weaken ends" 45.0.
             { id = "weaken", name = "Weakened (burn!)", icon = "Interface\\Icons\\Spell_Shadow_Cripple",
               trigger = { type = "emote", text = "weaken" }, barColor = YELLOW, barDuration = 45, -- DBM 45.0
-              warning = true, warningText = "C'Thun WEAKENED — body vulnerable, BURN!", sound = "raidwarning" },
+              warning = true, warningText = "C'Thun WEAKENED — body vulnerable, BURN!", sound = "raidwarning",
+              special = true },  -- burn window: the whole fight hinges on it — act-now tier
         }},
     },
 })

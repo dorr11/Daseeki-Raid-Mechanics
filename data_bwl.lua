@@ -77,7 +77,8 @@ Addon:RegisterRaid({
             { id = "adrenaline", name = "Burning Adrenaline (on you)", icon = "Interface\\Icons\\Spell_Fire_Immolation",
               trigger = { type = "aura", spellID = 18173, onPlayer = true }, barColor = RED,
               style = "flash", barDuration = 20, default = true,
-              warningText = "BURNING ADRENALINE — burn your mana, move out before death!", sound = "raidwarning" },
+              warningText = "BURNING ADRENALINE — burn your mana, move out before death!", sound = "raidwarning",
+              special = true },  -- personal death timer: 20s to live — act-now tier
             -- Informational: the infinite-resource buff Vael grants the raid at pull. Not in
             -- DBM-source at all; spellID 23513 from classic DB — unverified live. Quiet, off
             -- by default (it's a pull-time constant, not a decision point).
@@ -227,7 +228,8 @@ Addon:RegisterRaid({
             { id = "bellowingroar", name = "Bellowing Roar", icon = "Interface\\Icons\\Spell_Shadow_DeathScream",
               trigger = { type = "cast", spellID = 22686, npcID = 11583 }, barColor = RED,
               mode = "cooldown", style = "icon", cooldown = 27, winWarning = true, winSound = true,
-              warningText = "AoE Fear soon — tremor/berserker rage!", sound = "raidwarning" },
+              warningText = "AoE Fear soon — tremor/berserker rage!", sound = "raidwarning",
+              countdownVoice = true },  -- precast tremor/berserker rage (27s cycle)
             -- -75% healing curse on the tank. log-verified 2026-07-26: intervals 16.1-53.4
             -- (too variable for a radial — alert on the aura landing).
             { id = "veilofshadow", name = "Veil of Shadow", icon = "Interface\\Icons\\Spell_Shadow_GatherShadows",
@@ -277,7 +279,8 @@ Addon:RegisterRaid({
             -- unverified live, confirm via /drm debug.
             { id = "landing", name = "Phase 2 (Landing)", icon = "Interface\\Icons\\INV_Misc_Head_Dragon_Black",
               trigger = { type = "yell", text = "BURN! You wretches" }, barColor = RED,
-              style = "flash", warningText = "Nefarian landing!", sound = "raidwarning" },
+              style = "flash", warningText = "Nefarian landing!", sound = "raidwarning",
+              special = true },  -- phase 2: reposition everything — act-now tier
             -- Phase 3 at 20%: the P1 Drakonid corpses rise as Bone Constructs.
             -- Yell substring from DBM-source (unverified live).
             { id = "phase3", name = "Phase 3 (Bone Constructs)", icon = "Interface\\Icons\\Spell_Shadow_RaiseDead",

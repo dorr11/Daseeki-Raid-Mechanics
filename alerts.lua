@@ -448,7 +448,16 @@ function Addon:FireAlert(key, mechDef, force)
     local cfg = Addon:GetMechanicConfig(key, mechDef)
     if not force and (not Addon.db.settings.enabled or not cfg.enabled) then return end
 
-    Addon:PlaySoundByKey(cfg.sound)
+    -- Special-flagged mechanics escalate their trigger warning to the big tier
+    -- (same MechFlag routing as the cooldown winWarning hook in EnterOpen). The
+    -- configured sound rides along as soundKey so it isn't double-played; fallback
+    -- when settings.specialWarnings == false degrades inside ShowSpecialWarning.
+    if MechFlag(key, mechDef, "special") == true then
+        Addon:ShowSpecialWarning(key, mechDef.warningText or mechDef.name or "",
+            mechDef.warningColor or mechDef.barColor, cfg.sound)
+    else
+        Addon:PlaySoundByKey(cfg.sound)
+    end
 
     local info = STYLE_INFO[cfg.style] or STYLE_INFO.bar
     local d = Addon._activeOneshot[key] or AcquireDisplay()

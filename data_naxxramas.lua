@@ -77,7 +77,8 @@ Addon:RegisterRaid({
             { id = "webspray", name = "Web Spray", icon = "Interface\\Icons\\Ability_Ensnare",
               trigger = { type = "cast", spellID = 29484, npcID = 15952 }, barColor = PURPLE,
               mode = "cooldown", style = "icon", cooldown = 40, firstCast = 40, glowThreshold = 5,
-              winWarning = true, winSound = true, warningText = "Web Spray soon!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Web Spray soon!", sound = "raidwarning",
+              countdownVoice = true },  -- pre-heal/position before the AoE stun (40s cycle)
             -- Web Wrap = cooldown radial (DBM v39.6-40.9). Its `reminder` is the optional
             -- SNOWBALL warning — a separate radial that fires `leadTime`s before each wrap,
             -- with its own icon/scale/opacity/glow/sound/position (configured in Web Wrap's
@@ -142,7 +143,8 @@ Addon:RegisterRaid({
             { id = "necroticaura", name = "Heal Window (Remove Curse)", icon = "Interface\\Icons\\Spell_Shadow_AntiShadow",
               trigger = { type = "cast", spellID = 30281, npcID = 16011 }, barColor = GREEN,
               mode = "cooldown", style = "icon", cooldown = 30.7, firstCast = 31, glowThreshold = 3,
-              winWarning = true, winSound = true, warningText = "Heal window — decurse!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Heal window — decurse!", sound = "raidwarning",
+              countdownVoice = true },  -- healers pre-cast into the window (30.7s cycle)
             -- showCount + a "%d" placeholder in castText/reminder.warningText is
             -- substituted with the live spore count (1, 2, 3...) by FormatCountText
             -- in alerts.lua: "Spore N Soon - Move" ~5s before each spawn (reminder,
@@ -187,7 +189,8 @@ Addon:RegisterRaid({
             { id = "injection", name = "Mutating Injection (on you)", icon = "Interface\\Icons\\Spell_Nature_NullifyPoison",
               trigger = { type = "aura", spellID = 28169, onPlayer = true }, barColor = GREEN,
               style = "icon", barDuration = 10,
-              warningText = "Mutating Injection on YOU — move out!", sound = "raidwarning" },
+              warningText = "Mutating Injection on YOU — move out!", sound = "raidwarning",
+              special = true },  -- personal: walk out NOW or drop a cloud in melee — act-now tier
             { id = "cloud", name = "Poison Cloud", icon = "Interface\\Icons\\Spell_Nature_Acid_01",
               trigger = { type = "cast", spellID = 28240, npcID = 15931 }, barColor = GREEN,
               mode = "cooldown", style = "icon", cooldown = 14.5 }, -- DBM 14.5 consistently
@@ -226,6 +229,7 @@ Addon:RegisterRaid({
             { id = "polarity", name = "Polarity Shift", icon = "Interface\\Icons\\Spell_Nature_Lightning",
               trigger = { type = "aura", spellID = 28089, onPlayer = true }, barColor = YELLOW,
               style = "flash", warningText = "Polarity Shift — check your charge!", sound = "raidwarning",
+              special = true,  -- wipe mechanic: wrong charge kills the raid — act-now tier
               polarityWatch = true },
             { id = "balllightning", name = "Ball Lightning", icon = "Interface\\Icons\\Spell_Nature_LightningShield",
               trigger = { type = "cast", spellID = 28299, npcID = 15928 }, barColor = BLUE }, -- log-verified 2026-07-26: 28299; old 28338 is actually Stalagg's Magnetic Pull on this server
@@ -265,7 +269,8 @@ Addon:RegisterRaid({
             { id = "taunt", name = "Understudy Taunt", icon = "Interface\\Icons\\Spell_Nature_Reincarnation",
               trigger = { type = "cast", spellID = 29060 }, barColor = ORANGE,
               mode = "cooldown", style = "icon", cooldown = 60, glowThreshold = 5,
-              winWarning = true, winSound = true, warningText = "Taunt ready — swap MC!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Taunt ready — swap MC!", sound = "raidwarning",
+              countdownVoice = true },  -- MC swap timing is exact (60s cycle)
         }},
         { id = "gothik", name = "Gothik the Harvester", npcIDs = { 16060 }, mechanics = {
             -- log-verified 2026-07-26: 29317 (old 27831 never logged); 184 casts at ~1.5-1.7s
@@ -300,13 +305,15 @@ Addon:RegisterRaid({
             -- air phase active; the bar counts down to Sapphiron landing. -- DBM "Landing" 28.5
             { id = "iceblock", name = "Air Phase / Ice Bolt", icon = "Interface\\Icons\\Spell_Frost_FrostBolt02",
               trigger = { type = "aura", spellID = 28522 }, barColor = BLUE, barDuration = 28.5,
-              warning = true, warningText = "Ice Bolt — get behind a block!", sound = "raidwarning" },
+              warning = true, warningText = "Ice Bolt — get behind a block!", sound = "raidwarning",
+              special = true },  -- air phase: get behind a block or die — act-now tier
             -- Countdown to the NEXT air phase; resyncs on the first Icebolt of each air phase.
             -- DBM ground phase 54.3s; first liftoff ~55s (Icebolts observed ~53s from pull).
             { id = "airphase", name = "Air Phase (next)", icon = "Interface\\Icons\\Spell_Frost_Wisp",
               trigger = { type = "aura", spellID = 28522 }, barColor = BLUE,
               mode = "cooldown", style = "icon", cooldown = 54.3, firstCast = 55, glowThreshold = 5,
-              winWarning = true, winSound = true, warningText = "Air phase soon!", sound = "raidwarning" },
+              winWarning = true, winSound = true, warningText = "Air phase soon!", sound = "raidwarning",
+              countdownVoice = true },  -- pre-spread before liftoff (54.3s cycle)
             -- 7s cast that ends the air phase -> show it as a cast bar (no CD reset after).
             { id = "frostbreath", name = "Frost Breath", icon = "Interface\\Icons\\Spell_Frost_FrostNova",
               trigger = { type = "cast", spellID = 28524, npcID = 15989, onStart = true }, barColor = BLUE,
