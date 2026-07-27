@@ -9,10 +9,10 @@
 
     Register (in a mod_*.lua file, loaded after modules.lua):
         Addon:RegisterModule({
-            id="razuvious_taunt", raidId="naxxramas", bossId="razuvious",
-            name="Taunt Warner (WA)", desc="...",
+            id="loatheb_healers", raidId="naxxramas", bossId="loatheb",
+            name="Healer Tracker (WA)", desc="...",
             defaults = { enabled = false },
-            placeKey = "naxxramas:razuvious:taunt_mod",   -- optional: a placeable anchor
+            placeKey = "naxxramas:loatheb:healers_mod",   -- optional: a placeable anchor
             placeDef = { name=, icon=, style="icon" },     -- mechDef for the Place preview
             Start = function(self) ... end,                -- begin runtime
             Stop  = function(self) ... end,                -- tear down
