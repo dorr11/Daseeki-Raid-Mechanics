@@ -644,6 +644,24 @@ RebuildMechs = function(panel)
     local mechs   = (boss and boss.mechanics) or {}
     local modules = Addon:GetBossModules(panel.selRaid, panel.selBoss)
 
+    -- Selected boss's kill-stats strip (recorded by engine.lua's Disengage). Peeks
+    -- at db.stats without creating entries; hidden when nothing is recorded yet.
+    if panel.statsLine then
+        local rs = Addon.db.stats and Addon.db.stats[panel.selRaid]
+        local s  = rs and rs[panel.selBoss]
+        if s and ((s.kills or 0) > 0 or (s.wipes or 0) > 0) then
+            local txt = string.format("%s \226\128\148 Kills %d \194\183 Wipes %d",
+                (boss and boss.name) or panel.selBoss, s.kills or 0, s.wipes or 0)
+            if s.bestTime and Addon.FmtStatsTime then
+                txt = txt .. " \194\183 Best " .. Addon.FmtStatsTime(s.bestTime)
+            end
+            panel.statsLine:SetText(txt)
+            panel.statsLine:Show()
+        else
+            panel.statsLine:Hide()
+        end
+    end
+
     for _, r in ipairs(panel._mechRows) do r:Hide() end
     for _, r in ipairs(panel._modRows) do r:Hide() end
     panel.mechEmpty:Hide()
@@ -814,6 +832,15 @@ function Addon:BuildRaidSection(panel, raidId)
     panel.mechEmpty = DS.MakeLabel(panel, "No mechanics or modules here yet.", nil, MECH_X, LIST_Y)
     panel.mechEmpty:SetTextColor(0.6, 0.6, 0.6); panel.mechEmpty:Hide()
 
+    -- Compact kill-stats line for the SELECTED boss ("Boss — Kills 4 · Wipes 7 ·
+    -- Best 3:42") — lives in the top strip next to the lock checkbox where there's
+    -- free width, so it never crowds the columns. Hidden entirely when the boss has
+    -- no recorded data. Refreshed by RebuildMechs (every boss select / panel
+    -- refresh); reads db.stats directly so browsing never creates empty entries.
+    panel.statsLine = DS.MakeLabel(panel, "", 11, MECH_X, 12)
+    panel.statsLine:SetTextColor(0.6, 0.6, 0.6)
+    panel.statsLine:Hide()
+
     BuildDetail(panel)
     RebuildBosses(panel); RebuildMechs(panel)
 end
@@ -895,11 +922,50 @@ function Addon:BuildGeneralOptions(panel)
     DS.MakeButton(panel, "Test", 220, 378, 56, 22, function()
         Addon:PlaySoundByKey(Addon.db.settings.deathSoundKey or "raidwarning", true)
     end)
+
+    -- Alerts & Pull: the special-warning tier + voice countdown (E1) and the pull
+    -- timer / DBM pull mirroring (E2). All toggles use ~= false semantics (default
+    -- ON; only an explicit uncheck stores false).
+    DS.MakeSeparator(panel, 8, 424, 420, 0)
+    DS.MakeLabel(panel, "|cffffffffAlerts & Pull|r", nil, 8, 432)
+    DS.MakeLabel(panel, "Special-warning banner, voice countdowns, and the pull-timer bar (/drm pull).", nil, 8, 452)
+        :SetTextColor(0.6, 0.6, 0.6)
+    DS.MakeCheckbox(panel, "Special warnings (big center text + screen flash)", 8, 472,
+        function() return Addon.db.settings.specialWarnings ~= false end,
+        function(v) Addon.db.settings.specialWarnings = v and true or false end)
+    DS.MakeCheckbox(panel, "Voice countdown near ability windows", 8, 498,
+        function() return Addon.db.settings.countdownVoice ~= false end,
+        function(v) Addon.db.settings.countdownVoice = v and true or false end)
+    DS.MakeLabel(panel, "Voice", nil, 8, 530)
+    local packs = Addon:GetVoiceCountPacks()
+    local packNames = {}
+    for _, pk in ipairs(packs) do packNames[#packNames + 1] = pk.name end
+    panel.voiceDD = DS.MakeSimpleDropdown(panel, 64, 526, 150, packNames, function(name)
+        for _, pk in ipairs(packs) do
+            if pk.name == name then Addon.db.settings.voiceCountKey = pk.key break end
+        end
+    end)
+    -- End-to-end preview: countdown bar + voice count + "PULL!" special warning.
+    DS.MakeButton(panel, "Test", 224, 526, 56, 22, function()
+        Addon:StartPullTimer(5, "test")
+    end)
+    DS.MakeCheckbox(panel, "Mirror DBM pull timers", 8, 556,
+        function() return Addon.db.settings.mirrorDBMPull ~= false end,
+        function(v) Addon.db.settings.mirrorDBMPull = v and true or false end)
 end
 
 function Addon:RefreshGeneral(panel)
     if panel.deathSoundBtn then
         panel.deathSoundBtn:SetText(Addon:GetSoundName(Addon.db.settings.deathSoundKey or "raidwarning"))
+    end
+    -- Current voice pack name (nil key = first pack, matching the sequencer's pick).
+    if panel.voiceDD then
+        local packs = Addon:GetVoiceCountPacks()
+        local cur = packs[1] and packs[1].name or "None"
+        for _, pk in ipairs(packs) do
+            if pk.key == Addon.db.settings.voiceCountKey then cur = pk.name break end
+        end
+        panel.voiceDD:SetValue(cur)
     end
 end
 

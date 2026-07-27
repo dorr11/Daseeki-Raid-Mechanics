@@ -1,6 +1,6 @@
 --[[
     Daseeki Raid Mechanics — slash commands
-        /drm, /raidmech [options|test|lock|debug]
+        /drm, /raidmech [options|pull|stats|test|lock|debug]
 --]]
 
 local _, Addon = ...
@@ -58,6 +58,29 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         if Addon.db then Addon.db.debugSessions = {} end
         p("All saved debug sessions cleared.")
 
+    elseif msg == "pull" or msg:match("^pull%s") then
+        -- "/drm pull [N]" starts an N-second countdown (default 10, clamped 3..60
+        -- by StartPullTimer); "0" or "cancel" aborts a running one.
+        local arg = msg:match("^pull%s+(%S+)")
+        if arg == "cancel" or arg == "0" then
+            Addon:CancelPullTimer()
+            p("Pull timer |cffff0000cancelled|r.")
+        else
+            Addon:StartPullTimer(tonumber(arg) or 10, "manual")
+        end
+
+    elseif msg == "stats" then
+        local DS = _G.DaseekiSuite
+        local text = Addon:BuildStatsText()
+        if DS and DS.ShowTextDialog then
+            DS.ShowTextDialog("DRM Boss Statistics", text, true)
+        else
+            -- No Daseeki Core: dump to chat line by line (the blob can be long).
+            for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+                if line ~= "" then p(line) end
+            end
+        end
+
     elseif msg == "enable" then
         Addon.db.settings.enabled = true
         p("Alerts |cff00ff00enabled|r.")
@@ -67,6 +90,6 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         p("Alerts |cffff0000disabled|r.")
 
     else
-        p("usage: |cffffffff/drm|r [options | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
+        p("usage: |cffffffff/drm|r [options | pull <sec> | pull cancel | stats | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
     end
 end

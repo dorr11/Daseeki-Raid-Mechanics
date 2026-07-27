@@ -100,6 +100,83 @@ function Addon:PlaySoundByKey(key, ignoreGate)
     end
 end
 
+-- ── Voice countdown sequencer ──────────────────────────────────────────────────--
+-- Speaks bundled per-number .oggs (Sounds/DBM-Core/<Voice>/1.ogg .. 10.ogg) as a
+-- "5... 4... 3... 2... 1" count. The pack registry is derived from
+-- Addon.BundledSounds at first use (soundpacks.lua loads AFTER this file, so it
+-- must be lazy): any pack directory with contiguous "1.ogg".."N.ogg" files counts
+-- as a voice pack (combined clips like Corsica's "threecount.ogg" don't qualify).
+local voicePacks    -- sorted array of { key, name, files = { [n] = path }, max = N }
+local voiceByKey    -- key -> pack
+
+local function BuildVoicePacks()
+    if voicePacks then return end
+    voicePacks, voiceByKey = {}, {}
+    local byDir = {}
+    for _, e in ipairs(Addon.BundledSounds or {}) do
+        local dir, n = e.key:match("^pk:(.+)/(%d+)%.ogg$")
+        if dir then
+            local p = byDir[dir]
+            if not p then
+                -- display name from the manifest entry ("DBM Alexander: 3" -> "DBM Alexander")
+                p = { key = dir, name = e.name:match("^(.-):%s*%d+$") or dir, files = {} }
+                byDir[dir] = p
+            end
+            p.files[tonumber(n)] = e.value
+        end
+    end
+    for _, p in pairs(byDir) do
+        local m = 0
+        while p.files[m + 1] do m = m + 1 end   -- contiguous run from 1
+        if m >= 1 then
+            p.max = m
+            voicePacks[#voicePacks + 1] = p
+            voiceByKey[p.key] = p
+        end
+    end
+    table.sort(voicePacks, function(a, b) return a.name < b.name end)
+end
+
+-- Pack list for a future options dropdown: array of { key, name }.
+function Addon:GetVoiceCountPacks()
+    BuildVoicePacks()
+    local list = {}
+    for _, p in ipairs(voicePacks) do list[#list + 1] = { key = p.key, name = p.name } end
+    return list
+end
+
+-- Pending number timers for the active countdown (one handle per spoken number).
+Addon._voiceTimers = {}
+
+-- Cancel any in-flight countdown — no stray numbers after this returns.
+function Addon:StopVoiceCountdown()
+    for _, t in ipairs(Addon._voiceTimers) do
+        if t.Cancel then t:Cancel() end
+    end
+    wipe(Addon._voiceTimers)
+end
+
+-- Speak each remaining whole second from min(seconds, pack max) down to 1.
+-- voiceKey nil -> settings.voiceCountKey, else the first available pack. Calling
+-- again cancels the previous countdown first. Returns true if started.
+function Addon:PlayVoiceCountdown(seconds, voiceKey)
+    Addon:StopVoiceCountdown()
+    if not (Addon.db and Addon.db.settings.soundEnabled) then return end
+    BuildVoicePacks()
+    local pack = voiceByKey[voiceKey or (Addon.db and Addon.db.settings.voiceCountKey)] or voicePacks[1]
+    if not pack then return false end
+    local n = math.min(math.floor(tonumber(seconds) or 0), pack.max)
+    if n < 1 then return false end
+    PlaySoundFile(pack.files[n], "Master")
+    for i = n - 1, 1, -1 do
+        local num = i
+        Addon._voiceTimers[#Addon._voiceTimers + 1] = C_Timer.NewTimer(n - num, function()
+            PlaySoundFile(pack.files[num], "Master")
+        end)
+    end
+    return true
+end
+
 -- ── Font bucket (for "text" style alerts, e.g. on-cast notifications) ──────────--
 -- Curated Blizzard built-ins (always present) PLUS any LibSharedMedia-3.0 "font" media.
 local FONT_BUILTINS = {

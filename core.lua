@@ -72,6 +72,12 @@ function Addon:Init()
     -- engine.lua FinalizeDebugSession.
     db.debugLive     = db.debugLive or {}
     db.debugSessions = db.debugSessions or {}
+    -- Kill statistics: db.stats[raidId][bossId] = { kills, wipes, bestTime, lastTime,
+    -- lastResult, firstKillAt } — written by engine.lua's Disengage, read by
+    -- Addon:BuildStatsText and the options boss panels. Only the root is ensured here;
+    -- per-boss tables are created lazily on first record (GetBossStats below). NOT
+    -- wiped on DB_VERSION bumps — it's raid history, not config overrides.
+    db.stats = db.stats or {}
     db.settings.locked = true           -- unlock is a transient positioning mode; never start unlocked
     -- Config model changed in v2: drop stale overrides from the v1 (bar/warning/sound) model.
     if (db.dbVersion or 1) < DB_VERSION then
@@ -143,6 +149,24 @@ function Addon:SetMechanicPos(key, point, relPoint, x, y)
     local m = Addon.db.mechanics[key]
     if not m then m = {}; Addon.db.mechanics[key] = m end
     m.pos = { point = point, relPoint = relPoint, x = x, y = y }
+end
+
+-- ── Kill statistics ──────────────────────────────────────────────────────────--
+-- Lazily creates (and returns) the per-boss stats table — schema in Init's comment.
+-- Only the RECORD path (engine.lua Disengage) should call this; readers (options
+-- panel, BuildStatsText) peek at Addon.db.stats directly so browsing the UI never
+-- litters the DB with empty zero-kill entries.
+function Addon:GetBossStats(raidId, bossId)
+    local stats = Addon.db.stats
+    local r = stats[raidId]
+    if not r then r = {}; stats[raidId] = r end
+    local s = r[bossId]
+    if not s then
+        -- bestTime/lastTime/lastResult/firstKillAt stay absent (nil) until first record.
+        s = { kills = 0, wipes = 0 }
+        r[bossId] = s
+    end
+    return s
 end
 
 -- ── Login flow ───────────────────────────────────────────────────────────────--

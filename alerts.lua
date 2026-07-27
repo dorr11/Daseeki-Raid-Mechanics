@@ -58,6 +58,14 @@ function Addon:GetAnchorPos(key, defaultPos)
     return defaultPos or DEFAULT_POS
 end
 
+-- Merged per-mechanic flag read (DB override > data-file default), for flags that
+-- aren't part of GetMechanicConfig's schema (e.g. `special`, `countdownVoice`).
+local function MechFlag(key, mechDef, field)
+    local o = Addon.db and Addon.db.mechanics[key]
+    if o and o[field] ~= nil then return o[field] end
+    return mechDef and mechDef[field]
+end
+
 local function FmtTime(secs)
     secs = math.max(0, secs)
     if secs >= 60 then return string.format("%d:%02d", math.floor(secs / 60), secs % 60) end
@@ -175,6 +183,9 @@ local function ReleaseDisplay(d)
     d:Hide()
     d.glow:Hide()
     OverlayGlowOff(d)
+    -- A display going away mid-count must silence its pending voice numbers.
+    if d._voiceLive then Addon:StopVoiceCountdown() end
+    d._voiceLive, d._voiceFired, d._voiceEnabled = nil, nil, nil
     d.cd:Hide()
     d.count:Hide(); d._showCount = nil
     d:SetScale(1); d:SetAlpha(1)
@@ -323,11 +334,18 @@ local function EnterOpen(d)
     if d._info.kind == "bar" then d.bar:SetValue(1) end
     ShowGlow(d)
     local cfg, mech = d._cfg, d._mechDef
-    if cfg.winWarning then
-        Addon:ShowWarning(d._key, (mech.warningText or mech.name or "") .. " — ready!", mech.warningColor or mech.barColor)
-    end
-    if cfg.winSound then
-        Addon:PlaySoundByKey(cfg.sound)
+    d._voiceLive = nil   -- any voice count for this cycle has finished naturally
+    if cfg.winWarning and MechFlag(d._key, mech, "special") == true then
+        -- Special-flagged mechanics escalate to the big tier (sound rides along).
+        Addon:ShowSpecialWarning(d._key, (mech.warningText or mech.name or "") .. " — ready!",
+            mech.warningColor or mech.barColor, cfg.winSound and cfg.sound or nil)
+    else
+        if cfg.winWarning then
+            Addon:ShowWarning(d._key, (mech.warningText or mech.name or "") .. " — ready!", mech.warningColor or mech.barColor)
+        end
+        if cfg.winSound then
+            Addon:PlaySoundByKey(cfg.sound)
+        end
     end
     -- noLoop (e.g. a one-shot phase countdown): warn once at 0, then clear — don't
     -- sit pulsing forever or restart on a recast.
@@ -397,6 +415,16 @@ OnUpdate = function(d)
                 d._remFired = true
                 FireReminder(d)
             end
+            -- Voice count: once per cycle, when the window-open moment crosses 5s
+            -- out, speak "5... 4... 3... 2... 1". Floor+round covers short cycles
+            -- and frame hitches (never speaks more seconds than actually remain).
+            if d._voiceEnabled and not d._voiceFired and rem <= 5 then
+                d._voiceFired = true
+                local n = math.min(5, math.floor(rem + 0.5))
+                if n >= 1 and Addon:PlayVoiceCountdown(n) then
+                    d._voiceLive = true
+                end
+            end
         elseif d._state == "open" then
             PulseGlow(d)
         end
@@ -448,6 +476,13 @@ local function EnterCounting(d, cooldown)
     HideGlow(d)
     if d._info.kind == "icon" then d.cd:SetCooldown(now, cooldown) end
     UpdateCountdownVisual(d, cooldown, cooldown)
+    -- Voice countdown state: cancel anything in flight from the previous cycle
+    -- (an early ResetCooldown resync must not leave stray numbers), then re-read
+    -- the toggles for this cycle.
+    if d._voiceLive then Addon:StopVoiceCountdown(); d._voiceLive = nil end
+    d._voiceFired = false
+    d._voiceEnabled = MechFlag(d._key, d._mechDef, "countdownVoice") == true
+        and Addon.db.settings.countdownVoice ~= false
     -- Refresh reminder state each cycle (picks up option toggles).
     d._remFired = false
     if d._remDef then
@@ -510,6 +545,87 @@ function Addon:ShowWarning(key, text, color, defaultPos)
     local pos = Addon:GetAnchorPos(key, defaultPos)
     f:ClearAllPoints()
     f:SetPoint(pos.point or "CENTER", UIParent, pos.relPoint or "CENTER", pos.x or 0, (pos.y or 0) + 34)
+    f._e = 0; f:SetAlpha(0); f:Show()
+    return f
+end
+
+-- ── Special Warning tier (bigger, higher, louder — DBM "special warning" parity) ─
+-- A tier ABOVE ShowWarning: larger font, longer hold, its own shared drag anchor
+-- (SPECIAL_ANCHOR — one saved position for the whole tier, like DBM's), plus a
+-- brief low-alpha screen-edge flash. Callable outside combat for previews.
+Addon._specialPool = {}
+
+local DEFAULT_SPECIAL_POS = { point = "CENTER", relPoint = "CENTER", x = 0, y = 260 }
+Addon.DEFAULT_SPECIAL_POS = DEFAULT_SPECIAL_POS
+local SPECIAL_ANCHOR = "#special"   -- pseudo-key for the tier's saved position
+Addon.SPECIAL_ANCHOR = SPECIAL_ANCHOR
+
+-- Full-screen edge flash (lazily created, reused). Never blocks the mouse.
+local specialFlash
+
+local function EdgeFlash(color)
+    if not specialFlash then
+        local f = CreateFrame("Frame", nil, UIParent)
+        f:SetAllPoints(UIParent)
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:EnableMouse(false)
+        if f.SetMouseClickEnabled then f:SetMouseClickEnabled(false) end
+        f.tex = f:CreateTexture(nil, "BACKGROUND")
+        f.tex:SetAllPoints(f)
+        f.tex:SetTexture("Interface\\FullScreenTextures\\LowHealth")   -- stock edge vignette
+        f.tex:SetBlendMode("ADD")
+        f:SetScript("OnUpdate", function(self, elapsed)
+            self._e = self._e + elapsed
+            local t = self._e
+            if t >= 0.6 then self:Hide(); return end
+            local k = (t < 0.3) and (t / 0.3) or (1 - (t - 0.3) / 0.3)   -- in 0.3s, out 0.3s
+            self:SetAlpha(k * 0.25)
+        end)
+        f:Hide()
+        specialFlash = f
+    end
+    local c = color or { 1, 0.3, 0.3 }
+    specialFlash.tex:SetVertexColor(c[1], c[2], c[3])
+    specialFlash._e = 0
+    specialFlash:SetAlpha(0)
+    specialFlash:Show()
+end
+
+local function NewSpecialWarning()
+    local f = CreateFrame("Frame", nil, UIParent)
+    f:SetSize(700, 60); f:SetFrameStrata("HIGH")
+    f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    f.text:SetPoint("CENTER"); f.text:SetJustifyH("CENTER")
+    local path, size, flags = f.text:GetFont()
+    f.text:SetFont(path, math.floor(size * 1.4 + 0.5), flags)   -- ~1.4x the normal tier
+    Addon:StyleFont(f.text)
+    f:SetScript("OnUpdate", function(self, elapsed)
+        self._e = self._e + elapsed
+        local t = self._e
+        if t < 0.15 then self.text:SetScale(1.6 - 0.6 * (t / 0.15)); self:SetAlpha(t / 0.15)
+        elseif t < 3.15 then self.text:SetScale(1); self:SetAlpha(1)
+        elseif t < 3.65 then self:SetAlpha(1 - (t - 3.15) / 0.5)
+        else self:Hide(); self.text:SetScale(1); Addon._specialPool[#Addon._specialPool + 1] = self end
+    end)
+    return f
+end
+
+function Addon:ShowSpecialWarning(key, text, color, soundKey)
+    color = color or { 1, 0.3, 0.3 }
+    if Addon.db and Addon.db.settings.specialWarnings == false then
+        -- Tier disabled: degrade to an ordinary warning so the info still lands.
+        Addon:ShowWarning(key, text, color)
+        if soundKey then Addon:PlaySoundByKey(soundKey) end
+        return
+    end
+    local f = table.remove(Addon._specialPool) or NewSpecialWarning()
+    f.text:SetText(text or "")
+    f.text:SetTextColor(color[1], color[2], color[3])
+    local pos = Addon:GetAnchorPos(SPECIAL_ANCHOR, DEFAULT_SPECIAL_POS)
+    f:ClearAllPoints()
+    f:SetPoint(pos.point or "CENTER", UIParent, pos.relPoint or "CENTER", pos.x or 0, pos.y or 0)
+    EdgeFlash(color)
+    if soundKey then Addon:PlaySoundByKey(soundKey, true) end
     f._e = 0; f:SetAlpha(0); f:Show()
     return f
 end

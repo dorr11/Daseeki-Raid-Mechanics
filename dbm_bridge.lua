@@ -29,7 +29,11 @@
     This creates NO functional dependency — Daseeki Raid Mechanics' own detection
     and alerting are completely unaffected if DBM is absent, disabled, or this file
     never successfully hooks (e.g. DBM not yet loaded, or a future DBM version
-    renaming this API). Every callback here only ever WRITES to the debug log.
+    renaming this API). Every callback here only WRITES to the debug log, with ONE
+    deliberate exception: DBM_Pull also mirrors the pull into our own pull-timer
+    bar (engine.lua StartPullTimer) when "Mirror DBM pull timers" is on — so any
+    raid member's DBM pull drives our countdown too, no comms layer needed.
+    (Sending our pulls TO DBM users would need addon comms — deferred, see E4.)
 --]]
 
 local _, Addon = ...
@@ -62,11 +66,23 @@ end
 
 -- DBM_Pull fires with the boss-mod object (a table), the pull delay, whether the pull
 -- was network-synced, and the boss's starting HP. See DBM-Core.lua:5817.
+-- Unlike the log-only handlers above, this one runs REGARDLESS of debug mode:
+-- only the log line stays debug-gated; the pull-timer mirror below must work in
+-- normal play too.
 local function onPull(_, mod, delay, synced, startHp)
-    if not active() then return end
-    local modId = (type(mod) == "table" and mod.id) and tostring(mod.id) or tostring(mod)
-    Addon.DLog("[DBM] Pull: mod %s (delay %.1fs, startHP %s%s)",
-        modId, tonumber(delay) or 0, tostring(startHp), synced and ", synced" or "")
+    if active() then
+        local modId = (type(mod) == "table" and mod.id) and tostring(mod.id) or tostring(mod)
+        Addon.DLog("[DBM] Pull: mod %s (delay %.1fs, startHP %s%s)",
+            modId, tonumber(delay) or 0, tostring(startHp), synced and ", synced" or "")
+    end
+    -- Mirror DBM's pull into our countdown bar ("Mirror DBM pull timers", default
+    -- ON). pcall-kept in the bridge's soft-dependency spirit: an error here would
+    -- otherwise propagate up into DBM's callback dispatcher.
+    delay = tonumber(delay)
+    if delay and delay > 0 and Addon.StartPullTimer
+       and Addon.db and Addon.db.settings and Addon.db.settings.mirrorDBMPull ~= false then
+        pcall(function() Addon:StartPullTimer(delay, "dbm") end)
+    end
 end
 
 -- Returns true ONLY if DBM is present AND every callback registered without error.

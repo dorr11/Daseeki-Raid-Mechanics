@@ -20,6 +20,11 @@ local _, Addon = ...
 
 local THROTTLE = 1.5   -- min seconds between repeat fires of the same mechanic key
 
+-- Encounters shorter than this don't count toward kill stats — filters out
+-- tag-and-reset blips (a stray body-pull that instantly resets, a hunter Feign
+-- Death wipe-skip, etc.) that aren't real attempts.
+local MIN_STATS_DURATION = 10   -- seconds
+
 Addon.active    = nil  -- { raidId, bossId, boss, startTime }
 Addon.curMapID  = nil
 local fired     = {}   -- mechKey -> last fire GetTime()
@@ -225,6 +230,94 @@ local function ScheduleTimerMechanics()
     end
 end
 
+-- ── Pull timer ────────────────────────────────────────────────────────────────--
+-- One-shot standalone countdown bar, fed by /drm pull, the DBM pull mirror
+-- (dbm_bridge.lua) and the options "Test" button. Voice count at 5s remaining
+-- (media.lua sequencer), "PULL!" special warning at zero. Anchored via the
+-- "#pulltimer" pseudo-key through the same GetAnchorPos/SetMechanicPos plumbing
+-- the widgets use — drag the bar itself to place it, position persists.
+local PULL_ANCHOR       = "#pulltimer"
+local DEFAULT_PULL_POS  = { point = "TOP", relPoint = "TOP", x = 0, y = -180 }
+local pullFrame   -- lazily created bar frame
+local pullState   -- { total, endTime, source, voiceFired } while counting, else nil
+
+local function EnsurePullFrame()
+    if pullFrame then return pullFrame end
+    local f = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+    f:SetSize(220, 30); f:SetFrameStrata("HIGH")
+    if Addon.ApplyDarkBackdrop then Addon:ApplyDarkBackdrop(f) end
+    f:SetMovable(true); f:EnableMouse(true)
+
+    local bar = CreateFrame("StatusBar", nil, f)
+    bar:SetPoint("TOPLEFT", f, "TOPLEFT", 4, -4)
+    bar:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -4, 4)
+    bar.bg = bar:CreateTexture(nil, "BACKGROUND")
+    bar.bg:SetAllPoints(bar)
+    if Addon.StyleBar then Addon:StyleBar(bar) end
+    bar:SetStatusBarColor(0.9, 0.35, 0.2)
+    f.bar = bar
+
+    f.label = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    f.label:SetPoint("CENTER")
+    if Addon.StyleFont then Addon:StyleFont(f.label) end
+
+    -- Drag-to-place, same convention as the widget modules (mod_gothik_waves etc).
+    f:SetScript("OnMouseDown", function(self, b) if b == "LeftButton" then self:StartMoving() end end)
+    f:SetScript("OnMouseUp", function(self)
+        self:StopMovingOrSizing()
+        local p, _, rp, x, y = self:GetPoint()
+        Addon:SetMechanicPos(PULL_ANCHOR, p, rp, x, y)
+    end)
+
+    f:SetScript("OnUpdate", function(self)
+        if not pullState then self:Hide(); return end
+        local rem = pullState.endTime - GetTime()
+        if rem <= 0 then
+            pullState = nil
+            self:Hide()
+            Addon:ShowSpecialWarning("#pull", "PULL!", { 1, 0.2, 0.2 }, "raidwarning")
+            return
+        end
+        self.bar:SetValue(rem)
+        self.label:SetText(string.format("Pull in %.0fs", rem))
+        -- One-shot voice count once <=5s remain (from the start for short timers).
+        -- The sequencer speaks floor(rem)..1 aligned so "1" lands ~1s before zero.
+        if not pullState.voiceFired and rem <= 5.05 then
+            pullState.voiceFired = true
+            if not (Addon.db and Addon.db.settings.countdownVoice == false) then
+                Addon:PlayVoiceCountdown(math.floor(rem + 0.5))
+            end
+        end
+    end)
+
+    f:Hide()
+    pullFrame = f
+    return f
+end
+
+-- Restart-safe: calling while a countdown runs cleanly restarts it.
+function Addon:StartPullTimer(seconds, source)
+    seconds = tonumber(seconds) or 10
+    if seconds < 3 then seconds = 3 elseif seconds > 60 then seconds = 60 end
+    Addon:CancelPullTimer()
+    local f = EnsurePullFrame()
+    pullState = { total = seconds, endTime = GetTime() + seconds, source = source }
+    f.bar:SetMinMaxValues(0, seconds)
+    f.bar:SetValue(seconds)
+    f.label:SetText(string.format("Pull in %.0fs", seconds))
+    local pos = Addon.GetAnchorPos and Addon:GetAnchorPos(PULL_ANCHOR, DEFAULT_PULL_POS) or DEFAULT_PULL_POS
+    f:ClearAllPoints()
+    f:SetPoint(pos.point or "TOP", UIParent, pos.relPoint or "TOP", pos.x or 0, pos.y or 0)
+    f:Show()
+    DLog("Pull timer started: %.0fs (%s)", seconds, tostring(source or "manual"))
+end
+
+function Addon:CancelPullTimer()
+    if pullFrame then pullFrame:Hide() end
+    if pullState and Addon.StopVoiceCountdown then Addon:StopVoiceCountdown() end
+    pullState = nil
+end
+
 -- Cooldown-mode trackers start on the FIRST detected cast (see Dispatch), NOT at
 -- engage, so phase-gated abilities (e.g. Kel'Thuzad P2) don't count down / glow
 -- before they can actually happen, and the CD is measured from a real cast.
@@ -245,6 +338,7 @@ local function Engage(raidId, bossId, boss)
     Addon._dbgLast = {}   -- fresh per-fight cast intervals for debug
     Addon._dbgStartTime = GetTime()   -- t=0 reference for this pull's log timestamps
     CancelTimers()
+    Addon:CancelPullTimer()   -- boss engaged — a still-running pull countdown is moot
     -- Debug Only: skip ALL mechanic/module startup — Engage still runs (so debug
     -- logging stays scoped to the right boss + Disengage still works), just nothing
     -- visual/audible fires.
@@ -271,6 +365,24 @@ local function Disengage()
     DLog("==== ENCOUNTER END: %s -- %s -- duration %.1fs ====",
         Addon.active.boss.name or Addon.active.bossId,
         Addon._bossKilled and "KILLED" or "WIPE/LEFT COMBAT", dur)
+    -- Persistent kill/wipe stats (db.stats — see core.lua GetBossStats). Only record
+    -- encounters that lasted >= MIN_STATS_DURATION so tag-and-reset blips don't
+    -- pollute the wipe count. Leaving the zone mid-fight also lands here (via
+    -- PLAYER_ENTERING_WORLD -> Disengage) with _bossKilled false, so it counts as a
+    -- wipe — by design: the boss wasn't killed, whatever the reason.
+    if dur >= MIN_STATS_DURATION then
+        local s = Addon:GetBossStats(Addon.active.raidId, Addon.active.bossId)
+        s.lastTime = dur
+        if Addon._bossKilled then
+            s.kills      = (s.kills or 0) + 1
+            s.lastResult = "kill"
+            if not s.bestTime or dur < s.bestTime then s.bestTime = dur end
+            if not s.firstKillAt then s.firstKillAt = date("%Y-%m-%d") end
+        else
+            s.wipes      = (s.wipes or 0) + 1
+            s.lastResult = "wipe"
+        end
+    end
     Addon.active = nil
     Addon._bossKilled = false
     CancelTimers()
@@ -278,6 +390,62 @@ local function Disengage()
     if Addon.StopAllModules then Addon:StopAllModules() end
     wipe(fired)
     wipe(healthFired)
+end
+
+-- ── Kill statistics text ───────────────────────────────────────────────────────
+-- mm:ss for stats display. alerts.lua has a similar FmtTime but it's file-local
+-- there, so a tiny copy lives here; exposed on Addon so options.lua's per-boss
+-- stats line can reuse it (engine.lua loads before options.lua — see the .toc).
+local function FmtStatsTime(secs)
+    secs = math.floor((secs or 0) + 0.5)
+    return string.format("%d:%02d", math.floor(secs / 60), secs % 60)
+end
+Addon.FmtStatsTime = FmtStatsTime
+
+-- One readable multi-line summary of recorded kill stats — all raids, or just
+-- `raidId` when given. Per raid: a header, then one line per boss in the raid's
+-- own boss order, skipping bosses with nothing recorded. (A later wave wires this
+-- to /drm stats + a Daseeki-Core text dialog — this only builds the string.)
+function Addon:BuildStatsText(raidId)
+    local raids
+    if raidId then
+        local r = Addon:GetRaid(raidId)
+        raids = r and { r } or {}
+    else
+        raids = Addon:GetRaids()
+    end
+    local stats = (Addon.db and Addon.db.stats) or {}
+    local out = {}
+    for _, raid in ipairs(raids) do
+        local rs = stats[raid.id]
+        if rs then
+            local lines = {}
+            for _, boss in ipairs(raid.bosses or {}) do
+                local s = rs[boss.id]
+                if s and ((s.kills or 0) > 0 or (s.wipes or 0) > 0) then
+                    local line = string.format("%s \226\128\148 %d kill%s / %d wipe%s",
+                        boss.name or boss.id,
+                        s.kills or 0, (s.kills or 0) == 1 and "" or "s",
+                        s.wipes or 0, (s.wipes or 0) == 1 and "" or "s")
+                    if s.bestTime then line = line .. " \226\128\148 best " .. FmtStatsTime(s.bestTime) end
+                    if s.lastTime then
+                        line = line .. string.format(" \226\128\148 last %s (%s)",
+                            FmtStatsTime(s.lastTime), s.lastResult or "?")
+                    end
+                    if s.firstKillAt then line = line .. " \226\128\148 first kill " .. s.firstKillAt end
+                    lines[#lines + 1] = line
+                end
+            end
+            if #lines > 0 then
+                out[#out + 1] = "==== " .. (raid.name or raid.id) .. " ===="
+                for _, l in ipairs(lines) do out[#out + 1] = l end
+                out[#out + 1] = ""
+            end
+        end
+    end
+    if out[#out] == "" then out[#out] = nil end   -- no trailing blank line
+    if #out == 0 then return "No boss kill statistics recorded yet." end
+    return table.concat(out, "\n")
 end
 
 -- A matched trigger either fires a one-shot alert (alert mode) or resets the
