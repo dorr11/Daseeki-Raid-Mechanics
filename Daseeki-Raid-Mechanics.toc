@@ -13,6 +13,8 @@ media.lua
 soundpacks.lua
 encounters.lua
 data_naxxramas.lua
+data_bwl.lua
+data_aq40.lua
 alerts.lua
 engine.lua
 dbm_bridge.lua
