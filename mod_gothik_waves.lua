@@ -165,7 +165,9 @@ Addon:RegisterModule({
     id = MODID, raidId = "naxxramas", bossId = "gothik",
     name = "Wave Tracker",
     desc = "Tracks Gothik's scripted 18-wave add schedule before Phase 2: a countdown widget (current wave, next wave, Phase 2 timer) plus 'incoming'/'spawned' text banners naming each wave's composition. Drag the widget header to move.",
-    defaults = { enabled = false },
+    -- Default ON for DBM parity (the wave schedule above is DBM-verified). Existing
+    -- characters with a saved enabled=false keep their setting; this is fresh-profile only.
+    defaults = { enabled = true },
 
     Start = function()
         startTime = GetTime()
