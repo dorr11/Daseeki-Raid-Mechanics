@@ -41,8 +41,9 @@ Addon._mechCount   = {}   -- mechKey -> running cast count (showCount mechanics)
 -- log viewer still shows in full. It accumulates across pulls within a sitting;
 -- `FinalizeDebugSession` (below) snapshots it into `Addon.db.debugSessions` (tagged
 -- with raidId) on logout/reload or on leaving the raid, then clears it for the next
--- sitting. Each line is timestamped relative to the pull that produced it
--- (Addon._dbgStartTime, reset each Engage).
+-- sitting. Each line is timestamped relative to Addon._dbgStartTime — started
+-- lazily at the first line logged this UI session and reset on each boss Engage,
+-- so encounter lines stay pull-relative (the "==== ENGAGED" marker delimits them).
 --
 -- SavedVariables size is HARD-capped so a long 40-man sitting can't bloat the DB into
 -- multi-MB territory (which slows logout/reload): debugLive is trimmed to
@@ -58,7 +59,8 @@ local function DebugLiveLog()
 end
 
 -- Snapshots the in-progress sitting (Addon.db.debugLive) into Addon.db.debugSessions
--- — tagged with whichever raid we most recently fought (Addon._debugRaidId/Name) —
+-- — tagged with whichever raid we most recently fought or were inside
+-- (Addon._debugRaidId/Name, set on Engage and on entering a registered raid zone) —
 -- then clears debugLive for the next sitting. No-op if nothing was logged. Called on
 -- PLAYER_LOGOUT and on leaving the raid zone we were logging for; multiple sessions
 -- can share the same raidId (e.g. raiding the same instance across separate weeks),
@@ -130,7 +132,12 @@ end
 local function AppendDebugLog(line)
     local log = DebugLiveLog()
     if not log then return end
-    local t = Addon._dbgStartTime and (GetTime() - Addon._dbgStartTime) or 0
+    -- Lazy t=0 reference: before the first Engage of this UI session nothing has
+    -- set the clock, so start it at the first logged line — trash lines then get
+    -- real, increasing timestamps instead of all reading [0.0]. Engage still
+    -- resets it, keeping encounter lines pull-relative.
+    if not Addon._dbgStartTime then Addon._dbgStartTime = GetTime() end
+    local t = GetTime() - Addon._dbgStartTime
     log[#log + 1] = string.format("[%7.1f] %s", t, line)
     if #log == DEBUG_LOG_WARN_LINES then
         print("|cff66ccff[DRM]|r Debug log has grown past " .. DEBUG_LOG_WARN_LINES
@@ -414,6 +421,17 @@ function Addon:OnEngineEvent(event, ...)
             end
         end
         Addon.curMapID = mapID
+        -- Fallback session tag: entering a registered raid's zone tags the sitting
+        -- right away, so trash-only segments (no Engage before a /reload or logout
+        -- finalizes them) don't save as "unknown". Engage still overwrites this
+        -- with the raid actually fought.
+        for _, raidDef in ipairs(Addon:GetRaids()) do
+            if raidDef.mapID and raidDef.mapID == mapID then
+                Addon._debugRaidId   = raidDef.id
+                Addon._debugRaidName = raidDef.name or raidDef.id
+                break
+            end
+        end
         Addon:UpdateAutoDebug()   -- fires on login + every zone-in
         Disengage()
 
@@ -545,11 +563,13 @@ function Addon:UpdateAutoDebug()
     Addon:UpdateDebugOnlyIndicator()
 end
 
--- Lightweight, always-visible on-screen cue that Debug Only is ON (every mechanic
--- alert silenced) so a user can't leave the addon muted indefinitely without noticing.
--- Created lazily and only shown while Debug Only is active; hidden otherwise. Refreshed
--- on login, on every zone change, and whenever the Debug Only toggle flips (both go
--- through UpdateAutoDebug). Pairs with the login chat reminder in core.lua OnLogin.
+-- Lightweight on-screen cue that Debug Only is ON (every mechanic alert silenced) so a
+-- user is reminded that the addon is muted. The banner flashes briefly: it appears at
+-- full alpha, holds for ~4 seconds, then fades out over ~1 second and hides itself.
+-- Created lazily and only shown while Debug Only is active. Refreshed on login, on every
+-- zone change, and whenever the Debug Only toggle flips (both go through UpdateAutoDebug);
+-- each refresh cleanly restarts the show/hold/fade cycle so timers/fades never stack.
+-- Pairs with the login chat reminder in core.lua OnLogin.
 function Addon:UpdateDebugOnlyIndicator()
     local on = Addon:IsDebugOnly()
     if not on and not Addon._dbgIndicator then return end
@@ -562,8 +582,27 @@ function Addon:UpdateDebugOnlyIndicator()
         fs:SetAllPoints()
         fs:SetText("|cffff8800Daseeki Raid Mechanics: DEBUG ONLY — alerts silenced|r")
         Addon._dbgIndicator = fr
+        -- Hold-then-fade animation: full alpha for 4s, then fade to 0 over 1s.
+        local ag = fr:CreateAnimationGroup()
+        local anim = ag:CreateAnimation("Alpha")
+        anim:SetFromAlpha(1)
+        anim:SetToAlpha(0)
+        anim:SetStartDelay(4)
+        anim:SetDuration(1)
+        ag:SetScript("OnFinished", function() fr:Hide() end)
+        Addon._dbgIndicatorAnim = ag
     end
-    Addon._dbgIndicator:SetShown(on)
+    if on then
+        -- Cleanly restart the show/hold/fade cycle: stop any in-flight animation,
+        -- reset to full alpha, then play again so timers/fades never stack.
+        Addon._dbgIndicatorAnim:Stop()
+        Addon._dbgIndicator:SetAlpha(1)
+        Addon._dbgIndicator:Show()
+        Addon._dbgIndicatorAnim:Play()
+    else
+        Addon._dbgIndicatorAnim:Stop()
+        Addon._dbgIndicator:Hide()
+    end
 end
 
 function Addon:InitEngine()
