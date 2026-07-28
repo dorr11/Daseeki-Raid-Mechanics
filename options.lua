@@ -1090,6 +1090,10 @@ end
 
 function Addon:RegisterOptions()
     if not _G.DaseekiSuite then return end
+    if not (_G.DaseekiUI and _G.DaseekiUI.Token) then
+        print("|cff66ccffDaseeki Raid Mechanics|r requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
+        return
+    end
     -- General first, then one section per 20/40-man raid (raid.size set). Each raid
     -- section is a Bosses -> Mechanics -> Detail editor scoped to that raid.
     local sections = {
