@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.0
+- Settings rebuilt on the new Daseeki Core 2.0 interface (requires Daseeki Core 2.0.0+).
+  The boss / mechanic / detail drill-down is preserved; detail editor groups now stack
+  and collapse cleanly with no overlap.
+
+## 1.2.1
+- Curated special-warning and voice-countdown flag assignments across encounters.
+
+## 1.2.0
+- Naxxramas encounter data verified against captured combat logs (DBM-parity pass):
+  corrected spell IDs, Loatheb heal-window redesign, Faerlina/Sapphiron trigger fixes,
+  Berserk timers, Thaddius add-phase, and more.
+- Added Blackwing Lair and Temple of Ahn'Qiraj encounter data.
+- Phase E: special warnings, voice countdowns, pull timer, and kill stats.
+- Debug-only banner fade and debug-log hygiene improvements.
 ## 1.1.0
 - Added a combat-log debug/timing harness for verifying real boss mechanic timings:
   casts (with the interval since a spell last fired), auras, damage taken, and deaths
