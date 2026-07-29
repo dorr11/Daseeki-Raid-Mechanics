@@ -11,6 +11,45 @@ local AddonName, Addon = ...
 DaseekiRaidMechanics       = Addon
 _G["Daseeki-Raid-Mechanics"] = Addon
 
+-- ── Field Ledger chat helpers (Core-optional; graceful without Daseeki-Core) ──────
+-- BRAND_SPEC §2/§6: chat identity + status words reach the Field Ledger palette
+-- through these when Daseeki-Core (DaseekiUI) is present. Without Core they fall back
+-- to the exact literals this addon shipped with, so the standalone chat output is
+-- byte-identical to what raiders already see. Alert-path HUD visuals are untouched.
+local LEGACY_HEX = {   -- pre-Ledger colors, keyed by token role (no leading |cff)
+    brand = "66ccff",  -- old cyan identity tag
+    ok    = "00ff00",  -- green ON / enabled
+    danger= "ff0000",  -- red OFF / disabled / locked / cancelled
+    warn  = "ff8800",  -- amber reminder / caution
+    text  = "ffffff",  -- white command names / emphasis
+}
+
+-- Token → "|cffRRGGBB" prefix. Uses the live Ledger token with Core; else the legacy
+-- literal above; nil for an unknown token with no legacy mapping.
+function Addon:Hex(token)
+    local UI = _G.DaseekiUI
+    if UI and UI.Color then
+        local r, g, b = UI.Color(token)
+        local function b255(v) return math.max(0, math.min(255, math.floor((v or 0) * 255 + 0.5))) end
+        return ("|cff%02x%02x%02x"):format(b255(r), b255(g), b255(b))
+    end
+    local lg = LEGACY_HEX[token]
+    return lg and ("|cff" .. lg) or nil
+end
+
+-- Wrap `text` in a token color for chat strings; plain text if the token can't resolve.
+function Addon:Wrap(token, text)
+    local h = Addon:Hex(token)
+    if not h then return tostring(text) end
+    return h .. tostring(text) .. "|r"
+end
+
+-- Brand-tinted chat identity tag (crimson wax seal with Core; legacy cyan without).
+function Addon:Tag(text)
+    text = text or "[DRM]"
+    return (Addon:Hex("brand") or "|cff66ccff") .. text .. "|r"
+end
+
 -- v3: split "enabled" into masterEnabled (mechanics-list checkbox, gates everything)
 -- vs enabled (Ability Tracker's own checkbox) — old saved "enabled" overrides would
 -- now mean something different, so wipe them.
@@ -173,11 +212,11 @@ end
 function Addon:OnLogin()
     if Addon.InitEngine then Addon:InitEngine() end       -- engine.lua
     if Addon.RegisterOptions then Addon:RegisterOptions() end  -- options.lua
-    print("|cff66ccffDaseeki Raid Mechanics|r loaded. Type |cffffffff/drm|r for options.")
+    print(Addon:Tag("Daseeki Raid Mechanics") .. " loaded. Type " .. Addon:Wrap("text", "/drm") .. " for options.")
     -- Persistent reminder so Debug Only (a blanket alert kill-switch) is never left on
     -- silently across sessions. Pairs with the on-screen indicator (engine.lua).
     if Addon:IsDebugOnly() then
-        print("|cff66ccff[DRM]|r |cffff8800Reminder:|r Debug Only is ON — ALL mechanic alerts are silenced (combat data is only being logged). Turn it off in |cffffffff/drm|r -> General, or with |cffffffff/drm debugonly|r.")
+        print(Addon:Tag("[DRM]") .. " " .. Addon:Wrap("warn", "Reminder:") .. " Debug Only is ON — ALL mechanic alerts are silenced (combat data is only being logged). Turn it off in " .. Addon:Wrap("text", "/drm") .. " -> General, or with " .. Addon:Wrap("text", "/drm debugonly") .. ".")
     end
     if Addon.UpdateDebugOnlyIndicator then Addon:UpdateDebugOnlyIndicator() end
 end

@@ -13,7 +13,9 @@
 
     Nothing here uses caller-supplied y-offsets into the shared hub content frame,
     and no colors/fonts are hardcoded — everything reads DaseekiUI theme tokens and
-    re-skins live on ThemeChanged. Chat prints keep their |cff escape codes (exempt).
+    re-skins live on ThemeChanged. Chat prints route through Addon:Tag/Wrap (core.lua)
+    so identity + status words wear the Field Ledger palette when Daseeki-Core is
+    present, and fall back to the exact shipped literals when it isn't.
 
     The SavedVariables schema and every settings key are unchanged from the
     pre-migration panel (same Addon:SetMechanicOption / db.settings field names).
@@ -986,8 +988,8 @@ function Addon:BuildGeneralOptions(flow)
         set = function(v)
             Addon.db.settings.debugOnly = v and true or false
             Addon:UpdateAutoDebug()
-            print("|cff66ccff[DRM]|r Debug Only " .. (v and "|cff00ff00ON|r - all mechanic output silenced; combat events log while in 20/40-man raids."
-                or "|cffff0000OFF|r - mechanics resumed."))
+            print(Addon:Tag("[DRM]") .. " Debug Only " .. (v and (Addon:Wrap("ok", "ON") .. " - all mechanic output silenced; combat events log while in 20/40-man raids.")
+                or (Addon:Wrap("danger", "OFF") .. " - mechanics resumed.")))
         end,
     })
     local dbgRow = dbg:AddRow()
@@ -995,24 +997,24 @@ function Addon:BuildGeneralOptions(flow)
         -- Re-read the hub live (parity with slash.lua) in case Daseeki Core unloaded.
         local DS2 = _G.DaseekiSuite
         if not (DS2 and DS2.ShowTextDialog) then
-            print("|cff66ccff[DRM]|r Install |cffffffffDaseeki Core|r to view the log.")
+            print(Addon:Tag("[DRM]") .. " Install " .. Addon:Wrap("text", "Daseeki Core") .. " to view the log.")
             return
         end
         local n = Addon:DebugLogLineCount()
         if n == 0 then
-            print("|cff66ccff[DRM]|r No debug log captured yet. Enable Debug Only (or |cffffffff/drm debug|r) and pull a boss first.")
+            print(Addon:Tag("[DRM]") .. " No debug log captured yet. Enable Debug Only (or " .. Addon:Wrap("text", "/drm debug") .. ") and pull a boss first.")
         else
             DS2.ShowTextDialog("DRM Debug Log (" .. n .. " lines, all sessions)", Addon:BuildFullDebugLogText(), true)
         end
     end })
     dbgRow:Button({ text = "Clear Log", width = 100, onClick = function()
         if Addon.db then Addon.db.debugLive = {} end
-        print("|cff66ccff[DRM]|r Current (live) debug log cleared. Saved sessions kept -- use |cffffffffClear Saved Sessions|r to wipe those too.")
+        print(Addon:Tag("[DRM]") .. " Current (live) debug log cleared. Saved sessions kept -- use " .. Addon:Wrap("text", "Clear Saved Sessions") .. " to wipe those too.")
     end })
     -- Wipes all finalized past sittings (same as /drm clearsessions); the live log is kept.
     dbgRow:Button({ text = "Clear Saved Sessions", width = 160, onClick = function()
         if Addon.db then Addon.db.debugSessions = {} end
-        print("|cff66ccff[DRM]|r All saved debug sessions cleared. (The current live log is kept -- use |cffffffffClear Log|r for that.)")
+        print(Addon:Tag("[DRM]") .. " All saved debug sessions cleared. (The current live log is kept -- use " .. Addon:Wrap("text", "Clear Log") .. " for that.)")
     end })
 
     local bd = flow:AddSection("Boss Death")
@@ -1091,7 +1093,7 @@ end
 function Addon:RegisterOptions()
     if not _G.DaseekiSuite then return end
     if not (_G.DaseekiUI and _G.DaseekiUI.Token) then
-        print("|cff66ccffDaseeki Raid Mechanics|r requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
+        print(Addon:Tag("Daseeki Raid Mechanics") .. " requires Daseeki Core v2.0.0 or newer — please update Daseeki Core.")
         return
     end
     -- General first, then one section per 20/40-man raid (raid.size set). Each raid

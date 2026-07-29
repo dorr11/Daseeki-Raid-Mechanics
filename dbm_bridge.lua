@@ -108,6 +108,6 @@ local f = CreateFrame("Frame")
 f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function()
     if TryHook() then
-        print("|cff66ccff[DRM]|r DBM debug bridge active — DBM's own timers/announces/stages/pulls will be cross-logged when debug capture is on.")
+        print(Addon:Tag("[DRM]") .. " DBM debug bridge active — DBM's own timers/announces/stages/pulls will be cross-logged when debug capture is on.")
     end
 end)

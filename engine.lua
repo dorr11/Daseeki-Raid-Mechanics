@@ -87,7 +87,7 @@ local function FinalizeDebugSession(reason)
         table.remove(Addon.db.debugSessions, 1)
     end
     if Addon.debug then
-        print(string.format("|cff66ccff[DRM]|r Debug session saved (%s, %d lines, %s).",
+        print(Addon:Tag("[DRM]") .. string.format(" Debug session saved (%s, %d lines, %s).",
             Addon._debugRaidName or "unknown raid", #live, reason or "saved"))
     end
 end
@@ -145,7 +145,7 @@ local function AppendDebugLog(line)
     local t = GetTime() - Addon._dbgStartTime
     log[#log + 1] = string.format("[%7.1f] %s", t, line)
     if #log == DEBUG_LOG_WARN_LINES then
-        print("|cff66ccff[DRM]|r Debug log has grown past " .. DEBUG_LOG_WARN_LINES
+        print(Addon:Tag("[DRM]") .. " Debug log has grown past " .. DEBUG_LOG_WARN_LINES
             .. " lines this sitting — consider reviewing/clearing it soon (large SavedVariables can slow logout).")
     end
     if #log > DEBUG_LOG_MAX_LINES then TrimDebugLiveLog(log) end
@@ -156,7 +156,7 @@ end
 local function DLog(fmt, ...)
     if not Addon.debug then return end
     local line = string.format(fmt, ...)
-    print("|cff66ccff[DRM]|r " .. line)
+    print(Addon:Tag("[DRM]") .. " " .. line)
     AppendDebugLog(line)
 end
 
@@ -722,11 +722,11 @@ function Addon:UpdateAutoDebug()
     if want then
         if not Addon.debug then
             Addon.debug = true; Addon._autoDebug = true
-            print("|cff66ccff[DRM]|r Auto-debug |cff00ff00ON|r — logging casts (with intervals), yells & emotes.")
+            print(Addon:Tag("[DRM]") .. " Auto-debug " .. Addon:Wrap("ok", "ON") .. " — logging casts (with intervals), yells & emotes.")
         end
     elseif Addon._autoDebug then
         Addon.debug = false; Addon._autoDebug = false
-        print("|cff66ccff[DRM]|r Auto-debug |cffff0000OFF|r.")
+        print(Addon:Tag("[DRM]") .. " Auto-debug " .. Addon:Wrap("danger", "OFF") .. ".")
     end
     Addon:UpdateDebugOnlyIndicator()
 end
