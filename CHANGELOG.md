@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased (internal)
+- Config now migrates in place across future updates instead of resetting.
+
 ## 1.3.0
 - Settings rebuilt on the new Daseeki Core 2.0 interface (requires Daseeki Core 2.0.0+).
   The boss / mechanic / detail drill-down is preserved; detail editor groups now stack
