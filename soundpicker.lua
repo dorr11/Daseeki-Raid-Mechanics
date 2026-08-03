@@ -125,6 +125,7 @@ local function EnsurePicker()
         row.bg = row:CreateTexture(nil, "BACKGROUND"); row.bg:SetAllPoints()
         row.bg:SetColorTexture(0.2, 0.4, 0.7, 0)
         row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        Addon:TrySetFont(row.name, "body")   -- sound name in the picker list
         row.name:SetPoint("LEFT", row, "LEFT", 4, 0); row.name:SetJustifyH("LEFT")
         row.name:SetWidth(WIDTH - PAD * 2 - 44)
 
@@ -132,7 +133,9 @@ local function EnsurePicker()
         row.play = CreateFrame("Button", nil, row)
         row.play:SetSize(18, 18); row.play:SetPoint("RIGHT", row, "RIGHT", -2, 0)
         row.play.txt = row.play:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.play.txt:SetPoint("CENTER"); row.play.txt:SetText("|cff00ff00>|r")
+        Addon:TrySetFont(row.play.txt, "small")
+        -- Addon:Wrap resolves the ok token with Core and the legacy green without.
+        row.play.txt:SetPoint("CENTER"); row.play.txt:SetText(Addon:Wrap("ok", ">"))
         row.play:SetScript("OnClick", function()
             if row._entry then Addon:PlaySoundByKey(row._entry.key, true) end
         end)

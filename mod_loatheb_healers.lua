@@ -89,8 +89,10 @@ local function makeEntry()
     if e.cd.SetHideCountdownNumbers then e.cd:SetHideCountdownNumbers(true) end
     e.cd.noCooldownCount = true
     e.name = e:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    Addon:TrySetFont(e.name, "body")       -- tinted per healer by styleEntry (class colour)
     e.name:SetPoint("LEFT", e.icon, "RIGHT", 4, 0); e.name:SetJustifyH("LEFT")
     e.timer = e:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    Addon:TrySetFont(e.timer, "numeral")   -- cooldown readout → telemetry numeral
     e.timer:SetPoint("RIGHT", e, "RIGHT", -2, 0)
     return e
 end
@@ -141,7 +143,9 @@ local function EnsureContainer()
     c:SetMovable(true); c:EnableMouse(true)
     Addon:ApplyDarkBackdrop(c)
     c.header = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -1); c.header:SetText("|cff66ccffLoatheb Healers|r")
+    Addon:TrySetFont(c.header, "microLabel")   -- widget eyebrow (§3)
+    -- Addon:Wrap resolves the brand token with Core and the legacy cyan without.
+    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -1); c.header:SetText(Addon:Wrap("brand", "Loatheb Healers"))
     c:SetScript("OnMouseDown", function(self, b) if b == "LeftButton" then self:StartMoving() end end)
     c:SetScript("OnMouseUp", function(self)
         self:StopMovingOrSizing()
@@ -334,6 +338,7 @@ def = Addon:RegisterModule({
                 r.check = CreateFrame("CheckButton", nil, r, "UICheckButtonTemplate")
                 r.check:SetSize(20, 20); r.check:SetPoint("LEFT", r, "LEFT", 0, 0)
                 r.label = r:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                Addon:TrySetFont(r.label, "body")   -- tinted per class below
                 r.label:SetPoint("LEFT", r.check, "RIGHT", 2, 0); r.label:SetWidth(150); r.label:SetJustifyH("LEFT")
                 r.up = DS.MakeButton(r, "^", 200, 0, 22, 20, nil)
                 r.down = DS.MakeButton(r, "v", 224, 0, 22, 20, nil)

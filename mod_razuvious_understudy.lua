@@ -41,6 +41,7 @@ local function AcquireIcon()
     if f.cd.SetHideCountdownNumbers then f.cd:SetHideCountdownNumbers(true) end
     f.cd.noCooldownCount = true
     f.timer = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    Addon:TrySetFont(f.timer, "numeral")   -- icon countdown → telemetry numeral
     f.timer:SetPoint("CENTER")
     f:SetScript("OnUpdate", function(self)
         if not self._expire then self.timer:SetText(""); return end

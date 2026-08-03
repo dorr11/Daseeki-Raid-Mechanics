@@ -76,7 +76,9 @@ local function EnsureMH()
     c:SetMovable(true); c:EnableMouse(true)
     Addon:ApplyDarkBackdrop(c)
     c.header = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -2); c.header:SetText("|cff66ccffMini-Bosses|r")
+    Addon:TrySetFont(c.header, "microLabel")   -- widget eyebrow (§3)
+    -- Addon:Wrap resolves the brand token with Core and the legacy cyan without.
+    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -2); c.header:SetText(Addon:Wrap("brand", "Mini-Bosses"))
     c:SetScript("OnMouseDown", function(self, b) if b == "LeftButton" then self:StartMoving() end end)
     c:SetScript("OnMouseUp", function(self)
         self:StopMovingOrSizing()
@@ -98,6 +100,8 @@ local function EnsureMH()
         Addon:StyleBar(row.bar); Addon:AddBorder(row.bar)
         row.pct = row.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.pct:SetPoint("RIGHT", row.bar, "RIGHT", -3, 0)
+        -- Suite face first (SetFontObject re-applies its colour), tint after.
+        Addon:TrySetFont(row.name, "body"); Addon:TrySetFont(row.pct, "numeral")
         Addon:StyleFont(row.name); Addon:StyleFont(row.pct)
         row._id = u.id
         c.rows[i] = row

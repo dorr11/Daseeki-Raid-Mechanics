@@ -259,6 +259,7 @@ local function EnsurePullFrame()
 
     f.label = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     f.label:SetPoint("CENTER")
+    if Addon.TrySetFont then Addon:TrySetFont(f.label, "body") end
     if Addon.StyleFont then Addon:StyleFont(f.label) end
 
     -- Drag-to-place, same convention as the widget modules (mod_gothik_waves etc).
@@ -747,6 +748,7 @@ function Addon:UpdateDebugOnlyIndicator()
         fr:SetPoint("TOP", UIParent, "TOP", 0, -140)
         fr:SetFrameStrata("HIGH")
         local fs = fr:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        if Addon.ReFaceKeepingSize then Addon:ReFaceKeepingSize(fs) end  -- keep the Large size, take the suite face
         fs:SetAllPoints()
         fs:SetText("|cffff8800Daseeki Raid Mechanics: DEBUG ONLY — alerts silenced|r")
         Addon._dbgIndicator = fr

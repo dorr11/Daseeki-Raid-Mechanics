@@ -212,7 +212,21 @@ function Addon:GetFontByKey(key)
     return FONT_BUILTINS[1]
 end
 
-function Addon:GetFontPath(key) return Addon:GetFontByKey(key).path end
+-- The path a font key resolves to. "default" is special: it means "whatever this UI's
+-- default face is", so with Daseeki-Core loaded it resolves to the user's PICKED suite
+-- face (UI.FontFile() — already load-verified, with Core's own Friz fallback) rather
+-- than to the client's STANDARD_TEXT_FONT. A user who explicitly picked Arial Narrow /
+-- Skurri / Morpheus / an LSM font still gets exactly that: only "default" defers.
+function Addon:GetFontPath(key)
+    if not key or key == "default" then
+        local UI = _G.DaseekiUI
+        if UI and UI.FontFile then
+            local ok, path = pcall(UI.FontFile)
+            if ok and type(path) == "string" and path ~= "" then return path end
+        end
+    end
+    return Addon:GetFontByKey(key).path
+end
 function Addon:GetFontName(key) return Addon:GetFontByKey(key).name end
 
 function Addon:GetFontNameList()

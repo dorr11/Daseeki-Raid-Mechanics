@@ -156,7 +156,9 @@ local function Refresh(c)
     local now = GetTime()
 
     local cnt = (Addon._mechCount and Addon._mechCount[MARKCD_KEY]) or (preview and 5) or 0
-    c.header:SetText(string.format("|cff66ccffFour Horsemen|r  |cffffd200Marks: %d|r", cnt))
+    -- Theme tokens with Core, the legacy cyan/gold literals without (Addon:Wrap).
+    c.header:SetText(Addon:Wrap("brand", "Four Horsemen")
+        .. "  " .. Addon:Wrap("warn", ("Marks: %d"):format(cnt)))
 
     for _, row in ipairs(c.rows) do
         local h = row._h
@@ -262,7 +264,9 @@ local function EnsureFrame()
     c:SetMovable(true); c:EnableMouse(true)
     Addon:ApplyDarkBackdrop(c)
     c.header = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -2); c.header:SetText("|cff66ccffFour Horsemen|r")
+    Addon:TrySetFont(c.header, "microLabel")   -- widget eyebrow (§3)
+    -- Addon:Wrap resolves the brand token with Core and the legacy cyan without.
+    c.header:SetPoint("TOPLEFT", c, "TOPLEFT", 6, -2); c.header:SetText(Addon:Wrap("brand", "Four Horsemen"))
     c:SetScript("OnMouseDown", function(self, b) if b == "LeftButton" then self:StartMoving() end end)
     c:SetScript("OnMouseUp", function(self)
         self:StopMovingOrSizing()
@@ -320,6 +324,12 @@ local function EnsureFrame()
         row.pct:SetPoint("RIGHT", row.bar, "RIGHT", -2, 0)
         row.tgt = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.tgt:SetPoint("TOPLEFT", row.icon, "TOPRIGHT", 5, -25); row.tgt:SetJustifyH("LEFT")
+        -- Suite face first (SetFontObject re-applies the object's colour), tint after.
+        Addon:TrySetFont(row.name, "body")
+        Addon:TrySetFont(row.pct,     "numeral")   -- health % readout → telemetry
+        Addon:TrySetFont(row.swText,  "numeral")   -- mark-swap countdown
+        Addon:TrySetFont(row.abText,  "numeral")   -- ability cooldown countdown
+        Addon:TrySetFont(row.tgt, "small")
         Addon:StyleFont(row.name); Addon:StyleFont(row.pct); Addon:StyleFont(row.tgt)
         Addon:StyleFont(row.swText); Addon:StyleFont(row.abText)
         row._h = h

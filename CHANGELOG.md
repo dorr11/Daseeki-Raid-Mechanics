@@ -1,7 +1,17 @@
 # Changelog
 
 ## Unreleased (internal)
-- Config now migrates in place across future updates instead of resetting.
+- The alert HUD now matches the rest of the Daseeki suite. Timer bars, the centre
+  warnings, the Gothik / Four Horsemen / Loatheb / Mini-Boss widgets and the sound
+  picker all had their own fixed dark palette and the game's stock font, so they were
+  the one part of your UI that ignored both the theme and the font you picked in
+  Daseeki Core. They now follow both, and change with them. Countdowns and health
+  percentages use the suite's numeral face so they line up as you read them. The
+  centre warnings keep their large size and outline — only the typeface changed.
+  If you left a mechanic's alert font on "Default" it now means your picked suite
+  font; explicitly choosing Arial Narrow, Skurri, Morpheus or a shared-media font
+  still gives you exactly that. Positions, sizes and spacing are untouched, and with
+  Daseeki Core not installed everything looks exactly as it did.
 
 ## 1.3.0
 - Settings rebuilt on the new Daseeki Core 2.0 interface (requires Daseeki Core 2.0.0+).

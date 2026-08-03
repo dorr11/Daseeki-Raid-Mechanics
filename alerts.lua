@@ -118,7 +118,7 @@ local function NewDisplay()
 
     d.bar = CreateFrame("StatusBar", nil, d)
     d.bar.bg = d.bar:CreateTexture(nil, "BACKGROUND"); d.bar.bg:SetAllPoints()
-    local _bg = Addon.Theme.barBG; d.bar.bg:SetColorTexture(_bg[1], _bg[2], _bg[3], _bg[4])
+    d.bar.bg:SetColorTexture(Addon:ThemeColor("barBG"))
     Addon:AddBorder(d.bar)
     d.bar.spark = d.bar:CreateTexture(nil, "OVERLAY")
     d.bar.spark:SetTexture("Interface\\CastingBar\\UI-CastingBar-Spark")
@@ -130,14 +130,18 @@ local function NewDisplay()
     d.fg:SetAllPoints(d)
     d.fg:SetFrameLevel(d.bar:GetFrameLevel() + 3)
 
+    -- Bar name + countdown. TrySetFont FIRST, StyleFont after: SetFontObject also
+    -- re-applies that object's colour, so the token tint has to land last.
     d.label = d.fg:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     d.time  = d.fg:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    Addon:TrySetFont(d.label, "body")
+    Addon:TrySetFont(d.time,  "numeral")   -- a countdown is telemetry (BRAND_SPEC §3)
     Addon:StyleFont(d.label); Addon:StyleFont(d.time)
 
     -- Small running cast-count badge (corner of the icon) for showCount mechanics.
     d.count = d.fg:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    Addon:StyleFont(d.count)
-    d.count:SetTextColor(1, 0.9, 0.3)
+    Addon:TrySetFont(d.count, "numeral")
+    Addon:StyleFont(d.count, "warnText")   -- was a literal amber; now the theme's warn role
     d.count:Hide()
 
     -- Glow border (shown during a cooldown window). Works on any rectangle.
@@ -534,6 +538,10 @@ local function NewWarning()
     local f = CreateFrame("Frame", nil, UIParent)
     f:SetSize(500, 40); f:SetFrameStrata("HIGH")
     f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+    -- Keep the Huge tier's SIZE + outline (that is what makes a center warning read
+    -- across a raid) but take the FACE from the suite picker when Core is present.
+    -- ShowWarning tints per call, so no colour is set here.
+    Addon:ReFaceKeepingSize(f.text)
     f.text:SetPoint("CENTER"); f.text:SetJustifyH("CENTER")
     f:SetScript("OnUpdate", function(self, elapsed)
         self._e = self._e + elapsed
@@ -605,6 +613,7 @@ local function NewSpecialWarning()
     f:SetSize(700, 60); f:SetFrameStrata("HIGH")
     f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
     f.text:SetPoint("CENTER"); f.text:SetJustifyH("CENTER")
+    Addon:ReFaceKeepingSize(f.text)          -- suite face, Huge size + flags preserved
     local path, size, flags = f.text:GetFont()
     f.text:SetFont(path, math.floor(size * 1.4 + 0.5), flags)   -- ~1.4x the normal tier
     Addon:StyleFont(f.text)
