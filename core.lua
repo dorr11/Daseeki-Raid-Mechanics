@@ -51,9 +51,9 @@ function Addon:Tag(text)
 end
 
 -- v3: split "enabled" into masterEnabled (mechanics-list checkbox, gates everything)
--- vs enabled (Ability Tracker's own checkbox) — old saved "enabled" overrides would
--- now mean something different, so wipe them.
-local DB_VERSION = 3  -- bump wipes per-mechanic overrides (config model changed)
+-- vs enabled (Ability Tracker's own checkbox). A future config-model change is
+-- handled by the migration chain below (transform in place), never by wiping.
+local DB_VERSION = 3  -- current config-model version; migrations transform in place, never wipe
 
 local DEFAULT_SETTINGS = {
     enabled      = true,    -- master on/off
@@ -92,10 +92,59 @@ function Addon:MechKey(raidId, bossId, mechId)
     return raidId .. ":" .. bossId .. ":" .. mechId
 end
 
+-- ── SavedVariables migration chain ───────────────────────────────────────────────
+-- Stamp-don't-wipe, generalized from the suite template (Daseeki-ClassHUD store.lua
+-- Store.Migrate). The next DB_VERSION bump must TRANSFORM a player's saved config, not
+-- erase it. MIGRATIONS[n] upgrades a db stamped dbVersion n up to n+1, in place.
+--
+-- It is EMPTY today on purpose: every existing user is already at v3 with v3-shaped
+-- overrides, so the chain is a no-op. The runner exists now so the FIRST real
+-- config-model change is a transform step here, not the old db.mechanics wipe.
+--
+-- db.stats (raid kill/wipe history) is NOT config and is never in a migration's
+-- purview — it is ensured and left untouched in Init regardless of version, exactly
+-- as before. RENAME-AND-PARK: if a future model change is ever genuinely
+-- unconvertible, a step must PARK the old overrides (e.g. db.mechanics_v3 =
+-- db.mechanics) rather than empty them — data stays recoverable. Never wipe.
+Addon.MIGRATIONS = {}
+
+-- Migrate db in place. Returns true when it is safe to proceed onto seeding.
+--   absent/unknown dbVersion -> stamp to current, convert nothing (ensures fill gaps)
+--   dbVersion NEWER than this build -> leave EXACTLY as-is (never downgrade), report
+--   dbVersion OLDER -> run MIGRATIONS steps in order; a MISSING step STOPS and leaves
+--                      the data untouched (reported) rather than emptying db.mechanics.
+function Addon:MigrateDB(db)
+    local from = tonumber(db.dbVersion)
+    if from == nil then
+        db.dbVersion = DB_VERSION
+        return true
+    end
+    if from > DB_VERSION then
+        print(Addon:Tag("[DRM]") .. " settings were saved by a newer version; left untouched.")
+        return false
+    end
+    while (db.dbVersion or 0) < DB_VERSION do
+        local step = Addon.MIGRATIONS[db.dbVersion]
+        if not step then
+            print(Addon:Tag("[DRM]") .. " settings could not be upgraded from v"
+                .. tostring(db.dbVersion) .. "; left untouched.")
+            return false
+        end
+        step(db)
+        db.dbVersion = db.dbVersion + 1
+    end
+    return true
+end
+
 -- ── SavedVariables ───────────────────────────────────────────────────────────--
 function Addon:Init()
     DaseekiRaidMechanicsDB = DaseekiRaidMechanicsDB or {}
     local db = DaseekiRaidMechanicsDB
+
+    -- Migrate the saved config model in place before seeding. Never wipes: an
+    -- unknown version is stamped, an older one transformed step-by-step, a newer
+    -- one left as-is. db.stats is untouched by this and by the ensures below.
+    Addon:MigrateDB(db)
 
     if not db.settings then db.settings = {} end
     for k, v in pairs(DEFAULT_SETTINGS) do
@@ -118,11 +167,6 @@ function Addon:Init()
     -- wiped on DB_VERSION bumps — it's raid history, not config overrides.
     db.stats = db.stats or {}
     db.settings.locked = true           -- unlock is a transient positioning mode; never start unlocked
-    -- Config model changed in v2: drop stale overrides from the v1 (bar/warning/sound) model.
-    if (db.dbVersion or 1) < DB_VERSION then
-        db.mechanics = {}
-    end
-    db.dbVersion = DB_VERSION
     Addon.db = db
 end
 
