@@ -351,13 +351,27 @@ end
 -- last gap repeats forever (that is how "4th+ = 35 s" cycles in the encounter data
 -- are expressed). `immediate` fires entry 1 at once (the timer-flavoured variant,
 -- so the bar appears instantly).
+--
+-- W4d EXTENSION — `gaps.repeatFrom`. "The last gap repeats forever" cannot express a
+-- cycle whose TAIL alternates, which is the shape of every scripted two-state loop in
+-- the encounters spec (Noth's room/balcony 35/55, Heigan's room/dance 88/47). With
+-- `repeatFrom = n` the tail cycles gaps[n..#gaps] instead of repeating gaps[#gaps];
+-- without it the old rule is unchanged.
+function Sched.GapAt(gaps, i)
+    local g = gaps[i]
+    if g then return g end
+    local rf = gaps.repeatFrom
+    if not rf or rf < 1 or rf > #gaps then return gaps[#gaps] end
+    local span = #gaps - rf + 1
+    return gaps[rf + ((i - rf) % span)]
+end
+
 local function loopTableTick(state)
     if state.cancelled then return end
     state.i = state.i + 1
     state.fn(state.owner, state.i, unpack(state.args, 1, state.argn))
     if state.cancelled then return end
-    local gaps = state.gaps
-    local gap = gaps[state.i + 1] or gaps[#gaps]
+    local gap = Sched.GapAt(state.gaps, state.i + 1)
     if not gap then return end
     state.base = state.base + gap
     Sched:ScheduleAt(state.base, loopTableTick, state.owner, state)

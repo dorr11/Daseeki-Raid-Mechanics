@@ -222,9 +222,11 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 --  RETIREMENT SHIMS for the removed encounter registry (encounters.lua)
 -- ══════════════════════════════════════════════════════════════════════════════
--- W4 replaces every one of these with the real encounter registry read through
--- `Addon:GetEncounters()`. Until then options.lua and alerts.lua get empty,
--- well-shaped answers instead of nil-index errors.
+-- W4d REPLACED THE DATA SOURCE, NOT THE ACCESSORS. These four readers are unchanged
+-- and still the only surface options.lua/alerts.lua touch; what changed is who fills
+-- the tables — `API.PublishOptionsTree()` (core_api.lua section E) projects them from
+-- the encounter registry at InitEngine. A zone with no encounters registered yet
+-- (W4a-c still to come) simply contributes nothing, exactly as before.
 Addon.raids     = Addon.raids     or {}
 Addon.raidsById = Addon.raidsById or {}
 Addon.npcIndex  = Addon.npcIndex  or {}
@@ -272,6 +274,12 @@ function Addon:InitEngine()
     if Addon.Bars     then Addon.Bars.Init()     end   -- ui_bars.lua
     if Addon.Warnings then Addon.Warnings.Init() end   -- ui_warnings.lua
     if Addon.Callbacks and Addon.Callbacks.Init then Addon.Callbacks.Init() end  -- public_api.lua
+
+    -- W4d: project the encounter registry into the raid/boss/mechanic tree
+    -- options.lua consumes. Runs AFTER svc_era installed the role/class resolvers,
+    -- because a projected row publishes its resolved default, and BEFORE
+    -- core.lua's OnLogin calls Addon:RegisterOptions().
+    if Addon.API and Addon.API.PublishOptionsTree then Addon.API.PublishOptionsTree() end
 
     if type(_G.CreateFrame) ~= "function" then
         Addon.engineFrame = false            -- headless: the harness drives Life directly

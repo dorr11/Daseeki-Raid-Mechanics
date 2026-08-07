@@ -664,17 +664,23 @@ end
 -- The engine has already applied ship-off defaults, role gates and class defaults
 -- (core_api API.IsRowEnabled). A row that declares batching is routed into the
 -- batchers; everything else shows immediately.
-local function onAnnounce(_, encId, row, text)
+-- W4d added the 4th payload argument: the player the warning is ABOUT, resolved from
+-- the event by the engine. Before it, a batched row could only ever list a STATIC
+-- `row.target`, so "Web Wrap on <name>" / "Frost Blast on <names>" had no names to
+-- collect. A row that still declares a static target keeps it as the fallback.
+local function onAnnounce(_, encId, row, text, target)
     row = row or {}
-    if row.combine then return Warn.Combine(encId, row, row.target, nil) end
-    if row.precise then return Warn.Precise(encId, row, row.target, row.precise.total) end
+    target = target or row.target
+    if row.combine then return Warn.Combine(encId, row, target, nil) end
+    if row.precise then return Warn.Precise(encId, row, target, row.precise.total) end
     return Warn.ShowAnnounce(encId, row, text)
 end
 
-local function onSpecial(_, encId, row, text)
+local function onSpecial(_, encId, row, text, target)
     row = row or {}
-    if row.combine then return Warn.Combine(encId, row, row.target, nil) end
-    if row.precise then return Warn.Precise(encId, row, row.target, row.precise.total) end
+    target = target or row.target
+    if row.combine then return Warn.Combine(encId, row, target, nil) end
+    if row.precise then return Warn.Precise(encId, row, target, row.precise.total) end
     return Warn.ShowSpecial(encId, row, text)
 end
 

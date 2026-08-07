@@ -112,6 +112,7 @@ local sweepTask, wipeTask
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 Life.engaged     = {}       -- ordered array of runtimes
+Life.zoneArmed   = {}       -- encId -> runtime  (W4d: trash modules, §1.1 "zone combat")
 Life.byId        = {}       -- encId -> runtime
 Life.lockouts    = {}       -- encId -> { reason = "kill"|"wipe", at = }
 Life.healthCache = {}       -- creatureId -> last known health pct
@@ -245,6 +246,59 @@ function Life:SnapshotDifficulty()
         worldBoss = (map and map.worldBoss) or false,
     }
 end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  W4d — ZONE (TRASH) MODULES.  ENCOUNTERS SPEC §1.1: "Zone combat — trash module;
+--  armed for the whole instance, tracks per-mob-GUID timers, disarms when the whole
+--  raid drops combat."
+--
+--  A zone module is NOT an engagement: it has no pull, no wipe verdict, no lockout,
+--  no statistics, and it must not appear in `Life.engaged` (which would make a trash
+--  pack look like a boss fight to the wipe poll). It is a second, flat list of
+--  runtimes that receives the same routed events. Arming is by instance, so the
+--  Naxxramas trash alerts are live during boss fights too — which the spec requires,
+--  because the AQ40/Naxx trash modules explicitly stay active mid-encounter.
+function Life:ArmZones(instanceId)
+    if instanceId == nil then
+        local _, _, _, _, _, _, _, iid = Life.env.GetInstanceInfo()
+        instanceId = iid
+    end
+    local wanted = {}
+    for _, enc in ipairs(Addon.encByZone[instanceId] or {}) do
+        if enc.detect and enc.detect.mode == "zone" then wanted[enc.id] = enc end
+    end
+    -- Disarm anything that is not wanted here (zoning out of Naxx into Azeroth).
+    for encId, rt in pairs(Life.zoneArmed) do
+        if not wanted[encId] then
+            rt:Teardown()
+            Life.zoneArmed[encId] = nil
+        end
+    end
+    local armed = 0
+    for encId, enc in pairs(wanted) do
+        if not Life.zoneArmed[encId] then
+            local rt = API().NewRuntime(enc, { pullTime = S():Now(), trigger = "zone" })
+            rt.isZone = true
+            Life.zoneArmed[encId] = rt
+            rt:StartPullSchedules()
+            Addon:FireEngineEvent("ENGINE_ENGAGE", enc.id, rt, 0, "zone")
+            armed = armed + 1
+        end
+    end
+    return armed
+end
+
+function Life:DisarmZones()
+    local n = 0
+    for encId, rt in pairs(Life.zoneArmed) do
+        rt:Teardown()
+        Life.zoneArmed[encId] = nil
+        n = n + 1
+    end
+    return n
+end
+
+function Life:IsZoneArmed(encId) return Life.zoneArmed[encId] ~= nil end
 
 function Life:IsEngaged(encId) return Life.byId[encId] ~= nil end
 function Life:GetRuntime(encId) return Life.byId[encId] end
@@ -463,9 +517,14 @@ function Life:EvaluateHealthTriggers(rt, pct)
         -- Phase rows have no option key of their own, so they are addressed by
         -- their index in the phases list.
         local key = (entry.consumer.row.key or ("phase#" .. tostring(entry.consumer.act))) .. ":health"
-        if pct <= (tr.pct or 0) and (tr.repeat_ or not rt.healthFired[key]) then
+        local hev = { on = "health", pct = pct }
+        -- W4d: run the health threshold through the SAME matcher every other trigger
+        -- uses, so a health rule can be scoped ("phase 3 at <= 48 % WHILE IN PHASE 2" —
+        -- Kel'Thuzad's guardian point, which is not a phase-1 rule).
+        if pct <= (tr.pct or 0) and (tr.repeat_ or not rt.healthFired[key])
+           and API().TriggerMatches(rt, tr, hev) then
             rt.healthFired[key] = true
-            if rt:Act(entry, { on = "health", pct = pct }) then fired = fired + 1 end
+            if rt:Act(entry, hev) then fired = fired + 1 end
             if tr.sync then Addon:FireEngineEvent("SYNC_SEND", "M", rt.id, key) end
         end
     end
@@ -636,9 +695,11 @@ function Life:OnChat(event, text)
     end
     -- Chat is also a trigger source INSIDE a running fight (emote state machines,
     -- add-wave yells, class calls).
+    local chatEv = { on = kind == "emote" and "emote" or kind, text = text }
     for i = 1, #Life.engaged do
-        Life.engaged[i]:Route({ on = kind == "emote" and "emote" or kind, text = text })
+        Life.engaged[i]:Route(chatEv)
     end
+    for _, rt in pairs(Life.zoneArmed) do rt:Route(chatEv) end
     return acted
 end
 
@@ -928,6 +989,11 @@ Life.EVENTS = {
     "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_EMOTE",
     "CHAT_MSG_RAID_BOSS_EMOTE", "RAID_BOSS_EMOTE",
     "COMBAT_LOG_EVENT_UNFILTERED",
+    -- W4d: the nameplate path. `nameplate` was already in the trigger vocabulary and
+    -- nothing delivered one, so Kel'Thuzad's Era-only phase-2 detection ("his
+    -- nameplate appears while still in phase 1") and Razuvious's understudy discovery
+    -- were declarable but dead. Nameplates are also the only Era route to either.
+    "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED",
     "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_DISABLED",
 }
 
@@ -938,6 +1004,17 @@ Life.HEALTH_TOKENS = { "mouseover", "target", "player", "targettarget" }
 -- Normalise a raw combat-log payload into the flat event table the encounter
 -- runtime routes on. Deliberately separate from `Deliver`, so the harness can feed
 -- normalised events without reconstructing CLEU argument order.
+-- COMBATLOG_OBJECT_TYPE_PET. W4d: `tr.source == "pet"` was in the matcher from wave 1
+-- but nothing ever SET `sourceIsPet`, so it could not match. Razuvious needs it — a
+-- mind-controlled Deathknight Understudy counts as a pet, which is how its Taunt and
+-- Shield Wall are attributed. Pure arithmetic, because `bit` is not guaranteed.
+local OBJECT_TYPE_PET = 0x00001000
+local function isPetFlags(flags)
+    if type(flags) ~= "number" then return false end
+    return math.floor(flags / OBJECT_TYPE_PET) % 2 == 1
+end
+Life.IsPetFlags = isPetFlags
+
 function Life:NormalizeCLEU(subevent, sourceGUID, sourceName, sourceFlags, sourceRaidFlags,
                             destGUID, destName, destFlags, destRaidFlags, a1, a2, a3, a4)
     local ev = {
@@ -966,6 +1043,8 @@ function Life:NormalizeCLEU(subevent, sourceGUID, sourceName, sourceFlags, sourc
     local pg = Life.env.UnitGUID("player")
     ev.destIsPlayer   = (pg ~= nil and destGUID == pg)
     ev.sourceIsPlayer = (pg ~= nil and sourceGUID == pg)
+    ev.sourceIsPet    = isPetFlags(sourceFlags)
+    ev.destIsPet      = isPetFlags(destFlags)
     return ev
 end
 
@@ -976,6 +1055,7 @@ function Life:Deliver(ev)
     for i = 1, #Life.engaged do
         acted = acted + Life.engaged[i]:Route(ev)
     end
+    for _, rt in pairs(Life.zoneArmed) do acted = acted + rt:Route(ev) end
     if ev.on and ev.on:sub(1, 6) ~= "SPELL_" and ev.on ~= "UNIT_DIED" then return acted end
     Addon:FireCombatHooks(ev.on, ev.sourceGUID, ev.sourceId, ev.destGUID, ev.destId,
                           ev.spellId, ev.spellName)
@@ -1014,10 +1094,22 @@ function Life:OnEvent(event, ...)
         -- the cascade, so the engine core stays free of comms.
         local isLogin, isReload = ...
         Life.enteredWorldAt = S():Now()
+        Life:ArmZones()                     -- W4d: zoning in arms the trash module
         Addon:FireEngineEvent("ENGINE_LOGIN", isLogin and true or false, isReload and true or false)
         return true
+    elseif event == "NAME_PLATE_UNIT_ADDED" then
+        -- Hot event: skip the GUID parse entirely when nothing is listening.
+        if #Life.engaged == 0 and next(Life.zoneArmed) == nil then return nil end
+        local unit = ...
+        local cid = Life:CreatureIdOfUnit(unit)
+        if not cid then return nil, "not_a_creature" end
+        return Life:Deliver({ on = "nameplate", unit = unit, creatureId = cid,
+                              sourceId = cid, sourceGUID = Life.env.UnitGUID(unit) })
+    elseif event == "NAME_PLATE_UNIT_REMOVED" then
+        return nil
     elseif event == "ZONE_CHANGED_NEW_AREA" or event == "LOADING_SCREEN_DISABLED" then
         Life.zoneAt = S():Now()
+        Life:ArmZones()                     -- W4d: (dis)arm this instance's trash module
         Addon:FireEngineEvent("ENGINE_ZONE")
         return true
     end
@@ -1029,6 +1121,7 @@ end
 -- then flushes the scheduler and clears every lockout timestamp.
 function Life:Disable()
     for i = #Life.engaged, 1, -1 do Life:EndCombat(Life.engaged[i], true, "disabled") end
+    Life:DisarmZones()
     if Addon.Timers then Addon.Timers.StopAll("disabled") end
     S():Flush()
     for k in pairs(Life.lockouts) do Life.lockouts[k] = nil end

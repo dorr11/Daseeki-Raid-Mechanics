@@ -49,6 +49,13 @@ mod_fourhorsemen_tracker.lua
 mod_gothik_waves.lua
 mod_razuvious_understudy.lua
 thaddius.lua
+
+# ── 2.0 encounter data (wave 4) ────────────────────────────────────────────────
+# Declarative encounter definitions in the core_api grammar. Loaded AFTER the
+# special modules so the `legacy = { raidId, bossId }` seam in each definition sits
+# next to the modules it attaches to; the registry itself only needs core_api.
+enc_naxxramas.lua
+
 soundpicker.lua
 options.lua
 slash.lua
@@ -58,9 +65,13 @@ slash.lua
 # encounters.lua  DELETED — replaced by the declarative registry in core_api.lua.
 #
 # ── PARKED, still on disk, deliberately NOT loaded ─────────────────────────────
-# data_naxxramas.lua / data_bwl.lua / data_aq40.lua
+# data_bwl.lua / data_aq40.lua
 #   The 1.x flat mechanic model. W4 regenerates all eight zones in the new
 #   declarative grammar; these stay on disk until then purely as cross-check input
 #   for the spell IDs already verified against Drew's combat logs. Re-adding one to
 #   the load list is refused at runtime by Addon:RegisterRaid (core_boot.lua) and
 #   is a harness failure (GATE RETIRE).
+#
+# data_naxxramas.lua  DELETED in W4d — enc_naxxramas.lua replaces it. Its values
+#   were diffed against the spec first; every disagreement is in the wave report and
+#   the CHANGELOG, and the spec won each one.

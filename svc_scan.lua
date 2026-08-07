@@ -490,7 +490,18 @@ function Scan.Dispatch(encId, row, ev)
         unit = row.unit,
     }
     local function report(name, targetUnit, bossUnit, elapsed)
-        if not name then return end
+        -- W4d: TARGET LOSS is a result too. Sapphiron's air phase has no event on Era;
+        -- the only tell is that the boss stops having a target of its own, so a scan
+        -- row may declare `reportLoss` and consume the loss as an ordinary trigger
+        -- (`where = { lost = true }`). Every other scanner is unaffected: without the
+        -- flag a nil target still reports nothing, exactly as before.
+        if not name then
+            if row.reportLoss and rt and (rt.engaged or rt.isZone) then
+                rt:Route({ on = "targetChanged", key = row.key, lost = true,
+                           sourceUnit = bossUnit, elapsed = elapsed })
+            end
+            return
+        end
         if rt and rt.engaged then
             rt:Route({ on = "targetChanged", key = row.key, destName = name,
                        unit = targetUnit, sourceUnit = bossUnit, elapsed = elapsed })
