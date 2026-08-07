@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 3 (raid sync, recovery, interop — internal)
+- Raid Mechanics now talks to other people running it. Pull timers, break timers and
+  "the fight has started / the fight is over" all travel across the raid on Daseeki's
+  own channel, so one person starting a pull countdown starts everyone's.
+- A pull only counts once three different people's clients agree it happened, so a
+  stray message can never start your timers in the middle of a trash pack. The one
+  exception is a fight ENDING, which only needs one report — on Classic the game gives
+  everyone too little to work with otherwise, and a fight that ends late is worse than
+  one that ends on somebody else's word.
+- Reloading mid-fight no longer costs you the fight. On coming back, Raid Mechanics
+  quietly asks up to three raiders — highest version first — where the fight is up to,
+  and rebuilds it: how long you have been pulled for, which phase you are in, and every
+  bar that was running, restored to the right position. Ability WINDOWS survive the
+  rebuild too, so a "40-60 seconds" bar comes back as a window and not a fake exact
+  time. It asks at 7, 10 and 13 seconds and stops the moment somebody answers, and
+  while it is working it will not mistake the recovery for a fresh pull.
+- Break timers survive a reload or a disconnect, and are recovered from other raiders
+  if you log back in during one. They announce at 10, 5, 2 and 1 minutes and tell you
+  what time the break is over.
+- If people around you are running a newer version, you are told once — quietly, in
+  chat, with a reminder next time you log in. **Raid Mechanics will never turn itself
+  off** because of what somebody else's client reports. Boss mods traditionally can and
+  do; that is not a thing that is going to happen to you in the middle of a raid night.
+- DBM users' pull and break timers now show up on YOUR bars, attributed to whoever
+  started them, without you needing DBM installed. This is strictly one-way: Raid
+  Mechanics listens on DBM's channel and is structurally incapable of transmitting on
+  it — the send path physically refuses that prefix in two separate places, and the
+  test suite proves both.
+- Internal: the pull timer moved out of the wave-1 scaffolding into the real sync layer
+  and picked up the rules it was missing (a pull under 3 seconds is now refused instead
+  of silently stretched to 3, a pull is refused mid-fight and in battlegrounds, and
+  engaging a boss cancels a running one). `/drm pull` is unchanged.
+
 ## Unreleased — 2.0.0 rebuild, wave 1 (engine core, internal)
 - Raid Mechanics has a new engine underneath it. The old one could only watch for a
   boss the moment you personally entered combat with it, kept its timings on the

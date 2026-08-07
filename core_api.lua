@@ -59,6 +59,7 @@ API.EVENTS = {
     "ENGINE_STAGE",         -- (encId, stage, totality)
     "ENGINE_WIPE_VERDICT",  -- (encId, verdict, confirming)
     "ENGINE_LOCKOUT",       -- (encId, reason, remaining)
+    "ENGINE_LOGIN",         -- (isLogin, isReload)        -> W3 reload-recovery cascade (§9.1)
     -- timers
     "TIMER_START", "TIMER_UPDATE", "TIMER_STOP", "TIMER_PAUSE", "TIMER_RESUME",
     "TIMER_COUNTDOWN",      -- (barId, remainingCount, timer)
@@ -68,7 +69,10 @@ API.EVENTS = {
     -- services other waves own
     "SCAN_REQUEST",         -- (encId, scanDecl, ctx)     -> W2 target scanners
     "ICON_REQUEST",         -- (encId, iconDecl, ctx)     -> W2 raid icons
-    "SYNC_SEND",            -- (subPrefix, ...)           -> W3 addon channel
+    "SYNC_SEND",            -- (subPrefix, ...)           -> W3 addon channel, outbound
+    "SYNC_RECV",            -- (subPrefix, sender, ...)   -> W3 addon channel, inbound
+    "ENGINE_PULL",          -- (seconds, source, target)  -> W3 pull timer (§11.4)
+    "ENGINE_BREAK",         -- (seconds, source)          -> W3 break timer (§11.4)
     "COUNTER",              -- (encId, key, value, delta)
     "STATE",                -- (encId, key, from, to)
     "TELEMETRY",            -- (entry)
