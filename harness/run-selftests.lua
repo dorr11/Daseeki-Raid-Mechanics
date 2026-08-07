@@ -8148,6 +8148,13 @@ do
            "#15 the mixed-version expectation is stated for the user")
         ck(cl:lower():find("your settings are kept", 1, true) ~= nil,
            "…and so is the settings-continuity promise")
+        -- #21: downgrade rehearsed OR the changelog states it is unsupported. It is
+        -- the latter, and the statement has to be TRUE — which it is because
+        -- Addon:MigrateDB refuses to touch a db stamped newer than the build reading
+        -- it (asserted as CASE 4 of the W5-DBFIX gate).
+        ck(cl:lower():find("is not supported", 1, true) ~= nil
+           and cl:lower():find("1.3.0", 1, true) ~= nil,
+           "#21 the changelog states that downgrading is unsupported")
     end
 
     -- Packaging: the harness and dev trees never ship.

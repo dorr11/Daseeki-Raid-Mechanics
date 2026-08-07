@@ -72,6 +72,13 @@ Three things to know:
   confirmation to work between you. Mixed versions degrade quietly rather than erroring,
   and Raid Mechanics will never disable itself for being out of date.
 
+**Going back to 1.3.0 is not supported.** Your settings file is not damaged by the
+attempt — 2.0.0 stamps a version on it, and any older build that reads a file stamped
+newer than itself leaves it completely alone rather than converting or clearing it — but
+1.3.0 has no idea what the 2.0 settings mean, so it would run on its own defaults for
+everything the rebuild added. If you want to go back, keep a copy of your
+`DaseekiRaidMechanicsDB` saved-variables file first.
+
 ### Also in 2.0.0
 
 - New options pages for the timer bars (size, spacing, growth direction, sort order per
