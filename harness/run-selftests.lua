@@ -2138,6 +2138,10 @@ do  -- §7.3/§12 spam-table pruning
     ck(Sync.Prune() >= 1, "the housekeeping pass drops entries older than 8 s (§12)")
     ck(Sync.corroborate["C:w3boss"] == nil, "…including a stale partial corroboration")
     ck(next(Sync.spam) == nil, "…and the sync-spam table with it")
+end
+endgate()
+
+----------------------------------------------------------------------
 -- WAVE 2 — the fake world grows the fields the services read.
 ----------------------------------------------------------------------
 local Bars, BM, Warn, Scan, Era, Public =
@@ -2534,6 +2538,10 @@ do  -- THE MUTATION GATE: restoring the reference behaviour must redden somethin
        "core_sync.lua contains NO disable call at all — adding one reddens this gate")
     ck(src and src:find("SELF_DISABLE = false", 1, true) ~= nil,
        "…and the veto is stated as CODE, not only as a comment")
+end
+endgate()
+
+----------------------------------------------------------------------
 -- GATE WARN — §5.1 the tiers, §5.2 targeting, §5.4 filters, §5.5 voice
 ----------------------------------------------------------------------
 gate("WARN  §5.1/§5.2/§5.5 warning tiers")
@@ -2857,6 +2865,10 @@ do  -- the W3 seam added to W1's lifecycle
     eq(fired, 1, "PLAYER_ENTERING_WORLD publishes ENGINE_LOGIN (the one seam W3 added to W1)")
     ck(Life:IsRecovering(), "…and the whole cascade hangs off it, with no comms in the engine core")
     Addon:UnregisterEngineCallback("ENGINE_LOGIN", cb)
+end
+endgate()
+
+----------------------------------------------------------------------
 -- GATE SCAN — §5.3 the three scanner shapes on the fake clock
 ----------------------------------------------------------------------
 gate("SCAN  §5.3 the three target scanners")
@@ -3144,6 +3156,10 @@ do  -- §9.2 break-timer persistence across a reload
     eq(select(2, Sync.RestorePersistedBreak()), "expired",
        "…while an EXPIRED record is discarded rather than restarted")
     eq(Addon.db.breakTimer, nil, "…and cleared from disk")
+end
+endgate()
+
+----------------------------------------------------------------------
 -- GATE ERA — §6.1 range, §8.6 health, §5.4 the interrupt/dispel/CC gates
 ----------------------------------------------------------------------
 gate("ERA  §6.1/§8.6/§5.4 Era services")
@@ -3531,6 +3547,10 @@ do
        "…and both names resolve at runtime")
     ck(type(Addon.StartBreakTimer) == "function" and type(Addon.CancelBreakTimer) == "function",
        "…and the break timer the spec pairs them with exists too (§11.4)")
+end
+endgate()
+
+----------------------------------------------------------------------
 -- GATE PUB — §4.5 / §11.8 the public broadcast contract
 ----------------------------------------------------------------------
 gate("PUB  §4.5/§11.8 the 18-field public contract")
