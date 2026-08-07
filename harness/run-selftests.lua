@@ -71,6 +71,14 @@
 --                          timer value sets and its roster-relayed stomach probe,
 --                          Viscidus's freeze/shatter machine and hit rates, Ouro's
 --                          submerge cycle, and the reflect miss-type path
+--   BWLZG/-DRIVE  §4/§5    Blackwing Lair + Zul'Gurub (wave 4b), incl. Chromaggus's
+--                          five-school vulnerability tracker across ALL THREE evidence
+--                          paths (with the empty-sweep refusal asserted), his two
+--                          manually-stopped pull breath bars and per-breath cooldowns,
+--                          Razorgore's phase-gated kill detection, Vael's RP pull
+--                          countdown and scheduled run-out, Nefarian's poll-driven
+--                          phase machine and class calls, and Hakkar's max-health
+--                          hard-mode heuristic in both directions
 --
 -- Usage:  lua5.1 run-selftests.lua [RM_DIR]   (exit 0 = ALL PASS)
 -- =====================================================================
@@ -149,10 +157,10 @@ local ALL_LUA = {
     "mod_fourhorsemen_tracker.lua", "mod_gothik_waves.lua",
     "mod_razuvious_understudy.lua", "thaddius.lua",
     "soundpicker.lua", "options.lua", "slash.lua",
-    -- parked but must still COMPILE, so a stale syntax error can never surprise W4
-    "data_naxxramas.lua", "data_bwl.lua", "data_aq40.lua",
-    -- W4c encounter data
-    "enc_aq20.lua", "enc_aq40.lua",
+    -- W4b: the parked list is EMPTY. data_bwl.lua was the last 1.x data file on disk
+    -- and this wave consumed it; all three are asserted DELETED in GATE RETIRE.
+    -- W4c/W4b encounter data
+    "enc_aq20.lua", "enc_aq40.lua", "enc_bwl.lua", "enc_zg.lua",
 }
 
 gate("0  toc parse")
@@ -193,9 +201,10 @@ local FORBIDDEN = {
     "bigwigs", "elvui", "bartender4", "dominos",
 }
 local CHANGE_SURFACE = {
-    -- wave 4d / 4c authored these; all three are clean-room from the encounters spec.
+    -- wave 4d / 4c / 4b authored these; all five are clean-room from the encounters spec.
     ["enc_naxxramas.lua"] = true,
     ["enc_aq20.lua"] = true, ["enc_aq40.lua"] = true,
+    ["enc_bwl.lua"] = true, ["enc_zg.lua"] = true,
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
     ["core_boot.lua"] = true, [TOC_FILE] = true,
@@ -262,9 +271,14 @@ endgate()
 -- W4c: data_aq40.lua joins the DELETED list on the same terms — enc_aq40.lua replaced
 -- it, its values were diffed against the spec first, and the spec won. AQ20 never had
 -- a 1.x data file, so there is nothing to retire on that side.
+-- W4b: data_bwl.lua joins the DELETED list, and the parked list is now EMPTY. It was
+-- the LAST 1.x data file on disk; it was diffed against §4 row by row, the spec won
+-- every disagreement, one log-verified mechanic the spec lacks entirely was carried
+-- over default-off, and everything else is in the wave report. Zul'Gurub never had a
+-- 1.x data file, so there is nothing to retire on that side.
 local RETIRED_PATHS   = { "engine.lua", "encounters.lua", "data_naxxramas.lua",
-                          "data_aq40.lua" }
-local PARKED_OUT_OF_TOC = { "data_bwl.lua" }
+                          "data_aq40.lua", "data_bwl.lua" }
+local PARKED_OUT_OF_TOC = {}
 
 gate("RETIRE  demolition holds")
 for _, rel in ipairs(RETIRED_PATHS) do
@@ -288,6 +302,8 @@ end
 ck(TOC_SET["enc_naxxramas.lua"], "enc_naxxramas.lua IS in the load list (wave 4d ships the data)")
 ck(TOC_SET["enc_aq20.lua"], "enc_aq20.lua IS in the load list (wave 4c ships AQ20)")
 ck(TOC_SET["enc_aq40.lua"], "enc_aq40.lua IS in the load list (wave 4c ships AQ40)")
+ck(TOC_SET["enc_bwl.lua"], "enc_bwl.lua IS in the load list (wave 4b ships BWL)")
+ck(TOC_SET["enc_zg.lua"], "enc_zg.lua IS in the load list (wave 4b ships ZG)")
 do  -- wave 2 stacks ON the wave-1 seam, and the toc must express that too
     local pos = {}
     for i, rel in ipairs(TOC_LUA) do pos[rel] = i end
@@ -455,6 +471,11 @@ local AQ20_CHUNK = loadfile(P("enc_aq20.lua"))
 if not AQ20_CHUNK then realprint("  FAIL  loadfile enc_aq20.lua"); os.exit(2) end
 local AQ40_CHUNK = loadfile(P("enc_aq40.lua"))
 if not AQ40_CHUNK then realprint("  FAIL  loadfile enc_aq40.lua"); os.exit(2) end
+-- WAVE 4b: Blackwing Lair and Zul'Gurub.
+local BWL_CHUNK = loadfile(P("enc_bwl.lua"))
+if not BWL_CHUNK then realprint("  FAIL  loadfile enc_bwl.lua"); os.exit(2) end
+local ZG_CHUNK = loadfile(P("enc_zg.lua"))
+if not ZG_CHUNK then realprint("  FAIL  loadfile enc_zg.lua"); os.exit(2) end
 
 _G.DaseekiRaidMechanicsDB = {}
 Addon:Init()
@@ -2262,6 +2283,16 @@ Scan:SetEnv({
         return st == 3, st
     end,
     IsGroupMember = function(u) return (unit(u) or {}).player and true or false end,
+    -- W4b: the unit-fact sweep and the encounter-in-progress poll read the world
+    -- through Scan.env like everything else, so both run on the fake world.
+    UnitHealthMax = function(u) return (unit(u) or {}).hpmax end,
+    UnitBuff = function(u, i)
+        local buffs = (unit(u) or {}).buffs
+        local id = buffs and buffs[i]
+        if not id then return nil end
+        return "buff" .. tostring(id), nil, nil, nil, nil, nil, nil, nil, nil, id
+    end,
+    IsEncounterInProgress = function() return W.encounterInProgress end,
 })
 
 Warn:SetEnv({
@@ -5967,8 +5998,663 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- WAVE 4b — BLACKWING LAIR + ZUL'GURUB ENCOUNTER DATA
+--
+-- Every assertion below names the DBM_ERA_ENCOUNTERS_BEHAVIOR_SPEC.md §4 / §5 row it
+-- proves, and every one runs the SHIPPING data through the SHIPPING engine on the
+-- injected clock and the injected world.
+----------------------------------------------------------------------
+local function loadBWLZG()
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    local ok1, e1 = pcall(BWL_CHUNK, ADDON_NAME, Addon)
+    local ok2, e2 = pcall(ZG_CHUNK, ADDON_NAME, Addon)
+    return ok1 and ok2, (not ok1 and e1) or (not ok2 and e2) or nil
+end
+
+gate("BWLZG  §4/§5 encounter data: registration, keys, the options tree")
+do
+    local okc, err = loadBWLZG()
+    ck(okc, "enc_bwl.lua + enc_zg.lua EXECUTE against the shipping grammar" ..
+            (okc and "" or (" -> " .. tostring(err))))
+
+    local EXPECTED = {
+        -- §4 Blackwing Lair (zone 469)
+        { id = "bwl:razorgore",   cid = 12435, eid = 610, raid = "bwl", boss = "razorgore" },
+        { id = "bwl:vaelastrasz", cid = 13020, eid = 611, raid = "bwl", boss = "vaelastrasz" },
+        { id = "bwl:broodlord",   cid = 12017, eid = 612, raid = "bwl", boss = "broodlord" },
+        { id = "bwl:firemaw",     cid = 11983, eid = 613, raid = "bwl", boss = "firemaw" },
+        { id = "bwl:ebonroc",     cid = 14601, eid = 614, raid = "bwl", boss = "ebonroc" },
+        { id = "bwl:flamegor",    cid = 11981, eid = 615, raid = "bwl", boss = "flamegor" },
+        { id = "bwl:chromaggus",  cid = 14020, eid = 616, raid = "bwl", boss = "chromaggus" },
+        { id = "bwl:nefarian",    cid = 11583, eid = 617, raid = "bwl", boss = "nefarian" },
+        -- §5 Zul'Gurub (zone 309)
+        { id = "zg:venoxis",      cid = 14507, eid = 784, raid = "zg", boss = "venoxis" },
+        { id = "zg:jeklik",       cid = 14517, eid = 785, raid = "zg", boss = "jeklik" },
+        { id = "zg:marli",        cid = 14510, eid = 786, raid = "zg", boss = "marli" },
+        { id = "zg:mandokir",     cid = 11382, eid = 787, raid = "zg", boss = "mandokir" },
+        { id = "zg:edgeofmadness", cid = 15083, eid = 788, raid = "zg", boss = "edgeofmadness" },
+        { id = "zg:thekal",       cid = 14509, eid = 789, raid = "zg", boss = "thekal" },
+        { id = "zg:gahzranka",    cid = 15114, eid = 790, raid = "zg", boss = "gahzranka" },
+        { id = "zg:arlokk",       cid = 14515, eid = 791, raid = "zg", boss = "arlokk" },
+        { id = "zg:jindo",        cid = 11380, eid = 792, raid = "zg", boss = "jindo" },
+        { id = "zg:hakkar",       cid = 14834, eid = 793, raid = "zg", boss = "hakkar" },
+    }
+    for _, e in ipairs(EXPECTED) do
+        local enc = Addon:GetEncounter(e.id)
+        ck(enc ~= nil, e.id .. " is registered")
+        if enc then
+            local errs = API.Validate(enc)
+            eq(#errs, 0, "…with zero validation errors" ..
+               (#errs > 0 and (": " .. table.concat(errs, "; ")) or ""))
+            ck(Addon.encByCreature[e.cid] ~= nil, "…indexed by creature " .. e.cid)
+            ck(Addon.encByEncounterId[e.eid] ~= nil, "…and by encounter id " .. e.eid)
+            ck(enc.legacy and enc.legacy.raidId == e.raid and enc.legacy.bossId == e.boss,
+               "…carrying the legacy seam " .. e.raid .. ":" .. e.boss)
+            local firstRow = enc.timers[1] or enc.warnings[1]
+            if firstRow then
+                eq(API.OptionKey(enc.id, firstRow.key),
+                   Addon:MechKey(e.raid, e.boss, firstRow.key),
+                   "…and OptionKey == MechKey for its rows (one SavedVariables entry, not two)")
+            end
+        end
+    end
+    eq(#Addon.encounters, #EXPECTED + 1, "…19 registrations in all (18 bosses + one trash module)")
+
+    do  -- §4.9 the zone-wide BWL trash module (Zul'Gurub's spec has none)
+        local trash = Addon:GetEncounter("bwl:trash")
+        ck(trash ~= nil and trash.detect.mode == "zone", "bwl:trash registers as a ZONE module")
+        ck(trash and Addon.encByZone[469] ~= nil, "…indexed against instance 469")
+        ck(Addon:GetEncounter("zg:trash") == nil,
+           "…and Zul'Gurub declares NO trash module, because §5 describes none")
+        eq(trash.rowsByKey.flamestrike.nameplate, true,
+           "§4.9 Flamestrike runs ONE per-GUID nameplate bar…")
+        eq(trash.rowsByKey.flamestrike.stop.creatureId, 12468, "…cancelled when that Seether dies")
+        eq(trash.rowsByKey.trashvuln.default, false,
+           "§4.9 the drakonid vulnerability ANNOUNCE ships OFF…")
+        eq(trash.rowsByKey.trashvulnicon.default, true, "…while its nameplate icon ships ON")
+        eq(trash.rowsByKey.trashvulnicon.on.antispamBy, "destGUID",
+           "…throttled PER MOB, not per pull")
+        ck(trash.rowsByKey["demonportal"] == nil,
+           "§4.9 Demon Portal is NOT implemented (the spec calls its data insufficient)")
+    end
+
+    do  -- ship-off defaults carried from the spec verbatim
+        local OFF = {
+            { "bwl:razorgore",  "losvolley" },    -- §4.1 "ships OFF"
+            { "bwl:firemaw",    "shadowflame" },  -- §4.4 "timer off by default"
+            { "bwl:ebonroc",    "shadowflame" },  -- §4.5 "off by default"
+            { "bwl:flamegor",   "shadowflame" },  -- §4.6 "off by default"
+            { "bwl:chromaggus", "broodred" },     -- §4.7 "off by default"
+            { "bwl:nefarian",   "shadowflame" },  -- §4.8 "off by default"
+            { "zg:hakkar",      "jeklikon" },     -- §5.10 "off by default (spammy)"
+        }
+        for _, p in ipairs(OFF) do
+            local enc = Addon:GetEncounter(p[1])
+            local row = enc and enc.rowsByKey[p[2]]
+            ck(row and row.default == false, p[1] .. ":" .. p[2] .. " SHIPS OFF (spec default)")
+        end
+        eq(Addon:GetEncounter("bwl:vaelastrasz").rowsByKey.adrenalineicons.default, true,
+           "§4.2 the Burning Adrenaline raid icons ship ON")
+        eq(Addon:GetEncounter("bwl:chromaggus").rowsByKey.vulnnameplate.default, true,
+           "§4.7 the vulnerability nameplate icon ships ON")
+    end
+
+    do  -- §5.5 EDGE OF MADNESS: the spec flags its own ids unverified, so EVERY row is off
+        local eom = Addon:GetEncounter("zg:edgeofmadness")
+        local live, n = {}, 0
+        for _, list in ipairs({ eom.timers, eom.warnings }) do
+            for _, row in ipairs(list) do
+                n = n + 1
+                if row.default ~= false then live[#live + 1] = row.key end
+            end
+        end
+        eq(n, 10, "EDGE OF MADNESS declares all ten of §5.5's rows")
+        eq(#live, 0, "…and EVERY ONE ships OFF — the spec flags its ids unverified"
+           .. (#live > 0 and (" (live: " .. table.concat(live, ", ") .. ")") or ""))
+        local src = readFile(P("enc_zg.lua")) or ""
+        local notes = 0
+        for _ in src:gmatch("spec authors flag these ids unverified") do notes = notes + 1 end
+        eq(notes, 10, "…each carrying the in-data provenance note, one per row")
+    end
+
+    do  -- 1.x SavedVariables continuity: the keys a player already toggled in BWL
+        local KEPT = {
+            razorgore   = { "adds", "destroyegg", "conflagration", "fireballvolley" },
+            vaelastrasz = { "adrenalinecd", "adrenaline", "flamebreath", "firenova" },
+            broodlord   = { "mortalstrike", "blastwave", "knockaway" },
+            firemaw     = { "flamebuffet", "shadowflame", "wingbuffet" },
+            ebonroc     = { "shadowofebonroc", "shadowflame", "wingbuffet" },
+            flamegor    = { "frenzy", "shadowflame", "wingbuffet" },
+            chromaggus  = { "breath1", "breath2", "frenzy", "vulnshift", "enrage" },
+            nefarian    = { "shadowflame", "bellowingroar", "veilofshadow", "shadowcommand",
+                            "landing", "phase3",
+                            "classcall_druid", "classcall_hunter", "classcall_mage",
+                            "classcall_paladin", "classcall_priest", "classcall_rogue",
+                            "classcall_shaman", "classcall_warlock", "classcall_warrior" },
+        }
+        local missing = {}
+        for boss, keys in pairs(KEPT) do
+            local enc = Addon:GetEncounter("bwl:" .. boss)
+            for _, k in ipairs(keys) do
+                if not (enc and enc.rowsByKey[k]) then missing[#missing + 1] = boss .. ":" .. k end
+            end
+        end
+        eq(#missing, 0, "every 1.x bwl mechanic key the spec still has a row for is PRESERVED"
+           .. (#missing > 0 and (" (missing " .. table.concat(missing, ", ") .. ")") or ""))
+        eq(Addon:MechKey("bwl", "chromaggus", "vulnshift"), "bwl:chromaggus:vulnshift",
+           "…at the exact SavedVariables key the 1.x options tree wrote")
+        -- the ADDITIVE carry-over: log-verified in our own data, absent from the spec
+        local fn = Addon:GetEncounter("bwl:vaelastrasz").rowsByKey.firenova
+        ck(fn and fn.default == false and fn.trigger.spellId == 23462,
+           "…and the one log-verified mechanic §4.2 lacks (Fire Nova 23462) is carried OFF")
+    end
+
+    do  -- the options projection: two more raids in the tree options.lua reads
+        API.PublishOptionsTree()
+        local rb, rz = Addon:GetRaid("bwl"), Addon:GetRaid("zg")
+        ck(rb ~= nil and rz ~= nil, "both W4b zones PROJECT into the options tree")
+        eq(rb and rb.size, 40, "…Blackwing Lair as a 40-man raid")
+        eq(rz and rz.size, 20, "…Zul'Gurub as a 20-man raid")
+        eq(rb and #rb.bosses, 9, "…with nine BWL entries (8 bosses + trash)")
+        eq(rz and #rz.bosses, 10, "…and ten ZG entries (no trash module in §5)")
+        ck((rb.order or 999) < (rz.order or 999), "…ordered Blackwing Lair before Zul'Gurub")
+        local chrom = Addon:GetBoss("bwl", "chromaggus")
+        local sawRestyle = false
+        for _, m in ipairs(chrom and chrom.mechanics or {}) do
+            if m.id == "vulnstyle" then sawRestyle = true end
+        end
+        ck(sawRestyle, "…and a RESTYLE is a mechanic row like any other (the vulnerability bar)")
+        ck(Addon:GetBossByNpcID(14020) ~= nil, "…while the npc index resolves Chromaggus")
+    end
+
+    do  -- §4.7 the vulnerability system, as DATA rather than as code
+        local c = Addon:GetEncounter("bwl:chromaggus")
+        local r = c.rowsByKey.vulnstyle
+        ck(r and r.timer == "vulnshift", "CHROMAGGUS: the restyle row re-labels the vuln BAR")
+        eq(r and #r.variants, 10,
+           "…with five schools x TWO evidence paths (combat-log aura AND the buff sweep)")
+        local byPath = { SPELL_AURA_APPLIED = 0, aura = 0 }
+        local schools = {}
+        for _, v in ipairs(r.variants) do
+            byPath[v.on] = (byPath[v.on] or 0) + 1
+            schools[v.style.text] = true
+        end
+        eq(byPath.SPELL_AURA_APPLIED, 5, "…five off the combat log…")
+        eq(byPath.aura, 5, "…and five off the unit-buff sweep")
+        local nSchools = 0
+        for _ in pairs(schools) do nSchools = nSchools + 1 end
+        eq(nSchools, 5, "…naming exactly five schools, and no Holy")
+        local scan = c.rowsByKey.vulnscan
+        ck(scan and scan.type == "unit" and #scan.auras == 5,
+           "…and the sweep is a UNIT scan over the five vulnerability auras")
+        -- NOTHING may clear the school: no row anywhere reacts to the aura being GONE
+        local clears = 0
+        for _, list in ipairs({ c.timers, c.warnings, c.restyles }) do
+            for _, row in ipairs(list) do
+                for _, tr in ipairs({ row.trigger, row.start, row.stop, row.restart }) do
+                    if type(tr) == "table" and tr.on == "SPELL_AURA_REMOVED" then
+                        local ids = type(tr.spellId) == "table" and tr.spellId or { tr.spellId }
+                        for _, id in ipairs(ids) do
+                            if id == 22277 or id == 22278 or id == 22279
+                               or id == 22280 or id == 22281 then clears = clears + 1 end
+                        end
+                    end
+                end
+            end
+        end
+        eq(clears, 0,
+           "…and NOTHING clears the school on an aura-removed (LESSON CLASS 4: absent evidence is not absence)")
+        -- the two pull breath bars, and the counter that tells them apart
+        eq(c.rowsByKey.breath1.stop.on, "SPELL_CAST_START",
+           "…the FIRST breath bar is stopped by hand when a breath lands")
+        eq(c.rowsByKey.breath2.stop.counter.min, 1,
+           "…and the SECOND only once one breath has already gone by")
+        eq(c.rowsByKey.breathcd.identBy, "spellId",
+           "…while the recurring bar is ONE PER BREATH SPELL")
+    end
+end
+endgate()
+
+gate("BWLZG-DRIVE  §4/§5 per-encounter behaviour through the real engine")
+do
+    loadBWLZG()
+    Addon:SetEventRecording(true)
+    Addon._suppressLegacyAlerts = true
+    Addon.RoleResolver  = function() return true end
+    Addon.ClassResolver = function() return "WARLOCK" end
+
+    -- ── §4.1 Razorgore: eggs, phases, and the kill that is really a wipe ──────
+    do
+        local rt = engage("bwl:razorgore", 12435, "Intruders have breached the hatchery!")
+        ck(rt ~= nil, "RAZORGORE: engages on the hatchery yell (matched around its line break)")
+        near(bar(rt, "adds").total, 47, 0.01, "…one 47 s add-wave bar at pull")
+        Addon:ClearEventLog()
+        for _ = 1, 3 do
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 19873, sourceId = 12435 })
+        end
+        ck(sawWarn("WARN_ANNOUNCE", "Eggs destroyed 3/30"),
+           "…and EVERY egg is announced with its count (Era, not retail's every-third)")
+        eq(rt.stage, 1, "…still phase 1 while the eggs burn")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 23040, sourceId = 12435 })
+        eq(rt.stage, 2, "…the control break IS phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2"), "…announced")
+        -- the kill-stage gate, both ways round
+        local rt1 = engage("bwl:razorgore", 12435, "Intruders have breached the hatchery!")
+        Life:OnUnitDied(12435)
+        local rep1 = rt1.report
+        ck(rep1 and rep1.wiped == true,
+           "…dying in PHASE 1 is a WIPE, not a kill (the orb was dropped)")
+        local rt2 = engage("bwl:razorgore", 12435, "Intruders have breached the hatchery!")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 23040, sourceId = 12435 })
+        Life:OnUnitDied(12435)
+        ck(rt2.report and rt2.report.wiped == false, "…and dying in PHASE 2 is the kill")
+        eq(Addon:GetEncounter("bwl:razorgore").combat.noEncounterEndKill, true,
+           "…with Blizzard's ENCOUNTER_END refused outright for this fight")
+    end
+
+    -- ── §4.2 Vaelastrasz: the RP countdown and the scheduled run-out ──────────
+    do
+        resetLife()
+        W.instanceID = 469
+        Addon:CancelPullTimer("test")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Too late, friends! Nefarius' corruption has taken hold...")
+        local pulled
+        for _, e in ipairs(Addon:GetEventLog()) do if e.event == "ENGINE_PULL" then pulled = e end end
+        ck(pulled ~= nil and math.abs((tonumber(pulled[1]) or 0) - 43.5) < 0.01,
+           "VAEL: the RP yell starts a 43.5 s PULL countdown without engaging anything")
+        ck(not Life:AnyEngaged(), "…and nothing is engaged by it")
+        Addon:CancelPullTimer("test")
+
+        local rt = engage("bwl:vaelastrasz", 13020)
+        local mn, mx = barWindow(rt, "adrenalinecd")
+        near(mn, 16.1, 0.01, "…Burning Adrenaline cycles from 16.1…")
+        near(mx, 17.8, 0.01, "…to 17.8")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 18173, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Burning Adrenaline on Bob"), "…a victim is named to the raid")
+        near(bar(rt, "adrenalinebar", "Bob") or (rt.timers.adrenalinebar:Get("Bob") or {}).total, 20, 0.01,
+             "…with a 20 s bar of their own")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 18173, destIsPlayer = true,
+                       destName = "Drew" })
+        ck(sawWarn("WARN_SPECIAL", "BURNING ADRENALINE"), "…and YOU get the death sentence")
+        Addon:ClearEventLog()
+        advance(15.1)
+        ck(sawWarn("WARN_SPECIAL", "RUN OUT"),
+           "…with the run-out call scheduled 15 s in, 5 s before it kills you")
+        -- and the cancel path
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 18173, destIsPlayer = true,
+                       destName = "Drew" })
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 18173, destIsPlayer = true,
+                       destName = "Drew" })
+        Addon:ClearEventLog()
+        advance(16)
+        ck(not sawWarn("WARN_SPECIAL", "RUN OUT"),
+           "…and an early removal CANCELS the scheduled run-out")
+    end
+
+    -- ── §4.4 Firemaw: even stacks only, from four up ──────────────────────────
+    do
+        local rt = engage("bwl:firemaw", 11983)
+        local mn, mx = barWindow(rt, "wingbuffet")
+        near(mn, 30.6, 0.01, "FIREMAW: Wing Buffet's PULL window opens at 30.6…")
+        near(mx, 40.4, 0.01, "…and closes at 40.4")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 23339, sourceId = 11983 })
+        local rmn, rmx = barWindow(rt, "wingbuffet")
+        near(rmn, 31.6, 0.01, "…then the RECURRING window is 31.6…")
+        near(rmx, 42.1, 0.01, "…to 42.1")
+        Addon:ClearEventLog()
+        for _, n in ipairs({ 3, 4, 5, 6 }) do
+            Life:Deliver({ on = "SPELL_AURA_APPLIED_DOSE", spellId = 23341,
+                           destIsPlayer = true, destName = "Drew", amount = n })
+        end
+        ck(not sawWarn("WARN_ANNOUNCE", "Flame Buffet (3)"), "…stack 3 is silent (below four)")
+        ck(sawWarn("WARN_ANNOUNCE", "Flame Buffet (4)"), "…stack 4 speaks")
+        ck(not sawWarn("WARN_ANNOUNCE", "Flame Buffet (5)"), "…stack 5 is silent (odd)")
+        ck(sawWarn("WARN_ANNOUNCE", "Flame Buffet (6)"), "…and stack 6 speaks")
+    end
+
+    -- ── §4.5 Ebonroc: the taunt call REPLACES the announce when it is on ──────
+    do
+        local rt = engage("bwl:ebonroc", 14601)
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 23340, destName = "Bob" })
+        ck(sawWarn("WARN_SPECIAL", "Taunt — Bob has the Shadow"),
+           "EBONROC: somebody else carrying the Shadow is a TAUNT call…")
+        ck(not sawWarn("WARN_ANNOUNCE", "Shadow of Ebonroc on Bob"),
+           "…and the plain announce steps aside while that call is enabled")
+        -- switch the taunt call off and the plain announce comes back
+        Addon.db.mechanics = Addon.db.mechanics or {}
+        Addon.db.mechanics["bwl:ebonroc:shadowtaunt"] = { masterEnabled = false }
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 23340, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Shadow of Ebonroc on Bob"),
+           "…and comes back the moment the player turns the taunt call off")
+        Addon.db.mechanics["bwl:ebonroc:shadowtaunt"] = nil
+        near((rt.timers.shadowofebonroc:Get("Bob") or {}).total, 8, 0.01,
+             "…while the 8 s target bar runs either way")
+    end
+
+    -- ── §4.7 CHROMAGGUS — the crown ───────────────────────────────────────────
+    do
+        local rt = engage("bwl:chromaggus", 14020)
+        ck(rt ~= nil, "CHROMAGGUS: engages off the combat sweep")
+        eq(Addon:GetEncounter("bwl:chromaggus").combat.wipeWindow, 20,
+           "…with a 20 s wipe window, because ENCOUNTER_START fires on the LEVER")
+        local b1n, b1x = barWindow(rt, "breath1")
+        near(b1n, 27, 0.01, "…the First Breath bar opens at 27…")
+        near(b1x, 37.2, 0.01, "…and closes at 37.2")
+        local b2n, b2x = barWindow(rt, "breath2")
+        near(b2n, 57.3, 0.01, "…the Second Breath bar opens at 57.3…")
+        near(b2x, 68.1, 0.01, "…and closes at 68.1")
+        -- the pre-warnings are SCHEDULED, not derived
+        Addon:ClearEventLog()
+        advance(27.1)
+        ck(sawWarn("WARN_SPECIAL", "Breath soon"), "…'breath soon' is scheduled at 27 s from pull")
+
+        -- FIRST BREATH: closes bar 1 only, and names the recurring bar
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 23309, sourceId = 14020 })
+        eq(bar(rt, "breath1"), nil, "…the first breath MANUALLY STOPS the first pull bar…")
+        ck(bar(rt, "breath2") ~= nil, "…and leaves the second one running")
+        ck(sawWarn("WARN_ANNOUNCE", "BREATH"), "…announced to the raid")
+        local inc = rt.timers.breathcd:Get(23309)
+        ck(inc ~= nil, "…a 61.5 s bar starts for THAT breath…")
+        near(inc.total, 61.5, 0.01, "…of exactly 61.5 s")
+        eq(inc.text, "Incinerate", "…RENAMED to the breath itself (the W2 restyle contract)")
+        local elapsed = inc.startedAt
+        -- SECOND BREATH: a different spell, its own bar, and bar 2 closes
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 23187, sourceId = 14020 })
+        eq(bar(rt, "breath2"), nil, "…the SECOND breath closes the second pull bar")
+        local frost = rt.timers.breathcd:Get(23187)
+        ck(frost ~= nil and frost.text == "Frost Burn",
+           "…and gets its OWN bar, named for itself — two breaths, two clocks")
+        ck(rt.timers.breathcd:Get(23309) ~= nil,
+           "…while the first breath's bar is untouched by the second")
+        eq(rt.timers.breathcd:Get(23309).startedAt, elapsed,
+           "…and was never restarted (identity changes, elapsed time does not)")
+
+        -- THE VULNERABILITY SYSTEM, all three evidence paths
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 22278, destId = 14020,
+                       destName = "Chromaggus" })
+        local v = bar(rt, "vulnshift")
+        ck(v ~= nil, "…PATH 1 (combat-log aura): the vulnerability bar starts…")
+        near(v.min, 16.2, 0.01, "…on the spec's 16.2…")
+        near(v.max, 25.9, 0.01, "…to 25.9 window")
+        eq(v.text, "Frost Vulnerability", "…recoloured, re-iconed and RENAMED to the school")
+        ck(sawWarn("WARN_ANNOUNCE", "Frost Vulnerability"), "…and announced once")
+        -- the SAME school again is not news
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 22278, destId = 14020 })
+        ck(not sawWarn("WARN_ANNOUNCE", "Frost Vulnerability"),
+           "…and re-seeing the same school announces NOTHING (change only)")
+        -- PATH 2: the buff sweep, with the combat log silent (nobody has Detect Magic)
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 14020, combat = true, hp = 100, hpmax = 100,
+                            guid = "Creature-0-0-0-0-14020-0001", buffs = { 22281 } })
+        Addon.Scan.ClearTokenCache()
+        advance(1.1)
+        eq(bar(rt, "vulnshift").text, "Arcane Vulnerability",
+           "…PATH 2 (his own buffs, swept): the school is read with NO combat-log event at all")
+        ck(sawWarn("WARN_ANNOUNCE", "Arcane Vulnerability"), "…and announced")
+        -- and an EMPTY sweep may never clear it (LESSON CLASS 4/6)
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 14020, combat = true, hp = 100, hpmax = 100,
+                            guid = "Creature-0-0-0-0-14020-0001", buffs = {} })
+        advance(2.2)
+        eq(bar(rt, "vulnshift").text, "Arcane Vulnerability",
+           "…an EMPTY sweep changes NOTHING — absent evidence is not absence")
+        eq(rt:GetState("vulnstyle"), "Arcane Vulnerability", "…and the state is held, not cleared")
+        -- PATH 3: the shimmer emote, which proves a change without naming a school
+        Addon:ClearEventLog()
+        rt.timers.vulnshift:Stop()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Chromaggus flinches as its skin shimmers.")
+        ck(bar(rt, "vulnshift") ~= nil,
+           "…PATH 3 (the shimmer emote): the bar starts even when the school is unknown")
+
+        -- MUTATION: the player's own affliction count, up AND down
+        Addon:ClearEventLog()
+        for _, id in ipairs({ 23155, 23169 }) do
+            Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = id, destIsPlayer = true })
+        end
+        ck(not sawWarn("WARN_ANNOUNCE", "MUTATION"), "…two afflictions is silent")
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 23153, destIsPlayer = true })
+        ck(sawWarn("WARN_ANNOUNCE", "MUTATION 3/5"), "…THREE is the alarm")
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 23153, destIsPlayer = true })
+        eq(rt:GetCount("mutation"), 2, "…and the count comes back DOWN when one is dispelled")
+    end
+
+    -- ── §4.8 Nefarian: the poll-driven phase machine and the class calls ──────
+    do
+        local rt = engage("bwl:nefarian", 11583, "Let the games begin!")
+        ck(rt ~= nil, "NEFARIAN: engages on 'Let the games begin!'")
+        eq(rt:GetState("nefphase"), "waves", "…phase 1 is the drakonid waves")
+        -- The poller must SEE the flag set before an unset can mean anything: a pull
+        -- that begins with the flag already false is not an intermission that happened.
+        W.encounterInProgress = false
+        advance(0.5)
+        eq(rt:GetState("nefphase"), "waves",
+           "…and a flag that was NEVER seen set cannot mean the waves are over")
+        W.encounterInProgress = true
+        advance(0.5)
+        eq(rt:GetState("nefphase"), "waves", "…the flag going true is still phase 1")
+        -- the drakonid census
+        Addon:ClearEventLog()
+        for i = 1, 2 do
+            Life:Deliver({ on = "UNIT_DIED", creatureId = 14261,
+                           destGUID = "Creature-0-0-0-0-14261-" .. i, destId = 14261 })
+        end
+        eq(rt:GetCount("drakonids"), 40, "…each drakonid death counts down from 42…")
+        ck(sawWarn("WARN_ANNOUNCE", "40 drakonids left"), "…announced at the spec's marks")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 14261,
+                       destGUID = "Creature-0-0-0-0-14261-1", destId = 14261 })
+        eq(rt:GetCount("drakonids"), 40, "…and a corpse logged twice is de-duplicated by GUID")
+        -- THE POLL: in progress -> not in progress -> in progress
+        Addon:ClearEventLog()
+        W.encounterInProgress = false
+        advance(0.5)
+        eq(rt:GetState("nefphase"), "intermission",
+           "…the flag going FALSE after phase 1 is the intermission (no event exists for this)")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…pre-warned")
+        local im = bar(rt, "intermission")
+        ck(im ~= nil, "…and the intermission bar runs")
+        near(im.min, 12.9, 0.01, "…from 12.9…")
+        near(im.max, 14.9, 0.01, "…to 14.9")
+        Addon:ClearEventLog()
+        W.encounterInProgress = true
+        advance(0.5)
+        eq(rt.stage, 2, "…the flag coming back TRUE is phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 — Nefarian lands"), "…announced")
+        ck(bar(rt, "bellowingroar") ~= nil, "…and phase 2 arms the Fear bar")
+        ck(Addon.Scan.singletonByKey["bwl:nefarian:phasepoll"] == nil,
+           "…while the poller TEARS ITSELF DOWN, having answered the only question it had")
+        -- the class calls: raid announce for everyone, personal special for the class
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+                    "Warlocks, you shouldn't be playing with magic you don't understand. See what happens?")
+        ck(sawWarn("WARN_ANNOUNCE", "Class call — WARLOCKS"), "…a class call announces to the raid")
+        ck(sawWarn("WARN_SPECIAL", "YOUR CLASS IS CALLED"),
+           "…and special-warns YOU, because you are the class it named")
+        ck(bar(rt, "classcall") ~= nil, "…with a 30 s bar…")
+        eq(bar(rt, "classcall").text, "Warlock call", "…renamed to the class that was called")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Hunters and your annoying pea-shooters!")
+        ck(sawWarn("WARN_ANNOUNCE", "Class call — HUNTERS"), "…another class announces…")
+        ck(not sawWarn("WARN_SPECIAL", "YOUR CLASS IS CALLED"),
+           "…and does NOT special-warn you, because you are not a Hunter")
+        -- the Shaman call is everybody's problem
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Shamans, show me what your totems can do!")
+        ck(sawWarn("WARN_SPECIAL", "KILL THE TOTEMS"),
+           "…while the SHAMAN call shouts at the whole raid, Warlock or not")
+        -- phase 3
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+                    "Impossible! Rise my minions! Serve your master once more!")
+        eq(rt.stage, 3, "…and the resurrection yell is phase 3")
+        W.encounterInProgress = false
+    end
+
+    -- ── §5.4 Mandokir: the yell beats the combat log by two seconds ───────────
+    do
+        local rt = engage("zg:mandokir", 11382)
+        ck(rt ~= nil, "MANDOKIR: engages off the combat sweep")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Bob! I'm watching you!")
+        ck(sawWarn("WARN_ANNOUNCE", "MANDOKIR IS WATCHING"),
+           "…the GAZE fires off the YELL, 1.5-2 s before the combat log knows")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Drew! I'm watching you!")
+        ck(sawWarn("WARN_SPECIAL", "WATCHING YOU"),
+           "…and when the yell names YOU it is the stop-casting call")
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 24314, destName = "Bob" })
+        near((rt.timers.gaze:Get("Bob") or {}).total, 6, 0.01,
+             "…while the combat log is left to run the 6 s bar")
+    end
+
+    -- ── §5.8 Arlokk: a vanish nobody logs, and a swing that proves she is back ─
+    do
+        local rt = engage("zg:arlokk", 14515)
+        local mn = select(1, barWindow(rt, "vanishcd"))
+        near(mn, 33.7, 0.01, "ARLOKK: the first Vanish window opens at 33.7")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "unitCast", spellId = 24223, sourceId = 14515 })
+        eq(bar(rt, "vanishcd"), nil, "…the vanish (unit-cast only — no combat-log event) stops the CD…")
+        ck(bar(rt, "vanishactive") ~= nil, "…and starts the vanish-active bar")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SWING_MISSED", sourceId = 14515,
+                       sourceGUID = "Creature-0-0-0-0-14515-1", missType = "DODGE" })
+        eq(bar(rt, "vanishactive"), nil,
+           "…and a MISSED swing is proof enough that she is back")
+        local rn, rx = barWindow(rt, "vanishcd")
+        near(rn, 65, 0.01, "…re-arming the cooldown at 65…")
+        near(rx, 70, 0.01, "…to 70")
+    end
+
+    -- ── §5.10 Hakkar: hard mode is a health reading and nothing else ──────────
+    do
+        -- NORMAL: the nerfed boss, and no Aspect bars at all
+        resetLife()
+        W.instanceID = 309
+        setUnit("target", { cid = 14834, combat = true, hp = 100, hpmax = 800000,
+                            guid = "Creature-0-0-0-0-14834-0001" })
+        setUnit("playertarget", { cid = 14834, combat = true, hp = 100, hpmax = 800000 })
+        Addon.Scan.ClearTokenCache()
+        Addon:ClearEventLog()
+        Life:Sweep(0.5)
+        local rt = Life:GetRuntime("zg:hakkar")
+        ck(rt ~= nil, "HAKKAR: engages off the combat sweep")
+        near(bar(rt, "berserk").total, 585, 0.01, "…on a 585 s berserk")
+        near(bar(rt, "siphon").total, 90, 0.01, "…with Blood Siphon every 90 s")
+        advance(2.2)
+        eq(bar(rt, "aspectmarli"), nil,
+           "…and a NERFED Hakkar (800k) arms NO Aspect bars — the max health is the only tell")
+        ck(not sawWarn("WARN_ANNOUNCE", "HARD MODE"), "…and says nothing about hard mode")
+
+        -- HARD: >= 1,079,325 and the five Aspect sets arm
+        resetLife()
+        W.instanceID = 309
+        setUnit("target", { cid = 14834, combat = true, hp = 100, hpmax = 1079325,
+                            guid = "Creature-0-0-0-0-14834-0001" })
+        setUnit("playertarget", { cid = 14834, combat = true, hp = 100, hpmax = 1079325 })
+        Addon.Scan.ClearTokenCache()
+        Addon:ClearEventLog()
+        Life:Sweep(0.5)
+        rt = Life:GetRuntime("zg:hakkar")
+        advance(2.2)
+        ck(sawWarn("WARN_ANNOUNCE", "HARD MODE"),
+           "…while 1,079,325 IS the hard-mode flag this fight does not otherwise have")
+        near(bar(rt, "aspectmarli").total, 10, 0.01, "…Aspect of Mar'li arms at 10 s…")
+        near(bar(rt, "aspectthekal").total, 10, 0.01, "…Thekal at 10…")
+        near(bar(rt, "aspectvenoxis").total, 14, 0.01, "…Venoxis at 14…")
+        near(bar(rt, "aspectjeklik").total, 21, 0.01, "…Jeklik at 21…")
+        near(bar(rt, "aspectarlokk").total, 30, 0.01, "…and Arlokk at 30")
+        local startedAt = bar(rt, "aspectmarli").startedAt
+        advance(2.2)
+        eq(bar(rt, "aspectmarli").startedAt, startedAt,
+           "…and the repeating probe does NOT keep re-arming them (one proof, once)")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 24686, sourceId = 14834 })
+        local am, ax = barWindow(rt, "aspectmarli")
+        near(am, 16, 0.01, "…after which Mar'li runs on its own 16…")
+        near(ax, 20, 0.01, "…to 20 cycle")
+        -- and the tranq call replaces the plain announce
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 24689, destName = "Hakkar" })
+        ck(sawWarn("WARN_SPECIAL", "Tranquilizing Shot NOW"),
+           "…and Aspect of Thekal is a tranq call, not an announce")
+        ck(not sawWarn("WARN_ANNOUNCE", "Aspect of Thekal"), "…which replaces it while it is on")
+    end
+
+    -- ── §5.1 Venoxis: a HALF stage, then the transform ────────────────────────
+    do
+        local rt = engage("zg:venoxis", 14507)
+        Addon:ClearEventLog()
+        Life:EvaluateHealthTriggers(rt, 54)
+        eq(rt.stage, 1.5, "VENOXIS: 55 % is a HALF stage — 'nearly', not 'now'")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…announced as 'phase 2 soon'")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "unitCast", spellId = 23849, sourceId = 14507 })
+        eq(rt.stage, 2, "…and the transform on the unit-cast channel is the real phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 — the serpent"), "…announced")
+    end
+
+    -- ── §5.6 Thekal: the resurrection window ──────────────────────────────────
+    do
+        local rt = engage("zg:thekal", 14509)
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Zealot Lor'Khan dies.")
+        ck(sawWarn("WARN_ANNOUNCE", "One down — resurrection in 15"),
+           "THEKAL: the first death opens a 15 s resurrection window")
+        near(bar(rt, "resurrect").total, 15, 0.01, "…as a 15 s bar")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Zealot Zath dies.")
+        ck(not sawWarn("WARN_ANNOUNCE", "One down"),
+           "…and the SECOND death inside 20 s does not restart it")
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Shirvallah, fill me with your RAGE!")
+        eq(bar(rt, "resurrect"), nil, "…while the phase-2 yell closes the window for good")
+        eq(rt.stage, 2, "…and IS phase 2")
+    end
+
+    -- ── §4.9 the zone-wide BWL trash module ───────────────────────────────────
+    do
+        resetLife()
+        W.instanceID = 469
+        eq(Life:ArmZones(469), 1, "TRASH: entering Blackwing Lair ARMS the BWL trash module")
+        ck(Life:IsZoneArmed("bwl:trash"), "…without engaging anything")
+        Addon:ClearEventLog()
+        local rtz = Life.zoneArmed["bwl:trash"]
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 22275,
+                       sourceGUID = "Creature-0-0-0-0-12468-1", sourceId = 12468 })
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 22275,
+                       sourceGUID = "Creature-0-0-0-0-12468-2", sourceId = 12468 })
+        local n = 0
+        for _ in pairs(rtz.timers.flamestrike.live) do n = n + 1 end
+        eq(n, 2, "…Flamestrike runs ONE bar PER SEETHER")
+        ck(sawWarn("WARN_ANNOUNCE", "Flamestrike"), "…and announces")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellId = 19717, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the fire"),
+           "…standing in Rain of Fire is the shared GTFO alert")
+        W.instanceID = 533
+        Life:ArmZones(533)
+    end
+
+    Addon._suppressLegacyAlerts = nil
+    Addon:SetEventRecording(false)
+    resetLife()
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c, 4b)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -5993,7 +6679,9 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "NAXX  §8 encounter data: registration, keys, the options tree",
                      "NAXX-DRIVE  §8 per-encounter behaviour through the real engine",
                      "AQ  §6/§7 encounter data: registration, keys, the options tree",
-                     "AQ-DRIVE  §6/§7 per-encounter behaviour through the real engine" }) do
+                     "AQ-DRIVE  §6/§7 per-encounter behaviour through the real engine",
+                     "BWLZG  §4/§5 encounter data: registration, keys, the options tree",
+                     "BWLZG-DRIVE  §4/§5 per-encounter behaviour through the real engine" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

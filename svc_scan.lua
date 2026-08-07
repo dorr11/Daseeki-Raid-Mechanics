@@ -30,6 +30,12 @@
     Keeping either would spend passes on tokens that can never resolve, which on a
     0.05 s x 16 budget is the difference between finding the victim and not.
 
+    THREE BECAME SIX. W4c added the ROSTER-RELAYED scanner ("what are MY PEOPLE
+    looking at"), and W4b adds two that ask about a unit rather than about a target:
+    PROGRESS (Blizzard's encounter-in-progress flag, Nefarian's only phase evidence)
+    and UNIT (a creature's own auras and maximum health — Chromaggus's vulnerability
+    school and Hakkar's hard-mode tell). The original three are untouched.
+
     HEADLESS DISCIPLINE. Every WoW API goes through `Scan.env`, every delay goes
     through the engine scheduler, and the event scanner's ingest point
     (`Scan.OnUnitTarget`) is a plain function — so all three scanners run on the
@@ -89,6 +95,10 @@ Scan.env = {
     IsInRaid      = g("IsInRaid"),
     GetNumGroupMembers = g("GetNumGroupMembers"),
     UnitDetailedThreatSituation = g("UnitDetailedThreatSituation"),
+    -- W4b: the unit-fact sweep reads the creature's OWN state, not its target's.
+    UnitHealthMax = g("UnitHealthMax"),
+    UnitBuff      = g("UnitBuff"),
+    IsEncounterInProgress = g("IsEncounterInProgress"),
 }
 
 function Scan.env.IsSolo()
@@ -531,6 +541,135 @@ end
 Scan.rosterByKey = {}
 
 -- ══════════════════════════════════════════════════════════════════════════════
+--  (e) ENCOUNTER-IN-PROGRESS POLL  (W4b extension 21)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Nefarian's phase-1 -> intermission -> phase-2 transition has NO combat-log event
+-- and NO yell on Era. The only evidence that the drakonid waves are over and that he
+-- is on his way down is Blizzard's own "an encounter is running" flag going false and
+-- then true again. So it is sampled, five times a second, and every CHANGE is routed
+-- as an ordinary trigger.
+--
+-- Reported on change only, and the FIRST sample is a change (from "unknown"), because
+-- a poller that only spoke on the second sample would miss a pull that begins with
+-- the flag already set.
+Scan.progressScans = {}
+
+function Scan.ProgressSample(h)
+    if h.done then return end
+    local rt = Addon.Lifecycle and Addon.Lifecycle:GetRuntime(h.encId)
+    if not rt or not rt.engaged then return end
+    local f = Scan.env.IsEncounterInProgress
+    if type(f) ~= "function" then return end
+    local now = f() and true or false
+    if h.last ~= nil and h.last == now then return end
+    local prev = h.last
+    h.last = now
+    h.changes = (h.changes or 0) + 1
+    rt:Route({ on = "progress", key = h.key, inProgress = now, was = prev,
+               changed = prev ~= nil, index = h.changes })
+end
+
+function Scan.Progress(opts)
+    opts = opts or {}
+    local h = {
+        kind = "progress",
+        encId = opts.encId, key = opts.key,
+        interval = opts.interval or 0.2,
+        startedAt = S():Now(),
+    }
+    Scan.progressScans[h] = true
+    h.loop = S():Loop(h.interval, function() Scan.ProgressSample(h) end, Scan)
+    return h
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  (f) UNIT-FACT SWEEP  (W4b extension 22)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- The other four scanners all ask "what is something LOOKING AT". This one asks
+-- "what is TRUE OF this creature": which of a declared aura set it is carrying, and
+-- how much health it can have. Two Era problems need exactly that and nothing else:
+--
+--   * Chromaggus's vulnerability auras are only in the combat log while somebody in
+--     the raid has Detect Magic on him. Reading his buffs directly is one of the
+--     three independent evidence paths the spec describes, and it is the only one
+--     that can answer "which school is it RIGHT NOW" rather than "it just changed".
+--   * Hakkar has no difficulty flag. His maximum health is the whole tell.
+--
+-- LESSON CLASS 4 / CLASS 6, wired in rather than remembered: a sweep that finds
+-- nothing routes NOTHING. Not being able to see the boss, or seeing him with no
+-- vulnerability visible, is indistinguishable from "he has none" — so an empty read
+-- may never clear state, and this scanner has no vocabulary with which to try.
+Scan.unitScans = {}
+
+-- Walk a unit's buffs and report every declared id that is present. Uses the
+-- id-indexed form when the client has it and falls back to the index walk.
+function Scan.SweepAuras(unit, wanted, out)
+    local f = Scan.env.UnitBuff
+    if type(f) ~= "function" then return out end
+    for i = 1, 40 do
+        local name, _, _, _, _, _, _, _, _, spellId = f(unit, i)
+        if name == nil and spellId == nil then break end
+        if spellId and wanted[spellId] then out[#out + 1] = spellId end
+    end
+    return out
+end
+
+function Scan.UnitSample(h)
+    if h.done then return end
+    local rt = Addon.Lifecycle and Addon.Lifecycle:GetRuntime(h.encId)
+    if not (rt and rt.engaged) then
+        rt = Addon.Lifecycle and Addon.Lifecycle.zoneArmed and Addon.Lifecycle.zoneArmed[h.encId]
+    end
+    if not rt then return end
+    local unit = Scan.ResolveUnit(h.creatureId, h.guid)
+    if not unit then return end                    -- CLASS 6: no unit is not "no auras"
+    h.samples = (h.samples or 0) + 1
+
+    if h.auraSet then
+        local found = Scan.SweepAuras(unit, h.auraSet, {})
+        for i = 1, #found do
+            rt:Route({ on = "aura", key = h.key, spellId = found[i], unit = unit,
+                       sourceGUID = Scan.env.UnitGUID(unit), sourceId = h.creatureId,
+                       found = true })
+        end
+    end
+
+    if h.maxHealth then
+        local f = Scan.env.UnitHealthMax
+        local hp = type(f) == "function" and f(unit) or nil
+        -- A zero or absent maximum is a cold read, not a small boss (LESSON CLASS 5).
+        if type(hp) == "number" and hp > 0 then
+            rt:Route({ on = "probe", key = h.key, unit = unit, maxHealth = hp,
+                       sourceGUID = Scan.env.UnitGUID(unit), sourceId = h.creatureId })
+        end
+    end
+end
+
+function Scan.Unit(opts)
+    opts = opts or {}
+    local h = {
+        kind = "unit",
+        encId = opts.encId, key = opts.key,
+        creatureId = opts.creatureId, guid = opts.guid,
+        interval = opts.interval or 1,
+        maxHealth = opts.maxHealth and true or false,
+        startedAt = S():Now(),
+    }
+    if opts.auras then
+        h.auraSet = {}
+        for _, id in ipairs(opts.auras) do h.auraSet[id] = true end
+    end
+    Scan.unitScans[h] = true
+    Scan.UnitSample(h)                              -- answer on arm, not one tick later
+    h.loop = S():Loop(h.interval, function() Scan.UnitSample(h) end, Scan)
+    return h
+end
+
+-- Both new scanners are ONE-PER-ROW for the same reason the roster scan is: their
+-- arm triggers (the pull, an aura landing) can fire more than once.
+Scan.singletonByKey = {}
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  LIFECYCLE
 -- ══════════════════════════════════════════════════════════════════════════════
 function Scan.Stop(h)
@@ -550,6 +689,14 @@ function Scan.Stop(h)
         Scan.rosterScans[h] = nil
         Scan.rosterByKey[tostring(h.encId) .. ":" .. tostring(h.key)] = nil
         S():CancelLoop(h.loop)
+    elseif h.kind == "progress" then
+        Scan.progressScans[h] = nil
+        Scan.singletonByKey[tostring(h.encId) .. ":" .. tostring(h.key)] = nil
+        S():CancelLoop(h.loop)
+    elseif h.kind == "unit" then
+        Scan.unitScans[h] = nil
+        Scan.singletonByKey[tostring(h.encId) .. ":" .. tostring(h.key)] = nil
+        S():CancelLoop(h.loop)
     end
     return true
 end
@@ -560,6 +707,8 @@ function Scan.StopAll()
     for h in pairs(Scan.watchers) do if Scan.Stop(h) then n = n + 1 end end
     for h in pairs(Scan.repeats)  do if Scan.Stop(h) then n = n + 1 end end
     for h in pairs(Scan.rosterScans) do if Scan.Stop(h) then n = n + 1 end end
+    for h in pairs(Scan.progressScans) do if Scan.Stop(h) then n = n + 1 end end
+    for h in pairs(Scan.unitScans)    do if Scan.Stop(h) then n = n + 1 end end
     Scan.ClearTokenCache()
     return n
 end
@@ -621,6 +770,22 @@ function Scan.Dispatch(encId, row, ev)
     local kind = row.type or "poll"
     if kind == "event"    then return Scan.Event(opts, report) end
     if kind == "repeated" then return Scan.Repeated(opts, report) end
+    -- W4b: the two singleton samplers. Both re-use one live handle per row.
+    if kind == "progress" or kind == "unit" then
+        local id = tostring(encId) .. ":" .. tostring(row.key)
+        local live = Scan.singletonByKey[id]
+        if live and not live.done then return live end
+        local h
+        if kind == "progress" then
+            h = Scan.Progress({ encId = encId, key = row.key, interval = row.interval })
+        else
+            h = Scan.Unit({ encId = encId, key = row.key, creatureId = creatureId,
+                            guid = row.guid, interval = row.interval,
+                            auras = row.auras, maxHealth = row.maxHealth })
+        end
+        Scan.singletonByKey[id] = h
+        return h
+    end
     if kind == "roster" then
         local id = tostring(encId) .. ":" .. tostring(row.key)
         local live = Scan.rosterByKey[id]
@@ -639,7 +804,7 @@ end
 -- not stop each other.
 function Scan.DispatchStop(encId, row)
     local id = tostring(encId) .. ":" .. tostring(row.key)
-    local h = Scan.rosterByKey[id]
+    local h = Scan.rosterByKey[id] or Scan.singletonByKey[id]
     if h then return Scan.Stop(h) end
     return false
 end

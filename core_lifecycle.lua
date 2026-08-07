@@ -684,11 +684,40 @@ function Life:ChatMatches(enc, kind, text)
     return false
 end
 
+-- W4b extension 25: THE RP PULL COUNTDOWN. Some fights announce themselves a known
+-- interval before combat can start — Vaelastrasz's forced dialogue is 43.5 seconds of
+-- standing still — and the right surface for "combat starts in N" already exists
+-- (§11.4's pull timer). This is a DETECTION-side rule, not an encounter runtime one:
+-- nothing is engaged yet, so there is no runtime to route a trigger into.
+function Life:PullCountdownMatches(enc, kind, text)
+    local pc = enc.detect and enc.detect.pullCountdown
+    if not pc then return nil end
+    local hit
+    if kind == "yell" then hit = anyExact(pc.yell, text) or anyFind(pc.yellFind, text)
+    elseif kind == "say" then hit = anyExact(pc.say, text) or anyFind(pc.sayFind, text)
+    elseif kind == "emote" then hit = anyExact(pc.emote, text) or anyFind(pc.emoteFind, text) end
+    return hit and pc or nil
+end
+
 function Life:OnChat(event, text)
     local kind = CHAT_KIND[event] or event
     text = text or ""
     local acted = 0
     for _, enc in ipairs(Addon.encounters) do
+        local pc = Life:PullCountdownMatches(enc, kind, text)
+        -- Only inside the instance, only when nothing is already engaged, and only once
+        -- per lockout window — the RP line repeats on every attempt and the pull timer
+        -- refuses to restart itself mid-fight anyway.
+        if pc and Life:InInstance() and not Life:AnyEngaged()
+           and type(Addon.StartPullTimer) == "function" then
+            local last = Life.pullCountdownAt and Life.pullCountdownAt[enc.id]
+            if not last or (S():Now() - last) > (pc.throttle or pc.seconds) then
+                Life.pullCountdownAt = Life.pullCountdownAt or {}
+                Life.pullCountdownAt[enc.id] = S():Now()
+                pcall(Addon.StartPullTimer, Addon, pc.seconds, pc.source or "encounter", enc.name)
+                acted = acted + 1
+            end
+        end
         if Life:ChatMatches(enc, kind, text) then
             if Life:InInstance() then
                 if Life:StartCombat(enc, 0, "chat") then acted = acted + 1 end
@@ -835,7 +864,22 @@ function Life:OnUnitDied(creatureId)
                 if not c.severalCreatureIdsOneBoss then
                     local all = true
                     for _, cid in ipairs(killSet) do if not rt.down[cid] then all = false break end end
-                    if all then Life:EndCombat(rt, false, "unit_died"); ended = ended + 1 end
+                    if all then
+                        -- W4b extension 24: THE KILL-STAGE GATE. Razorgore dies in phase 1
+                        -- every time somebody drops the orb, and that is a wipe, not a
+                        -- kill — the mod has to decide for itself because Blizzard's
+                        -- encounter event is wrong for this fight (which is why the same
+                        -- encounter also sets `noEncounterEndKill`). Expressed as the rule
+                        -- it actually is rather than as the decoy-creature trick, so a
+                        -- reader of the data can see WHY the death did not count.
+                        local minStage = c.killMinStage
+                        if minStage and rt.stage < minStage then
+                            Life:EndCombat(rt, true, "died_before_stage")
+                        else
+                            Life:EndCombat(rt, false, "unit_died")
+                        end
+                        ended = ended + 1
+                    end
                 end
             end
         end
@@ -1150,6 +1194,7 @@ function Life:Reset()
     Life.armedCombat, Life.armedHealthBoot, Life.healthSuppressed = false, false, false
     Life.lastCombatFlagAt, Life.pendingSweeps, Life.bossSeen = nil, 0, false
     Life.recoveringUntil = nil
+    Life.pullCountdownAt = nil          -- W4b extension 25
     Life.stats = { engages = 0, kills = 0, wipes = 0, rejected = 0 }
     return true
 end

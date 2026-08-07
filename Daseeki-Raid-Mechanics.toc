@@ -57,6 +57,8 @@ thaddius.lua
 enc_naxxramas.lua
 enc_aq20.lua
 enc_aq40.lua
+enc_bwl.lua
+enc_zg.lua
 
 soundpicker.lua
 options.lua
@@ -66,16 +68,17 @@ slash.lua
 # engine.lua      DELETED — replaced by core_sched/core_timers/core_lifecycle/core_api.
 # encounters.lua  DELETED — replaced by the declarative registry in core_api.lua.
 #
-# ── PARKED, still on disk, deliberately NOT loaded ─────────────────────────────
-# data_bwl.lua
-#   The 1.x flat mechanic model. W4 regenerates all eight zones in the new
-#   declarative grammar; this stays on disk until W4b purely as cross-check input
-#   for the spell IDs already verified against Drew's combat logs. Re-adding it to
-#   the load list is refused at runtime by Addon:RegisterRaid (core_boot.lua) and
-#   is a harness failure (GATE RETIRE).
+# NOTHING IS PARKED ANY MORE. W4b was the last wave with a 1.x data file left on
+# disk, and it consumed it.
 #
 # data_naxxramas.lua  DELETED in W4d — enc_naxxramas.lua replaces it. Its values
 #   were diffed against the spec first; every disagreement is in the wave report and
 #   the CHANGELOG, and the spec won each one.
 # data_aq40.lua       DELETED in W4c — enc_aq40.lua replaces it, on the same terms.
 #   AQ20 had no 1.x predecessor at all; enc_aq20.lua is new ground.
+# data_bwl.lua        DELETED in W4b — enc_bwl.lua replaces it, on the same terms.
+#   It was the last cross-check input; it was diffed row by row, the spec won every
+#   disagreement, one log-verified mechanic the spec lacks was carried over
+#   default-off (Vaelastrasz's Fire Nova), and a file that is both parked and
+#   superseded is just a second source of truth waiting to be edited by mistake.
+#   Zul'Gurub had no 1.x predecessor at all; enc_zg.lua is new ground.
