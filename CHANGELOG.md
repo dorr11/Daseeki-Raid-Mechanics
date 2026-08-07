@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, Naxxramas data arbitrations (internal)
+- **Three Naxx alerts now fire on either spell id.** When the rebuild was cross-checked
+  against our own Anniversary combat logs, three mechanics turned out to use a different
+  spell id here than the reference data says. Rather than pick a side, all three now
+  listen for both: Faerlina's Enrage (the raid warning AND the "use a defensive" call to
+  whoever is tanking her), Sapphiron's "get out of the Blizzard", and Noth's Blink, which
+  on this server uses four different ids where the reference had one. If the server ever
+  changes its mind, the alerts keep working either way.
+- **Thirteen alerts that the rebuild had dropped are back.** Razuvious's Unbalancing
+  Strike tank-swap call and Gluth's Mortal Wound stack count, Thaddius's Power Surge,
+  Ball Lightning and Chain Lightning, Gothik's Shadow Bolt and Harvest Soul, Heigan's
+  Decrepit Fever and Spell Disruption, Maexxna's Necrotic Poison, Faerlina's Poison Bolt
+  Volley, Grobbulus's Slime Spray and Loatheb's Poison Aura. Each one is a toggle under
+  its boss, stored under **exactly the key it used before the rebuild**, so if you had
+  one of these switched off it is still switched off.
+- The tank-swap calls come back LOUD, to tanks and healers. The poison-type alerts come
+  back switched OFF: they fire often enough that the reference authors dropped them
+  entirely, so having the toggle there and unticked is the honest middle — turn any of
+  them on and it works. Two of the restored alerts (Gothik's Shadow Bolt and Thaddius's
+  Ball Lightning) fire several times a second in the real fight, so they are throttled
+  rather than repeated once per cast.
+
 ## Unreleased — 2.0.0 rebuild, wave 4c (Ruins + Temple of Ahn'Qiraj — internal)
 - **Both Ahn'Qiraj raids are in.** All six Ruins bosses and all nine Temple bosses now
   run on the new engine, plus a zone-wide trash module for each instance. The Ruins had
