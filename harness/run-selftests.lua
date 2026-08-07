@@ -174,6 +174,8 @@ local FORBIDDEN = {
     "bigwigs", "elvui", "bartender4", "dominos",
 }
 local CHANGE_SURFACE = {
+    -- wave 4d authored this one; it is clean-room from the encounters spec alone.
+    ["enc_naxxramas.lua"] = true,
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
     ["core_boot.lua"] = true, [TOC_FILE] = true,
@@ -234,8 +236,11 @@ endgate()
 ----------------------------------------------------------------------
 -- GATE RETIRE: the wave-1 demolition stays demolished
 ----------------------------------------------------------------------
-local RETIRED_PATHS   = { "engine.lua", "encounters.lua" }
-local PARKED_OUT_OF_TOC = { "data_naxxramas.lua", "data_bwl.lua", "data_aq40.lua" }
+-- W4d: data_naxxramas.lua joins the DELETED list — enc_naxxramas.lua replaced it,
+-- its values were diffed against the spec first, and a file that is both parked and
+-- superseded is just a second source of truth waiting to be edited by mistake.
+local RETIRED_PATHS   = { "engine.lua", "encounters.lua", "data_naxxramas.lua" }
+local PARKED_OUT_OF_TOC = { "data_bwl.lua", "data_aq40.lua" }
 
 gate("RETIRE  demolition holds")
 for _, rel in ipairs(RETIRED_PATHS) do
@@ -256,6 +261,7 @@ for _, rel in ipairs({ "svc_era.lua", "svc_scan.lua", "ui_bars.lua",
                        "ui_warnings.lua", "public_api.lua" }) do
     ck(TOC_SET[rel], rel .. " IS in the load list (the wave-2 surfaces actually ship)")
 end
+ck(TOC_SET["enc_naxxramas.lua"], "enc_naxxramas.lua IS in the load list (wave 4d ships the data)")
 do  -- wave 2 stacks ON the wave-1 seam, and the toc must express that too
     local pos = {}
     for i, rel in ipairs(TOC_LUA) do pos[rel] = i end
@@ -410,6 +416,13 @@ end
 do
     local chunk = assert(loadfile(P("modules.lua")))
     assert(pcall(chunk, ADDON_NAME, Addon))
+end
+-- WAVE 4d: the Naxxramas encounter data. Kept as a re-runnable chunk because the
+-- earlier gates deliberately wipe the encounter registry to install their fixtures;
+-- the Naxx gates re-execute this to repopulate it with the SHIPPING data.
+local NAXX_CHUNK = loadfile(P("enc_naxxramas.lua"))
+if not NAXX_CHUNK then
+    realprint("  FAIL  loadfile enc_naxxramas.lua"); os.exit(2)
 end
 
 _G.DaseekiRaidMechanicsDB = {}
@@ -3747,8 +3760,785 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- WAVE 4d — NAXXRAMAS ENCOUNTER DATA
+--
+-- Every assertion below names the DBM_ERA_ENCOUNTERS_BEHAVIOR_SPEC.md §8 row it
+-- proves, and every one runs the SHIPPING data through the SHIPPING engine on the
+-- injected clock and the injected world: registration, then one drive per boss.
+----------------------------------------------------------------------
+
+-- Re-execute the shipping data into a clean registry (earlier gates wiped it).
+local function loadNaxx()
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    local okc, err = pcall(NAXX_CHUNK, ADDON_NAME, Addon)
+    return okc, err
+end
+
+-- Warning capture through the real dispatch seam.
+local function sawWarn(kind, needle)
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == kind and tostring(e[3]):find(needle, 1, true) then return true, e end
+    end
+    return false
+end
+local function warnCount(kind, needle)
+    local n = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == kind and tostring(e[3]):find(needle, 1, true) then n = n + 1 end
+    end
+    return n
+end
+local function bar(rt, key) return rt and rt.timers[key] and rt.timers[key]:Get() end
+local function barWindow(rt, key)
+    local b = bar(rt, key)
+    if not b then return nil end
+    return b.min, b.max
+end
+
+-- Engage helper: put the boss on the target, then take the encounter's own path.
+local function engage(encId, cid, yell)
+    resetLife()
+    W.group = { "player" }
+    setUnit("target", { cid = cid, combat = true, hp = 100, hpmax = 100 })
+    setUnit("playertarget", { cid = cid, combat = true, hp = 100, hpmax = 100 })
+    Addon:ClearEventLog()
+    local enc = Addon:GetEncounter(encId)
+    if yell then
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", yell)
+    else
+        Life:Sweep(0.5)
+    end
+    return Life:GetRuntime(encId), enc
+end
+
+gate("NAXX  §8 encounter data: registration, keys, the options tree")
+do
+    local okc, err = loadNaxx()
+    ck(okc, "enc_naxxramas.lua EXECUTES against the shipping grammar" ..
+            (okc and "" or (" -> " .. tostring(err))))
+
+    -- Every §8 encounter, with the spec's creature and encounter ids.
+    local EXPECTED = {
+        { id = "naxxramas:anubrekhan",  cid = 15956, eid = 1107, boss = "anubrekhan" },
+        { id = "naxxramas:faerlina",    cid = 15953, eid = 1110, boss = "faerlina" },
+        { id = "naxxramas:maexxna",     cid = 15952, eid = 1116, boss = "maexxna" },
+        { id = "naxxramas:noth",        cid = 15954, eid = 1117, boss = "noth" },
+        { id = "naxxramas:heigan",      cid = 15936, eid = 1112, boss = "heigan" },
+        { id = "naxxramas:loatheb",     cid = 16011, eid = 1115, boss = "loatheb" },
+        { id = "naxxramas:razuvious",   cid = 16061, eid = 1113, boss = "razuvious" },
+        { id = "naxxramas:gothik",      cid = 16060, eid = 1109, boss = "gothik" },
+        { id = "naxxramas:fourhorsemen", cid = 16062, eid = 1121, boss = "fourhorsemen" },
+        { id = "naxxramas:patchwerk",   cid = 16028, eid = 1118, boss = "patchwerk" },
+        { id = "naxxramas:grobbulus",   cid = 15931, eid = 1111, boss = "grobbulus" },
+        { id = "naxxramas:gluth",       cid = 15932, eid = 1108, boss = "gluth" },
+        { id = "naxxramas:thaddius",    cid = 15928, eid = 1120, boss = "thaddius" },
+        { id = "naxxramas:sapphiron",   cid = 15989, eid = 1119, boss = "sapphiron" },
+        { id = "naxxramas:kelthuzad",   cid = 15990, eid = 1114, boss = "kelthuzad" },
+    }
+    for _, e in ipairs(EXPECTED) do
+        local enc = Addon:GetEncounter(e.id)
+        ck(enc ~= nil, e.id .. " is registered")
+        if enc then
+            local errs = API.Validate(enc)
+            eq(#errs, 0, "…with zero validation errors" ..
+               (#errs > 0 and (": " .. table.concat(errs, "; ")) or ""))
+            ck(Addon.encByCreature[e.cid] ~= nil, "…indexed by creature " .. e.cid)
+            ck(Addon.encByEncounterId[e.eid] ~= nil, "…and by encounter id " .. e.eid)
+            ck(enc.legacy and enc.legacy.raidId == "naxxramas" and enc.legacy.bossId == e.boss,
+               "…carrying the legacy seam naxxramas:" .. e.boss)
+            -- THE KEY SCHEMES COINCIDE. This is the whole options contract.
+            local firstRow = enc.timers[1] or enc.warnings[1]
+            if firstRow then
+                eq(API.OptionKey(enc.id, firstRow.key),
+                   Addon:MechKey("naxxramas", e.boss, firstRow.key),
+                   "…and OptionKey == MechKey for its rows (one SavedVariables entry, not two)")
+            end
+        end
+    end
+    eq(#Addon.encounters, #EXPECTED + 1, "…16 registrations in all (15 bosses + the trash module)")
+
+    do  -- the zone-wide trash module
+        local trash = Addon:GetEncounter("naxxramas:trash")
+        ck(trash ~= nil and trash.detect.mode == "zone", "§8.16 the trash module registers as a ZONE module")
+        ck(trash and Addon.encByZone[533] ~= nil, "…indexed against instance 533")
+        local keys = {}
+        for _, r in ipairs(trash and trash.warnings or {}) do keys[r.key] = r end
+        ck(keys.intimidatingshout and keys.intimidatingshout.antispam == 3, "…Intimidating Shout, 3 s anti-spam")
+        ck(keys.fear and keys.fear.antispam == 5, "…Fear, 5 s anti-spam")
+        ck(keys.poisoncharge and keys.poisoncharge.antispam == 3, "…Poison Charge, 3 s anti-spam")
+        ck(keys.veilofshadow and keys.veilofshadow.antispam == 6, "…Veil of Shadow, 6 s anti-spam")
+        ck(keys.lightningtotem and keys.lightningtotem.antispam == nil,
+           "…and the lightning totem carries NO anti-spam (two packs can summon back to back)")
+        eq(keys.lightningtotem and keys.lightningtotem.sound, 3, "…at sound tier 3")
+    end
+
+    do  -- ship-off defaults carried from the spec verbatim
+        local OFF = {
+            { "naxxramas:fourhorsemen", "marksoon" },
+            { "naxxramas:fourhorsemen", "holywrath" },
+            { "naxxramas:loatheb",      "healnow" },
+            { "naxxramas:kelthuzad",    "frostbolt" },
+            { "naxxramas:kelthuzad",    "fissure" },
+            { "naxxramas:kelthuzad",    "chainsicons" },
+            { "naxxramas:kelthuzad",    "manabombicon" },
+            { "naxxramas:kelthuzad",    "frostblasticons" },
+            { "naxxramas:grobbulus",    "injectionicons" },
+        }
+        for _, p in ipairs(OFF) do
+            local enc = Addon:GetEncounter(p[1])
+            local row = enc and enc.rowsByKey[p[2]]
+            ck(row and row.default == false, p[1] .. ":" .. p[2] .. " SHIPS OFF (spec default)")
+        end
+        local lo = Addon:GetEncounter("naxxramas:loatheb")
+        eq(lo.rowsByKey.necroticaura.classDefault, "WARLOCK",
+           "Loatheb's curse-removal timer defaults on for WARLOCKS (dynamic class default)")
+        local rz = Addon:GetEncounter("naxxramas:razuvious")
+        eq(rz.rowsByKey.taunt.classDefault, "PRIEST",
+           "Razuvious's mind-control timers default on for PRIESTS (dynamic class default)")
+        eq(rz.rowsByKey.mindexhaust.classDefault, "PRIEST", "…including Mind Exhaustion")
+    end
+
+    do  -- the options projection: the tree options.lua actually reads
+        API.PublishOptionsTree()
+        local raid = Addon:GetRaid("naxxramas")
+        ck(raid ~= nil, "the encounter registry PROJECTS into the options tree")
+        eq(raid and raid.size, 40, "…as a 40-man raid (so options.lua builds a section for it)")
+        eq(raid and #raid.bosses, 16, "…with all sixteen entries")
+        local boss = Addon:GetBoss("naxxramas", "thaddius")
+        ck(boss and #boss.mechanics > 0, "…every boss carrying its mechanic rows")
+        local pol
+        for _, m in ipairs(boss and boss.mechanics or {}) do if m.id == "polarity" then pol = m end end
+        ck(pol ~= nil, "…including Thaddius's `polarity` row")
+        ck(pol and pol.polarityWatch == true,
+           "…with the polarityWatch passthrough thaddius.lua's sub-panel is reached by")
+        eq(Addon:MechKey("naxxramas", "thaddius", "polarity"), "naxxramas:thaddius:polarity",
+           "…at the EXACT key thaddius.lua hard-codes")
+        ck(Addon:GetBossByNpcID(15990) ~= nil, "…and the npc index resolves Kel'Thuzad")
+        -- the 1.x path stays refused
+        local okr = Addon:RegisterRaid({ id = "naxxramas", bosses = {} })
+        eq(okr, nil, "…while the retired 1.x RegisterRaid is STILL a hard refusal")
+    end
+
+    do  -- the five specials attach by data, and this file does not double-render them
+        local SPECIALS = {
+            { file = "mod_loatheb_healers.lua",       boss = "loatheb" },
+            { file = "mod_fourhorsemen_rotation.lua", boss = "fourhorsemen" },
+            { file = "mod_fourhorsemen_tracker.lua",  boss = "fourhorsemen" },
+            { file = "mod_gothik_waves.lua",          boss = "gothik" },
+            { file = "mod_razuvious_understudy.lua",  boss = "razuvious" },
+            { file = "thaddius.lua",                  boss = "thaddius" },
+        }
+        for _, s in ipairs(SPECIALS) do
+            local src = readFile(P(s.file)) or ""
+            ck(src:find('bossId = "' .. s.boss .. '"', 1, true) ~= nil,
+               s.file .. " registers against boss '" .. s.boss .. "' (UNEDITED)")
+            local enc = Addon:GetEncounter("naxxramas:" .. s.boss)
+            ck(enc and enc.legacy.bossId == s.boss,
+               "…and naxxramas:" .. s.boss .. " declares the matching legacy seam")
+        end
+        -- no double-render: the surfaces the specials own are absent from the data
+        local go = Addon:GetEncounter("naxxramas:gothik")
+        eq(#go.schedule, 0,
+           "Gothik declares NO wave schedule — mod_gothik_waves is the shipping surface")
+        ck(go.rowsByKey["wavesoon"] == nil and go.rowsByKey["wavenow"] == nil,
+           "…and no wave banners either")
+        local fh = Addon:GetEncounter("naxxramas:fourhorsemen")
+        ck(fh.rowsByKey["voidzonecd"] == nil and fh.rowsByKey["meteorcd"] == nil
+           and fh.rowsByKey["holywrathcd"] == nil,
+           "Four Horsemen declares NO per-horse cooldown radials — the tracker renders those")
+        ck(fh.rowsByKey["markcd"] ~= nil,
+           "…but DOES declare markcd, which the tracker reads its Mark count from")
+        local th = Addon:GetEncounter("naxxramas:thaddius")
+        ck(th.rowsByKey["polaritychanged"] == nil,
+           "Thaddius declares NO polarity-FLIP alert — thaddius.lua's icon watcher ships it")
+    end
+
+    do  -- the spec's own wave script, asserted against the module that ships it
+        local src = readFile(P("mod_gothik_waves.lua")) or ""
+        -- spec §8.8: wave 1 at 27 s, then the hard-coded gaps
+        local GAPS = { 20, 20, 10, 10, 15, 5, 20, 10, 10, 5, 15, 10, 10, 10, 5, 5, 20 }
+        local t, want = 27, {}
+        want[1] = 27
+        for i, g in ipairs(GAPS) do t = t + g; want[i + 1] = t end
+        local got = {}
+        for v in src:gmatch("{%s*t%s*=%s*([%d%.]+)") do got[#got + 1] = tonumber(v) end
+        eq(#got, 18, "GOTHIK: the shipping wave script has all 18 waves")
+        local mism = 0
+        for i = 1, 18 do if got[i] ~= want[i] then mism = mism + 1 end end
+        eq(mism, 0, "…and every spawn time equals the spec's cumulative gap table")
+        ck(src:find("PHASE2_T = 270", 1, true) ~= nil, "…with phase 2 at 270 s from pull")
+        ck(src:find("SOON_LEAD = 3", 1, true) ~= nil, "…and the 3 s pre-warning lead")
+    end
+
+    do  -- Thaddius's polarity window is the spec's ICON read, and it is unedited
+        local src = readFile(P("thaddius.lua")) or ""
+        ck(src:find("135768", 1, true) and src:find("135769", 1, true),
+           "THADDIUS: the shipping watcher reads the debuff ICONS 135768/135769 (Era rule)")
+        ck(src:find("naxxramas:thaddius:polarity", 1, true) ~= nil,
+           "…under the same option key the encounter row publishes")
+    end
+end
+endgate()
+
+gate("NAXX-DRIVE  §8 per-encounter behaviour through the real engine")
+do
+    loadNaxx()
+    Addon:SetEventRecording(true)
+    Addon._suppressLegacyAlerts = true
+    Addon.RoleResolver  = function() return true end
+    Addon.ClassResolver = function() return "WARLOCK" end
+
+    -- ── §8.1 Anub'Rekhan ──────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:anubrekhan", 15956, "There is no way out.")
+        ck(rt ~= nil, "ANUB: engages on the spec's yell")
+        local mn, mx = barWindow(rt, "locust")
+        near(mn, 77.3, 0.01, "…Locust Swarm pull window opens at 77.3")
+        near(mx, 109.3, 0.01, "…and closes at 109.3")
+        Addon:ClearEventLog()
+        advance(75.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Locust Swarm soon"),
+           "…the pre-warning is scheduled 75 s after pull")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28785, sourceId = 15956 })
+        ck(bar(rt, "locustactive") ~= nil, "…the cast starts the 23 s active bar")
+        near(bar(rt, "locustactive").total, 23, 0.01, "…of exactly 23 s")
+        eq(bar(rt, "locust"), nil, "…and STOPS the cooldown bar at the same moment")
+        ck(sawWarn("WARN_SPECIAL", "Locust Swarm"), "…and fires the aesoon special")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28785, sourceId = 15956 })
+        local b = bar(rt, "locust")
+        ck(b and b.min == 69.2 and b.max == 69.2,
+           "…swarm removal restarts the cooldown at the FIXED 69.2 s (Era quirk)")
+        ck(sawWarn("WARN_ANNOUNCE", "Locust Swarm faded"), "…and announces the fade at tier 1")
+        Addon:ClearEventLog()
+        advance(54.3)
+        ck(sawWarn("WARN_ANNOUNCE", "Locust Swarm soon"), "…re-arming the pre-warning 54.2 s later")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28783, sourceId = 15956 })
+        local scanned = false
+        for _, e in ipairs(Addon:GetEventLog()) do if e.event == "SCAN_REQUEST" then scanned = true end end
+        ck(scanned, "…and Impale raises the 0.1 s x 6 boss target scan")
+    end
+
+    -- ── §8.2 Grand Widow Faerlina ─────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:faerlina", 15953, "Kneel before me, worm!")
+        ck(rt ~= nil, "FAERLINA: engages on the spec's yell")
+        near(bar(rt, "enrage").total, 56, 0.01, "…the enrage bar is 56 s at pull")
+        -- Embrace with NO enrage: bar stops, and does NOT come back
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28732, destId = 15953 })
+        eq(bar(rt, "enrage"), nil, "…Widow's Embrace STOPS the enrage bar")
+        near(bar(rt, "embrace").total, 30, 0.01, "…and starts a 30 s Embrace bar")
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28732, destId = 15953 })
+        eq(bar(rt, "enrage"), nil,
+           "…Embrace ending does NOT restart it when she was never enraged")
+        -- now enrage for real, then Embrace again
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28798, destId = 15953 })
+        eq(rt:GetState("enraged"), "yes", "…Frenzy records that she IS enraged")
+        ck(sawWarn("WARN_ANNOUNCE", "Enrage"), "…announcing it at tier 4")
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28732, destId = 15953 })
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28732, destId = 15953 })
+        local mn, mx = barWindow(rt, "enrage")
+        ck(mn == 56 and mx == 76, "…and NOW the Embrace ending restarts it at 56-76")
+        -- the 25 s "ends in 5 seconds" pre-warning, and its cancellation
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28732, destId = 15953 })
+        advance(25.1)
+        ck(sawWarn("WARN_ANNOUNCE", "ends in 5 seconds"),
+           "…the Embrace pre-warning fires 25 s after it lands")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28732, destId = 15953 })
+        advance(3)
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28732, destId = 15953 })
+        advance(30)
+        ck(not sawWarn("WARN_ANNOUNCE", "ends in 5 seconds"),
+           "…and is CANCELLED when the Embrace ends early")
+    end
+
+    -- ── §8.3 Maexxna ──────────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:maexxna", 15952)
+        ck(rt ~= nil, "MAEXXNA: engages off the combat sweep")
+        near(bar(rt, "webspray").total, 40.5, 0.01, "…Web Spray is 40.5 s from pull")
+        local mn, mx = barWindow(rt, "webwrap")
+        ck(mn == 18.2 and mx == 20.1, "…Web Wrap's PULL window is 18.2-20.1")
+        near(bar(rt, "spiderlings").total, 30.7, 0.01, "…Spiderlings are 30.7 s")
+        Addon:ClearEventLog()
+        advance(25.8)
+        ck(sawWarn("WARN_ANNOUNCE", "Spiderlings soon"), "…'spiderlings soon' lands 25.7 s in")
+        advance(10)
+        ck(sawWarn("WARN_ANNOUNCE", "Web Spray soon"), "…'web spray soon' lands 35.5 s in")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29484, sourceId = 15952 })
+        ck(sawWarn("WARN_ANNOUNCE", "Web Spray"), "…the cast announces at tier 4")
+        near(bar(rt, "spiderlings").total, 30.7, 0.01,
+           "…and the spiderling cycle is re-seeded by the SPRAY, not its own timer")
+        mn, mx = barWindow(rt, "webwrap")
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28622, destName = "Bob" })
+        mn, mx = barWindow(rt, "webwrap")
+        ck(mn == 39.6 and mx == 40.9, "…a wrap restarts Web Wrap on the RECURRING 39.6-40.9")
+        Addon:ClearEventLog()
+        advance(0.6)
+        ck(sawWarn("WARN_SPECIAL", "Switch targets"), "…and the switch-target special fires 0.5 s out")
+        -- …but not when the wrapped player is YOU
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28622, destName = "Drew",
+                       destIsPlayer = true })
+        advance(1)
+        ck(not sawWarn("WARN_SPECIAL", "Switch targets"),
+           "…and is CANCELLED when you are the wrapped player")
+    end
+
+    -- ── §8.4 Noth the Plaguebringer (the hard-coded teleport clock) ───────────
+    do
+        local rt = engage("naxxramas:noth", 15954, "Die, trespasser!")
+        ck(rt ~= nil, "NOTH: engages on the spec's yell")
+        local mn, mx = barWindow(rt, "curse")
+        ck(mn == 6.5 and mx == 25.9, "…the curse bar opens on its 6.5-25.9 pull window")
+        Addon:ClearEventLog()
+        advance(70.9)                                   -- 90.8 - 20
+        ck(sawWarn("WARN_ANNOUNCE", "Teleport in 20 seconds"),
+           "…the teleport pre-warning fires 20 s before the first transition")
+        Addon:ClearEventLog()
+        advance(20)                                     -- t = 90.8: teleport 1 (to balcony)
+        ck(sawWarn("WARN_ANNOUNCE", "Teleported"), "…and 'Teleported' fires at 90.8 s (tick 1)")
+        near(bar(rt, "adds") and bar(rt, "adds").total, 5, 0.01,
+           "…an odd tick (to the balcony) arms the adds bar at 5 s")
+        Addon:ClearEventLog()
+        advance(75)                                     -- t = 165.8: tick 2, back to the room
+        eq(rt:GetCount("telecycle"), 1, "…tick 2 is the first RETURN, counted")
+        near(bar(rt, "curse").total, 10, 0.01, "…which arms the curse at 10 s")
+        near(bar(rt, "adds").total, 3, 0.01, "…and the adds at 3 s (1st return)")
+        advance(109)                                    -- tick 3 (balcony)
+        advance(97)                                     -- tick 4 (return)
+        eq(rt:GetCount("telecycle"), 2, "…tick 4 is the second return")
+        near(bar(rt, "adds").total, 17, 0.01, "…arming the adds at 17 s (2nd return)")
+        -- the 67 s slot: cycle 2's SECOND curse
+        eq(rt:GetCount("cursecycle"), 0, "…with the per-cycle curse counter re-seeded")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29213, sourceId = 15954 })
+        near(bar(rt, "curse").total, 67, 0.01,
+           "…so the 2nd cycle's SECOND curse is the spec's 67 s slot, not the variance")
+        eq(rt:GetCount("cursecycle"), 1, "…and the cycle counter advanced")
+        advance(173)                                    -- tick 5 (balcony)
+        advance(126)                                    -- tick 6 (return)
+        near(bar(rt, "curse").total, 67, 0.01,
+           "…the 3rd return's FIRST curse is the other 67 s slot")
+        advance(93)                                     -- tick 7 (balcony)
+        advance(55)                                     -- tick 8 (return)
+        near(bar(rt, "curse").total, 17, 0.01, "…and the 4th return arms it at 17 s, not 10")
+        -- the tail alternates forever
+        Addon:ClearEventLog()
+        advance(35)                                     -- tick 9 (balcony)
+        ck(sawWarn("WARN_ANNOUNCE", "Teleported"), "…the tail repeats: tick 9 at +35 s")
+        Addon:ClearEventLog()
+        advance(55)                                     -- tick 10 (return)
+        ck(sawWarn("WARN_ANNOUNCE", "Teleported"), "…tick 10 at +55 s")
+        Addon:ClearEventLog()
+        advance(35)                                     -- tick 11 (balcony) — repeatFrom cycles
+        ck(sawWarn("WARN_ANNOUNCE", "Teleported"),
+           "…and tick 11 at +35 s again (the alternating tail, not a repeated last gap)")
+        -- add-wave cadence inside a cycle
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Rise, my soldiers! Rise and fight once more!")
+        ck(sawWarn("WARN_SPECIAL", "Kill the adds"), "…the add-wave yell fires the kill-adds special")
+    end
+
+    -- ── §8.5 Heigan (a pure two-state scheduled loop, zero combat-log triggers) ─
+    do
+        local rt = engage("naxxramas:heigan", 15936, "You are mine now.")
+        ck(rt ~= nil, "HEIGAN: engages on the spec's yell")
+        eq(#Addon:GetEncounter("naxxramas:heigan").warnings, 2,
+           "…and carries exactly the two scheduled warnings (no combat-log triggers at all)")
+        near(bar(rt, "teleportdance").total, 90, 0.01, "…the first teleport is 90 s from pull")
+        Addon:ClearEventLog()
+        advance(75.1)                                   -- 90 - 15
+        ck(sawWarn("WARN_ANNOUNCE", "Teleport soon"), "…with a 15 s pre-warning before the room ends")
+        Addon:ClearEventLog()
+        advance(15)
+        ck(sawWarn("WARN_ANNOUNCE", "Teleported"), "…'Teleported' at 90 s")
+        near(bar(rt, "teleportroom").total, 47, 0.01, "…and the dance phase is 47 s")
+        Addon:ClearEventLog()
+        advance(37.1)                                   -- 47 - 10
+        ck(sawWarn("WARN_ANNOUNCE", "Teleport soon"),
+           "…with a 10 s pre-warning before the dance ends (the lead ALTERNATES)")
+        advance(10)
+        near(bar(rt, "teleportdance").total, 88, 0.01, "…and the next room phase is 88 s")
+    end
+
+    -- ── §8.6 Loatheb ──────────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:loatheb", 16011)
+        ck(rt ~= nil, "LOATHEB: engages off the combat sweep")
+        near(bar(rt, "spore").total, 11.3, 0.01, "…the first spore is 11.3 s")
+        near(bar(rt, "doom").total, 121.3, 0.01, "…the first doom is 121.3 s")
+        local mn, mx = barWindow(rt, "necroticaura")
+        ck(mn == 0.5 and mx == 8.2, "…and the heal window opens on its 0.5-8.2 pull window")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29234, sourceId = 16011 })
+        near(bar(rt, "spore").total, 12.9, 0.01, "…spores recur at 12.9 s")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 30281, sourceId = 16011 })
+        near(bar(rt, "necroticaura").total, 30.7, 0.01, "…and the heal window at 30.7 s")
+        -- the doom cadence: alternating, then a different shape from the 7th
+        local WANT = { 29.1, 32.4, 29.1, 32.4, 29.1, 9.7, 19.4, 11.3, 19.4, 11.3 }
+        local okAll = true
+        for i, want in ipairs(WANT) do
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29204, sourceId = 16011 })
+            local b = bar(rt, "doom")
+            if not b or math.abs(b.total - want) > 0.01 then okAll = false end
+        end
+        ck(okAll, "…doom alternates 29.1/32.4 and re-shapes at the 7th to 9.7 then 19.4/11.3")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 29195, destIsPlayer = true,
+                       destName = "Drew" })
+        advance(55.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Healing possible in 3 seconds"),
+           "…and 'healing possible' fires 55 s after YOUR Corrupted Mind lands")
+    end
+
+    -- ── §8.7 Instructor Razuvious ─────────────────────────────────────────────
+    do
+        Addon.ClassResolver = function() return "PRIEST" end
+        local rt = engage("naxxramas:razuvious", 16061, "Do as I taught you!")
+        ck(rt ~= nil, "RAZUVIOUS: engages on the spec's yell")
+        near(bar(rt, "shout").total, 25.9, 0.01, "…Disrupting Shout is 25.9 s")
+        Addon:ClearEventLog()
+        advance(19.6)
+        ck(sawWarn("WARN_ANNOUNCE", "Disrupting Shout soon"), "…with the pre-warning 19-20 s out")
+        -- pet-sourced understudy timers (a mind-controlled understudy IS a pet)
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29060, sourceIsPet = true,
+                       destName = "Understudy" })
+        ck(rt.timers.taunt ~= nil, "…an understudy Taunt from a PET source starts the 60 s bar")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29060, destName = "Understudy" })
+        ck(true, "…(a non-pet source is ignored by the same row)")
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 29061, sourceIsPet = true,
+                       destName = "Understudy" })
+        ck(rt.timers.shieldwall ~= nil, "…Shield Wall likewise, as a 20 s active bar")
+        Addon:ClearEventLog()
+        advance(15.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Shield Wall"),
+           "…and the Shield Wall warning lands 15 s in (5 s before it ends)")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29051,
+                       sourceGUID = "Creature-0-0-0-0-16803-0007", sourceId = 16803 })
+        ck(rt.timers.mindexhaust ~= nil, "…and Mind Exhaustion runs per understudy nameplate")
+        -- the combat-log pet flag itself
+        local ev = Life:NormalizeCLEU("SPELL_CAST_SUCCESS", "g1", "Pet", 0x00001111, 0,
+                                      "g2", "Boss", 0, 0, 29060, "Taunt")
+        ck(ev.sourceIsPet, "…and the pet flag is read straight off the combat-log source flags")
+        Addon.ClassResolver = function() return "WARLOCK" end
+    end
+
+    -- ── §8.8 Gothik the Harvester ─────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:gothik", 16060)
+        ck(rt ~= nil, "GOTHIK: engages off the combat sweep")
+        eq(rt.stage, 1, "…in phase 1")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "unitCast", spellId = 28025 })
+        eq(rt.stage, 2, "…the FIRST live-side teleport promotes the fight to phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "live side"), "…announcing the teleport")
+        local mn, mx = barWindow(rt, "teledead")
+        ck(mn == 19.4 and mx == 21, "…and arming the OTHER side's bar at 19.4-21")
+        Addon:ClearEventLog()
+        advance(14.6)
+        ck(sawWarn("WARN_ANNOUNCE", "Teleport soon"), "…with a 14.5 s pre-warning")
+        Life:Deliver({ on = "unitCast", spellId = 28026 })
+        eq(rt.stage, 2, "…a later teleport does NOT re-promote the phase")
+        ck(bar(rt, "telelive") ~= nil, "…and the bars alternate back")
+        -- <= 30 %: Gothik stops teleporting
+        setUnit("target", { cid = 16060, combat = true, hp = 29, hpmax = 100 })
+        Life:PollHealth(rt)
+        eq(bar(rt, "telelive"), nil, "…at <= 30 % HP every teleport bar is cancelled")
+        eq(bar(rt, "teledead"), nil, "…both of them")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 16126, destId = 16126,
+                       destGUID = "Creature-0-0-0-0-16126-1" })
+        ck(sawWarn("WARN_ANNOUNCE", "Rider down"), "…a Rider death announces at tier 4")
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 16126, destId = 16126,
+                       destGUID = "Creature-0-0-0-0-16126-1" })
+        eq(warnCount("WARN_ANNOUNCE", "Rider down"), 1, "…de-duplicated by GUID")
+    end
+
+    -- ── §8.9 The Four Horsemen ────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:fourhorsemen", 16062)
+        ck(rt ~= nil, "FOUR HORSEMEN: engages off the combat sweep")
+        ck(Addon:GetEncounter("naxxramas:fourhorsemen").combat.highestHealth,
+           "…reporting boss health as the HIGHEST of the four")
+        near(bar(rt, "markcd").total, 21, 0.01, "…the first Mark is 21 s from pull")
+        eq(rt:GetCount("horsemen"), 4, "…with the census seeded at four")
+        Addon:ClearEventLog()
+        -- all four marks land together; the 10 s anti-spam collapses them into one
+        for _, sid in ipairs({ 28832, 28833, 28834, 28835 }) do
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = sid })
+        end
+        near(bar(rt, "markcd").total, 12.9, 0.01, "…recurring Marks are 12.9 s")
+        eq(Addon._mechCount["naxxramas:fourhorsemen:markcd"], 2,
+           "…and the Mark count is published where the shipped tracker reads it")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28884 })
+        ck(sawWarn("WARN_ANNOUNCE", "Meteor"), "…Meteor announces at tier 4")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28863, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Void Zone on Bob"),
+           "…Void Zone names its victim (target interpolation)")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28863, destName = "Drew",
+                       destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Void Zone on YOU"), "…and fires the personal special on you")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 16065, destId = 16065,
+                       destGUID = "Creature-0-0-0-0-16065-1" })
+        eq(rt:GetCount("horsemen"), 3, "…a horseman's death decrements the census")
+        eq(bar(rt, "voidzone"), nil, "…(and no Void Zone radial exists here — the tracker owns it)")
+    end
+
+    -- ── §8.10 Patchwerk ───────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:patchwerk", 16028, "Patchwerk want to play!")
+        ck(rt ~= nil, "PATCHWERK: engages on the spec's yell")
+        near(bar(rt, "berserk").total, 420, 0.01, "…Berserk is 420 s from pull")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 16028, combat = true, hp = 9, hpmax = 100 })
+        Life:PollHealth(rt)
+        ck(sawWarn("WARN_ANNOUNCE", "Enrage soon"), "…'enrage soon' fires at <= 10 % HP")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28311 })
+        ck(sawWarn("WARN_ANNOUNCE", "Slime Bolt"), "…and Slime Bolt announces on the cast START")
+    end
+
+    -- ── §8.11 Grobbulus ───────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:grobbulus", 15931)
+        near(bar(rt, "berserk").total, 720, 0.01, "GROBBULUS: Berserk is 720 s")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28169, destName = "Bob" })
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28169, destName = "Alice" })
+        local n = 0
+        for _ in pairs(rt.timers.injection.live) do n = n + 1 end
+        eq(n, 2, "…injections run ONE 10 s bar per target")
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28169, destName = "Bob" })
+        n = 0
+        for _ in pairs(rt.timers.injection.live) do n = n + 1 end
+        eq(n, 1, "…and an early dispel stops that player's bar")
+        ck(sawWarn("WARN_ANNOUNCE", "Mutating Injection on Bob"), "…naming each target")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28169, destIsPlayer = true,
+                       destName = "Drew" })
+        ck(sawWarn("WARN_SPECIAL", "run out"), "…and firing the personal run-out special")
+        local mn, mx
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28240 })
+        mn, mx = barWindow(rt, "cloud")
+        ck(mn == 14.5 and mx == 16.6, "…Poison Cloud recurs on 14.5-16.6")
+    end
+
+    -- ── §8.12 Gluth ───────────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:gluth", 15932)
+        near(bar(rt, "berserk").total, 420, 0.01, "GLUTH: Berserk is 420 s")
+        local mn, mx = barWindow(rt, "frenzy")
+        ck(mn == 9.6 and mx == 11.3, "…Frenzy's pull window is 9.6-11.3")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28371 })
+        mn, mx = barWindow(rt, "frenzy")
+        ck(mn == 8.1 and mx == 11.4, "…and it recurs on 8.1-11.4")
+        mn, mx = barWindow(rt, "roar")
+        ck(mn == 17.8 and mx == 24.2, "…Terrifying Roar runs 17.8-24.2 from pull")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28371, destId = 15932 })
+        ck(sawWarn("WARN_SPECIAL", "Dispel the Frenzy"), "…Frenzy raises the enrage-dispel special")
+        -- Era: Decimate has no cast event; it is detected from the DAMAGE
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_DAMAGE", spellId = 28374 })
+        ck(sawWarn("WARN_ANNOUNCE", "Decimate"), "…Decimate is detected from its DAMAGE (Era quirk)")
+        Life:Deliver({ on = "SPELL_DAMAGE", spellId = 28375 })
+        Life:Deliver({ on = "SPELL_DAMAGE", spellName = "Decimate" })
+        eq(warnCount("WARN_ANNOUNCE", "Decimate"), 1, "…once per 20 s, matched on id OR name")
+    end
+
+    -- ── §8.13 Thaddius (the adds phase, the intermission, the polarity window) ─
+    do
+        local rt = engage("naxxramas:thaddius", 15929, "Stalagg crush you!")
+        ck(rt ~= nil, "THADDIUS: engages on the ADDS-phase yell")
+        near(bar(rt, "magneticpull").total, 21, 0.01, "…Throw is 21 s from pull")
+        Addon:ClearEventLog()
+        advance(16.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Throw soon"), "…with the pre-warning 16 s out")
+        eq(rt:GetState("stalagg"), "alive", "…both adds start alive")
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Stalagg dies.")
+        eq(rt:GetState("stalagg"), "dead", "…the add emote kills Stalagg")
+        eq(rt.stage, 1, "…one dead add is NOT the intermission")
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Feugen is jolted back to life!")
+        eq(rt:GetState("feugen"), "alive", "…and a jolt brings one back")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Feugen dies.")
+        eq(rt.stage, 1.5, "…BOTH adds simultaneously dead begins phase 1.5")
+        ck(bar(rt, "intermission") ~= nil, "…starting the intermission bar")
+        local mn, mx = barWindow(rt, "intermission")
+        ck(mn == 12.8 and mx == 16, "…on the 12.8-16 window")
+        eq(bar(rt, "magneticpull"), nil, "…and stopping the throw bar")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…with the pre-phase warning")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Break... you!!")
+        eq(rt.stage, 2, "…and the boss yell begins phase 2")
+        near(bar(rt, "berserk").total, 300, 0.01, "…starting the 300 s berserk")
+        near(bar(rt, "polarity").total, 11.3, 0.01, "…and the first Polarity Shift at 11.3 s")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28089 })
+        mn, mx = barWindow(rt, "polarity")
+        ck(mn == 25.9 and mx == 35.7, "…recurring on the PHASE-2 window 25.9-35.7")
+        near(bar(rt, "polaritycast").total, 3, 0.01, "…with a 3 s cast bar")
+        ck(sawWarn("WARN_ANNOUNCE", "Polarity Shift — casting"), "…announced at tier 4")
+        Addon:ClearEventLog()
+        advance(20.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Polarity Shift soon"), "…and pre-warned 20 s out")
+    end
+
+    -- ── §8.14 Sapphiron (air phase by target LOSS — the Era quirk) ────────────
+    do
+        local rt = engage("naxxramas:sapphiron", 15989)
+        near(bar(rt, "berserk").total, 900, 0.01, "SAPPHIRON: Berserk is 900 s")
+        local mn, mx = barWindow(rt, "airphase")
+        ck(mn == 31.2 and mx == 45.9, "…the first air phase opens on 31.2-45.9")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28542 })
+        mn, mx = barWindow(rt, "lifedrain")
+        ck(mn == 21.1 and mx == 27.5, "…Life Drain runs 21.1-27.5")
+        eq(rt:GetState("flight"), "ground", "…and he starts on the ground")
+        -- the scanner reports LOSS; 0.5 s of it means he lifted off
+        Addon:ClearEventLog()
+        rt:Route({ on = "targetChanged", key = "airscan", lost = true })
+        eq(rt:GetState("flight"), "ground", "…a single target-less sample is NOT the air phase")
+        advance(0.6)
+        eq(rt:GetState("flight"), "air", "…but 0.5 s of it IS (the 5 Hz target-loss rule)")
+        ck(sawWarn("WARN_ANNOUNCE", "Air phase"), "…announced at tier 4")
+        near(bar(rt, "landing").total, 28.5, 0.01, "…arming the 28.5 s landing bar")
+        eq(bar(rt, "lifedrain"), nil, "…and cancelling Life Drain for the air phase")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28522, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Ice Block on Bob"), "…Ice Blocks are counted and named")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28524 })
+        ck(sawWarn("WARN_SPECIAL", "Find shelter"), "…Frost Breath raises the shelter special")
+        near(bar(rt, "frostbreath").total, 7, 0.01, "…with a 7 s cast bar")
+        mn, mx = barWindow(rt, "landing")
+        ck(mn == 16.3 and mx == 28.5, "…and CORRECTS the landing bar to 16.3-28.5")
+        advance(12.3)
+        eq(rt:GetState("flight"), "ground", "…he lands 12.2 s after Frost Breath starts")
+        mn, mx = barWindow(rt, "airphase")
+        ck(mn == 54.3 and mx == 70.8, "…re-arming the air phase on 54.3-70.8")
+        -- the safety net, and the <= 10 % cancellation
+        setUnit("target", { cid = 15989, combat = true, hp = 9, hpmax = 100 })
+        Life:PollHealth(rt)
+        eq(bar(rt, "airphase"), nil, "…and at <= 10 % HP the air-phase bar is cancelled for good")
+    end
+
+    -- ── §8.15 Kel'Thuzad ──────────────────────────────────────────────────────
+    do
+        local rt = engage("naxxramas:kelthuzad", 15990,
+            "Minions, servants, soldiers of the cold dark! Obey the call of Kel'Thuzad!")
+        ck(rt ~= nil, "KEL'THUZAD: engages on the spec's yell")
+        local enc = Addon:GetEncounter("naxxramas:kelthuzad")
+        eq(enc.combat.minCombatTime, 60, "…with a 60 s minimum combat time")
+        eq(enc.combat.wipeWindow, 15, "…and a 15 s wipe timeout")
+        local mn, mx = barWindow(rt, "phase2")
+        ck(mn == 229.2 and mx == 245.8, "…phase 1 is the wide 229.2-245.8 variance bar")
+        Addon:ClearEventLog()
+        advance(220.1)
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…pre-warned at 220 s")
+        -- Era: the nameplate appearing IS phase 2
+        Addon:ClearEventLog()
+        Life:OnEvent("NAME_PLATE_UNIT_ADDED", "nameplate1")
+        eq(rt.stage, 1, "…an unknown nameplate does nothing")
+        setUnit("nameplate1", { cid = 15990, combat = true, hp = 100, hpmax = 100 })
+        Life:OnEvent("NAME_PLATE_UNIT_ADDED", "nameplate1")
+        eq(rt.stage, 2, "…HIS nameplate appearing promotes the fight to phase 2 (Era quirk)")
+        eq(bar(rt, "phase2"), nil, "…stopping the phase-1 bar")
+        mn, mx = barWindow(rt, "frostblast")
+        ck(mn == 30.3 and mx == 92.7, "…and every P2 ability arms on its PHASE-2-START value")
+        mn, mx = barWindow(rt, "detonate")
+        ck(mn == 20.2 and mx == 46.5, "…Mana Bomb included")
+        mn, mx = barWindow(rt, "chains")
+        ck(mn == 21.8 and mx == 103.4, "…and Chains")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 27808 })
+        mn, mx = barWindow(rt, "frostblast")
+        ck(mn == 33.5 and mx == 75.3, "…then recurs on the ordinary 33.5-75.3")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 27810, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Shadow Fissure on Bob"), "…Shadow Fissure names its target")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 28478,
+                       sourceGUID = "Creature-0-0-0-0-15990-3" })
+        ck(rt.timers.frostboltcast
+           and rt.timers.frostboltcast:Get("Creature-0-0-0-0-15990-3") ~= nil,
+           "…Frostbolt runs a per-CASTER nameplate cast bar (one bar per mob GUID)")
+        Life:Deliver({ on = "SPELL_INTERRUPT", spellId = 28478,
+                       sourceGUID = "Creature-0-0-0-0-15990-3" })
+        ck(sawWarn("WARN_SPECIAL", "Interrupt Frostbolt"), "…and raises the interrupt special")
+        -- phase 3 is a health rule that only applies IN PHASE 2
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15990, combat = true, hp = 47, hpmax = 100 })
+        Life:PollHealth(rt)
+        eq(rt.stage, 3, "…and 48 % IN PHASE 2 is the guardian-summon phase 3")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 3"), "…announced")
+    end
+
+    -- ── §8.16 the zone-wide trash module ──────────────────────────────────────
+    do
+        resetLife()
+        eq(Life:ArmZones(533), 1, "TRASH: entering Naxxramas ARMS the zone module")
+        ck(Life:IsZoneArmed("naxxramas:trash"), "…without engaging anything")
+        ck(not Life:AnyEngaged(), "…and without registering as a boss engagement")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 27990 })
+        ck(sawWarn("WARN_ANNOUNCE", "Fear"), "…trash alerts fire off the shared combat-log path")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 27990 })
+        eq(warnCount("WARN_ANNOUNCE", "Fear"), 1, "…throttled by the spec's 5 s anti-spam")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_SUMMON", spellId = 28294 })
+        Life:Deliver({ on = "SPELL_SUMMON", spellId = 28294 })
+        eq(warnCount("WARN_SPECIAL", "lightning totem"), 2,
+           "…and the totem special fires for BOTH packs (no anti-spam, deliberately)")
+        W.instanceID = 409
+        eq(Life:ArmZones(409), 0, "…zoning into another instance disarms it")
+        ck(not Life:IsZoneArmed("naxxramas:trash"), "…leaving nothing armed")
+        W.instanceID = 533
+    end
+
+    -- ── the escape hatch, driven per boss ─────────────────────────────────────
+    do
+        local log = {}
+        for _, boss in ipairs({ "loatheb", "fourhorsemen", "gothik", "razuvious", "thaddius" }) do
+            Addon:RegisterModule({
+                id = "w4dfix_" .. boss, raidId = "naxxramas", bossId = boss,
+                name = "W4d hatch fixture", defaults = { enabled = true },
+                Start = function() log[#log + 1] = "start:" .. boss end,
+                Stop  = function() log[#log + 1] = "stop:" .. boss end,
+            })
+        end
+        local CIDS = { loatheb = 16011, fourhorsemen = 16062, gothik = 16060,
+                       razuvious = 16061, thaddius = 15929 }
+        local YELLS = { razuvious = "Do as I taught you!", thaddius = "Stalagg crush you!" }
+        for _, boss in ipairs({ "loatheb", "fourhorsemen", "gothik", "razuvious", "thaddius" }) do
+            for i = #log, 1, -1 do log[i] = nil end
+            local rt = engage("naxxramas:" .. boss, CIDS[boss], YELLS[boss])
+            eq(log[1], "start:" .. boss,
+               "HATCH: engaging naxxramas:" .. boss .. " STARTS its shipped special modules")
+            ck(Addon.active and Addon.active.raidId == "naxxramas"
+               and Addon.active.bossId == boss,
+               "…and populates Addon.active for the widgets that read it")
+            Life:EndCombat(rt, false, "test")
+            advance(4)
+            ck(log[#log] and log[#log]:find("stop:", 1, true) == 1,
+               "…and ending the fight STOPS them")
+        end
+    end
+
+    Addon._suppressLegacyAlerts = nil
+    Addon:SetEventRecording(false)
+    resetLife()
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-4d)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -3769,7 +4559,9 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "WARN  §5.1/§5.2/§5.5 warning tiers",
                      "SCAN  §5.3 the three target scanners",
                      "ERA  §6.1/§8.6/§5.4 Era services",
-                     "PUB  §4.5/§11.8 the 18-field public contract" }) do
+                     "PUB  §4.5/§11.8 the 18-field public contract",
+                     "NAXX  §8 encounter data: registration, keys, the options tree",
+                     "NAXX-DRIVE  §8 per-encounter behaviour through the real engine" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

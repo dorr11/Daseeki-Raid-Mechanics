@@ -1,5 +1,50 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 4d (Naxxramas + the Naxx specials — internal)
+- **Naxxramas is back, rebuilt.** All fifteen bosses and the zone-wide trash alerts now
+  run on the new engine, rewritten from the behavioural spec rather than carried over:
+  every timer, every warning, the audiences they default on for, the phase rules and
+  the Era-specific detection each fight needs. Where the old data had a handful of bars
+  per boss, each fight now carries the full set — including the ones that only exist on
+  Era, like Noth's fully scripted teleport clock and Heigan's silent dance loop.
+- Timer bars know the difference between "the first one" and "every one after". Anub'-
+  Rekhan's first Locust Swarm is a wide window and every one after it is a flat 69.2
+  seconds; Loatheb's dooms alternate and then change shape entirely at the seventh;
+  Kel'Thuzad's whole phase-2 ability set arms on different numbers the moment he
+  becomes attackable than it uses for the rest of the fight.
+- Pre-warnings arrive on time and, just as importantly, GO AWAY when they should.
+  "Widow's Embrace ends in 5 seconds" is cancelled if the Embrace ends early or the
+  boss dies; "switch to the wrapped player" on Maexxna is cancelled if the wrapped
+  player turns out to be you; Gothik's teleport pre-warnings all stop for good once he
+  is under 30% and stops teleporting.
+- The fights with no events to work with are handled the way Era demands. Sapphiron's
+  air phase is detected by watching whether he still has a target of his own, held for
+  half a second before it counts, with a 60-second safety net. Kel'Thuzad's phase 2 is
+  detected by his nameplate appearing. Thaddius's intermission starts when both adds
+  are down at the same time, tracked off their emotes. None of these have a real event
+  on this client, and all of them now start your bars anyway.
+- **Your five Naxx widgets are untouched and now start themselves.** The Four Horsemen
+  tracker and rotation bar, the Gothik wave tracker, the Loatheb healer window, the
+  Razuvious understudy icons and the Thaddius add-health frame all come up on the right
+  pull and go away at the end, driven by the encounter data instead of the old engine.
+  Not one line of those files changed. Where a widget already shows something the new
+  data could also show — Gothik's waves, the Horsemen's per-horse cooldowns, the
+  polarity flip alert — the WIDGET still ships it and the encounter deliberately stays
+  quiet, so nothing is drawn twice.
+- The Naxxramas options section is real again: every bar and every warning is its own
+  toggle under its boss, and they are stored under exactly the keys your existing
+  settings already use, so anything you had turned off in Naxxramas stays off.
+- Naxxramas trash alerts (fear, poison charge, veil of shadow, and "kill the lightning
+  totem") are armed the whole time you are in the instance, including during boss
+  fights, and disarm themselves when you leave.
+- Internal: the encounter grammar gained eleven general primitives the Naxx section
+  needed — deferred and cancellable alerts, counter- and state-gated triggers,
+  per-trigger durations, alternating scheduled loops with per-tick pre-warnings, routed
+  phase/state transitions, the nameplate and pet-flag paths, zone-armed trash modules,
+  and the projection that builds the options tree from the encounter registry. The old
+  `data_naxxramas.lua` was diffed against the spec first and then deleted; where the two
+  disagreed the spec won, and the differences are listed in the wave report.
+
 ## Unreleased — 2.0.0 rebuild, wave 3 (raid sync, recovery, interop — internal)
 - Raid Mechanics now talks to other people running it. Pull timers, break timers and
   "the fight has started / the fight is over" all travel across the raid on Daseeki's

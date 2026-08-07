@@ -25,6 +25,38 @@
          and a REGISTERED-SPECIAL-MODULE ESCAPE HATCH for everything that refuses
          to be data.
 
+    W4d GRAMMAR EXTENSIONS (Naxxramas wave). Porting the encounters spec's Naxx
+    section found eleven behaviours the shipped grammar could not express. Each
+    extension below is GENERAL — a primitive any zone can use — never a shape cut to
+    fit one boss. They are listed here because a reader of an encounter file needs to
+    know the vocabulary exists:
+
+      1. DEFERRED ACTS.  `delay` on a trigger (or a row) schedules the act instead of
+         running it, and `cancel` triggers unschedule a row's pending acts. This is
+         the spec's ubiquitous "scheduled N s after X" pre-warning, and its equally
+         ubiquitous "cancelled if the boss dies / the aura fades early".
+      2. TRIGGER FILTERS.  `fromKey`, `index`, `where`, `states`, `counter`,
+         `spellName`, `condition` / `conditionNot`, `dedupe`.
+      3. PER-TRIGGER DURATION.  `duration` on a trigger overrides the row's resolved
+         value for that path (one bar, many cadences: Noth's curse).
+      4. LIST TRIGGER FORMS.  `starts` / `restarts` / `stops` on a timer row, because
+         one bar routinely has more than three ways in.
+      5. SCHEDULE ROWS grew `pre` (a pre-tick N s before each tick, cycling per tick),
+         `count` (stop after N ticks) and `gaps.repeatFrom` (an alternating tail).
+      6. SYNTHETIC ROUTING.  Stage and state transitions are now ROUTED as events
+         (`on = "stage"` / `on = "state"`), which the vocabulary already promised.
+      7. TARGET INTERPOLATION.  `%s` in a warning's text is filled with the event's
+         target, and the target rides along to the batchers.
+      8. LEGACY COUNT MIRROR.  Row counts are published into `Addon._mechCount` under
+         the row's option key — the contract the shipped Four Horsemen tracker reads.
+      9. OPTIONS PROJECTION.  `Addon:RegisterZone` + `API.PublishOptionsTree` build the
+         raid / boss / mechanic tree options.lua consumes out of the ENCOUNTER
+         REGISTRY, replacing the 1.x `RegisterRaid` data model (still refused).
+     10. CONDITIONS REGISTRY.  `API.Conditions` — named predicates a trigger names,
+         so "you are the boss's current tank" is data, not code.
+     11. (core_lifecycle) the nameplate path, combat-log pet flags and zone-armed
+         trash modules; (core_sched) `gaps.repeatFrom`; (svc_scan) `reportLoss`.
+
     THE ESCAPE HATCH IS THE CONTRACT WITH W4d. The five shipped Naxx specials
     (mod_loatheb_healers, mod_fourhorsemen_rotation, mod_fourhorsemen_tracker,
     mod_gothik_waves, mod_razuvious_understudy, thaddius) are NOT touched by this
@@ -146,13 +178,15 @@ end
 -- shipping: the five Naxx special modules call them directly with their own anchor
 -- keys (thaddius.lua, mod_gothik_waves.lua), and the design doc's verdict on the
 -- alert HUD is KEEP + EXTEND. W4d re-seats those callers onto engine rows.
-function Addon:EmitAnnounce(encId, row, text)
-    Addon:FireEngineEvent("WARN_ANNOUNCE", encId, row, text)
+-- W4d added the optional 4th argument `target`: the player the warning is ABOUT, so
+-- the combine/precise batchers can list names. Three-argument callers are unchanged.
+function Addon:EmitAnnounce(encId, row, text, target)
+    Addon:FireEngineEvent("WARN_ANNOUNCE", encId, row, text, target)
     return text
 end
 
-function Addon:EmitSpecial(encId, row, text)
-    Addon:FireEngineEvent("WARN_SPECIAL", encId, row, text)
+function Addon:EmitSpecial(encId, row, text, target)
+    Addon:FireEngineEvent("WARN_SPECIAL", encId, row, text, target)
     return text
 end
 
@@ -227,6 +261,29 @@ API.SCAN_TYPES  = { poll = true, event = true, repeated = true }
 API.COUNTER_SCOPES = { global = true, self = true, boss = true, census = true, target = true }
 API.WARN_TIERS  = { announce = true, special = true }
 
+-- ── W4d: NAMED CONDITIONS (extension 10) ──────────────────────────────────────
+-- A trigger names a predicate; the engine resolves it. Keeps encounter data free of
+-- functions (it must stay serialisable and reviewable) while still expressing the
+-- handful of spec rules that are genuinely a question about the live world. Every
+-- entry is `fn(rt, ev, tr) -> boolean` and every one is overridable, which is how the
+-- harness drives them deterministically.
+API.Conditions = {}
+
+-- "…and you are the boss's current tank" (Faerlina's defensive special). The spec is
+-- explicit that this branch keys off whether YOU are tanking, not off a role flag.
+API.Conditions.playerIsBossTarget = function(rt, ev, tr)
+    local unit
+    local Scan = Addon.Scan
+    if Scan and Scan.ResolveUnit then
+        local cid = (tr and tr.creatureId) or (ev and ev.sourceId) or (rt.def.creatureIds or {})[1]
+        unit = Scan.ResolveUnit(cid, ev and ev.sourceGUID)
+    end
+    if not unit then return false end
+    local f = _G.UnitIsUnit
+    if type(f) ~= "function" then return false end
+    return f("player", unit .. "target") and true or false
+end
+
 -- ── Registry ──────────────────────────────────────────────────────────────────
 Addon.encounters        = {}    -- ordered array
 Addon.encountersById    = {}    -- id -> def
@@ -250,12 +307,47 @@ end
 -- Never throws in-game: returns an error list and writes to the telemetry ring.
 -- The harness asserts the list is empty for real data (and non-empty for the
 -- deliberate bad fixtures).
+local validateDuration      -- forward: triggers may carry their own duration override
+
 local function validateTrigger(errs, where, tr)
     if type(tr) ~= "table" then errs[#errs + 1] = where .. ": trigger must be a table"; return end
     if tr.on == nil then errs[#errs + 1] = where .. ": trigger has no `on`"; return end
     if not API.TRIGGER_EVENTS[tr.on] then
         errs[#errs + 1] = where .. ": unknown trigger event '" .. tostring(tr.on) .. "'"
     end
+    -- W4d extensions carry their own validation, per the wave's mandate.
+    if tr.delay ~= nil and (type(tr.delay) ~= "number" or tr.delay < 0) then
+        errs[#errs + 1] = where .. ": `delay` must be a non-negative number"
+    end
+    if tr.condition ~= nil and API.Conditions[tr.condition] == nil then
+        errs[#errs + 1] = where .. ": unknown condition '" .. tostring(tr.condition) .. "'"
+    end
+    if tr.conditionNot ~= nil and API.Conditions[tr.conditionNot] == nil then
+        errs[#errs + 1] = where .. ": unknown condition '" .. tostring(tr.conditionNot) .. "'"
+    end
+    if tr.index ~= nil and type(tr.index) ~= "number" and type(tr.index) ~= "table" then
+        errs[#errs + 1] = where .. ": `index` must be a number or a table"
+    end
+    if tr.where ~= nil and type(tr.where) ~= "table" then
+        errs[#errs + 1] = where .. ": `where` must be a table of event-field values"
+    end
+    if tr.states ~= nil and type(tr.states) ~= "table" then
+        errs[#errs + 1] = where .. ": `states` must be a table of stateKey -> value"
+    end
+    if tr.counter ~= nil then
+        local list = tr.counter[1] and tr.counter or { tr.counter }
+        for _, c in ipairs(list) do
+            if type(c) ~= "table" or type(c.key) ~= "string" then
+                errs[#errs + 1] = where .. ": `counter` needs { key = <counter row key>, … }"
+            elseif c.eq == nil and c.min == nil and c.max == nil then
+                errs[#errs + 1] = where .. ": counter '" .. tostring(c.key) .. "' has no eq/min/max test"
+            end
+        end
+    end
+    if tr.dedupe ~= nil and type(tr.dedupe) ~= "string" then
+        errs[#errs + 1] = where .. ": `dedupe` must name an event field"
+    end
+    if tr.duration ~= nil then validateDuration(errs, where .. ".duration", tr.duration) end
 end
 
 local function validateRole(errs, where, role)
@@ -269,7 +361,7 @@ local function validateRole(errs, where, role)
     end
 end
 
-local function validateDuration(errs, where, v)
+function validateDuration(errs, where, v)
     if v == nil then return end
     local T = Addon.Timers
     if not T then return end                 -- timers module loads after us in headless slices
@@ -290,8 +382,14 @@ function API.Validate(def)
     if d.mode and not API.DETECT_MODES[d.mode] then
         errs[#errs + 1] = "unknown detect.mode '" .. tostring(d.mode) .. "'"
     end
-    if not def.creatureId and not def.encounterId and not (d.yell or d.yellFind or d.yellPattern
-        or d.emote or d.emoteFind or d.say) then
+    -- A ZONE (trash) module is armed by the instance, not started by a mob or a yell,
+    -- so the "nothing can start it" rule is satisfied by declaring the zone instead.
+    local isZone = (d.mode == "zone")
+    if isZone and not def.zone then
+        errs[#errs + 1] = tostring(def.id) .. ": a zone module must declare the instance it arms in"
+    end
+    if not isZone and not def.creatureId and not def.encounterId and not (d.yell or d.yellFind
+        or d.yellPattern or d.emote or d.emoteFind or d.say) then
         errs[#errs + 1] = def.id .. ": no creatureId, encounterId or chat trigger — nothing can start it"
     end
 
@@ -322,6 +420,15 @@ function API.Validate(def)
         if row.start then validateTrigger(errs, where .. ".start", row.start) end
         if row.restart then validateTrigger(errs, where .. ".restart", row.restart) end
         if row.stop then validateTrigger(errs, where .. ".stop", row.stop) end
+        -- W4d extension 4: the list forms. One bar, many ways in.
+        for j, tr in ipairs(row.starts   or {}) do validateTrigger(errs, where .. ".starts["   .. j .. "]", tr) end
+        for j, tr in ipairs(row.restarts or {}) do validateTrigger(errs, where .. ".restarts[" .. j .. "]", tr) end
+        for j, tr in ipairs(row.stops    or {}) do validateTrigger(errs, where .. ".stops["    .. j .. "]", tr) end
+        for j, tr in ipairs(row.cancels  or {}) do validateTrigger(errs, where .. ".cancels["  .. j .. "]", tr) end
+        if row.cancel then validateTrigger(errs, where .. ".cancel", row.cancel) end
+        if row.delay ~= nil and (type(row.delay) ~= "number" or row.delay < 0) then
+            errs[#errs + 1] = where .. ": `delay` must be a non-negative number"
+        end
         if row.color and (type(row.color) ~= "number" or row.color < 1 or row.color > API.COLOR_MAX) then
             errs[#errs + 1] = where .. ": colour index out of range 1.." .. API.COLOR_MAX
         end
@@ -344,6 +451,39 @@ function API.Validate(def)
         if row.trigger then validateTrigger(errs, where .. ".trigger", row.trigger) end
         for j, tr in ipairs(row.triggers or {}) do
             validateTrigger(errs, where .. ".triggers[" .. j .. "]", tr)
+        end
+        if row.cancel then validateTrigger(errs, where .. ".cancel", row.cancel) end
+        for j, tr in ipairs(row.cancels or {}) do
+            validateTrigger(errs, where .. ".cancels[" .. j .. "]", tr)
+        end
+        if row.delay ~= nil and (type(row.delay) ~= "number" or row.delay < 0) then
+            errs[#errs + 1] = where .. ": `delay` must be a non-negative number"
+        end
+    end
+
+    -- W4d extension 5: schedule rows are user-addressable rows like any other, so
+    -- they take part in the key-uniqueness rule and carry their own validation.
+    for i, row in ipairs(def.schedule or {}) do
+        local where = ("%s.schedule[%s]"):format(tostring(def.id), tostring(row.key or i))
+        rowKey("schedule", row, i)
+        if not row.gaps and not row.at then
+            errs[#errs + 1] = where .. ": a schedule row needs `gaps` or `at`"
+        end
+        if row.gaps then
+            if type(row.gaps) ~= "table" or #row.gaps == 0 then
+                errs[#errs + 1] = where .. ": `gaps` must be a non-empty list"
+            else
+                local rf = row.gaps.repeatFrom
+                if rf ~= nil and (type(rf) ~= "number" or rf < 1 or rf > #row.gaps) then
+                    errs[#errs + 1] = where .. ": `gaps.repeatFrom` is outside the gap list"
+                end
+            end
+        end
+        if row.pre ~= nil and type(row.pre) ~= "number" and type(row.pre) ~= "table" then
+            errs[#errs + 1] = where .. ": `pre` must be a number or a list of numbers"
+        end
+        if row.count ~= nil and (type(row.count) ~= "number" or row.count < 1) then
+            errs[#errs + 1] = where .. ": `count` must be a positive number of ticks"
         end
     end
 
@@ -402,6 +542,16 @@ local function indexTrigger(enc, tr, consumer)
     bucket[#bucket + 1] = { trigger = tr, consumer = consumer }
 end
 
+-- W4d extension 1: a row's `cancel` / `cancels` triggers unschedule that row's
+-- pending DEFERRED acts. Indexed for every row kind, because "cancel the pre-warning
+-- if the boss dies" is not a warning-only rule.
+local function indexCancels(enc, row)
+    if row.cancel then indexTrigger(enc, row.cancel, { kind = "cancel", row = row }) end
+    for _, tr in ipairs(row.cancels or {}) do
+        indexTrigger(enc, tr, { kind = "cancel", row = row })
+    end
+end
+
 local function compile(enc)
     enc.index    = {}
     enc.rowsByKey = {}
@@ -410,6 +560,10 @@ local function compile(enc)
         indexTrigger(enc, row.start,   { kind = "timer", row = row, act = "start" })
         indexTrigger(enc, row.restart, { kind = "timer", row = row, act = "restart" })
         indexTrigger(enc, row.stop,    { kind = "timer", row = row, act = "stop" })
+        for _, tr in ipairs(row.starts   or {}) do indexTrigger(enc, tr, { kind = "timer", row = row, act = "start" }) end
+        for _, tr in ipairs(row.restarts or {}) do indexTrigger(enc, tr, { kind = "timer", row = row, act = "restart" }) end
+        for _, tr in ipairs(row.stops    or {}) do indexTrigger(enc, tr, { kind = "timer", row = row, act = "stop" }) end
+        indexCancels(enc, row)
     end
     for _, row in ipairs(enc.warnings or {}) do
         enc.rowsByKey[row.key] = row
@@ -417,6 +571,10 @@ local function compile(enc)
         for _, tr in ipairs(row.triggers or {}) do
             indexTrigger(enc, tr, { kind = "warning", row = row })
         end
+        indexCancels(enc, row)
+    end
+    for _, row in ipairs(enc.schedule or {}) do
+        if row.key then enc.rowsByKey[row.key] = row end
     end
     for _, row in ipairs(enc.scans or {}) do
         enc.rowsByKey[row.key] = row
@@ -424,6 +582,7 @@ local function compile(enc)
     end
     for _, row in ipairs(enc.counters or {}) do
         enc.rowsByKey[row.key] = row
+        indexCancels(enc, row)
         if row.inc then indexTrigger(enc, row.inc, { kind = "counter", row = row, act = "inc" }) end
         if row.dec then indexTrigger(enc, row.dec, { kind = "counter", row = row, act = "dec" }) end
         if row.reset then indexTrigger(enc, row.reset, { kind = "counter", row = row, act = "reset" }) end
@@ -442,6 +601,7 @@ local function compile(enc)
     end
     for _, row in ipairs(enc.states or {}) do
         enc.rowsByKey[row.key] = row
+        indexCancels(enc, row)
         for _, tr in ipairs(row.transitions or {}) do
             indexTrigger(enc, tr, { kind = "state", row = row, transition = tr })
         end
@@ -560,6 +720,7 @@ function API.NewRuntime(def, ctx)
     rt.antispam  = {}
     rt.timers    = {}
     rt.healthFired = {}
+    rt.dedupe    = {}       -- W4d: per-trigger "fire once per distinct value" sets
     rt.engaged   = true
     rt.pullTime  = (ctx and ctx.pullTime) or (Addon.Sched and Addon.Sched:Now()) or 0
     rt.difficulty = ctx and ctx.difficulty
@@ -582,7 +743,30 @@ function Runtime:SetStage(v)
     else self.stage = v end
     self.totality = self.totality + 1
     Addon:FireEngineEvent("ENGINE_STAGE", self.id, self.stage, self.totality)
+    -- W4d extension 6. `stage` has always been in the trigger vocabulary; nothing
+    -- ever ROUTED one, so "start this bar when the phase changes" (Kel'Thuzad's whole
+    -- phase-2 ability set, Thaddius's berserk) was declarable but dead. It fires now.
+    self:RouteSynthetic({ on = "stage", stage = self.stage, totality = self.totality })
     return true
+end
+
+-- Synthetic events are engine-originated, so a badly-written state machine could
+-- ping-pong. Depth-capped rather than forbidden: a transition that legitimately
+-- drives a phase change is normal encounter shape.
+Runtime.SYNTH_MAX_DEPTH = 4
+function Runtime:RouteSynthetic(ev)
+    local d = (self._synthDepth or 0)
+    if d >= Runtime.SYNTH_MAX_DEPTH then
+        if Addon.Telemetry then
+            Addon.Telemetry.Write("api.validate",
+                { enc = self.id, reason = "synthetic routing depth cap", key = tostring(ev.on) })
+        end
+        return 0
+    end
+    self._synthDepth = d + 1
+    local okc, n = pcall(Runtime.Route, self, ev)
+    self._synthDepth = d
+    return okc and n or 0
 end
 
 function Runtime:GetStage() return self.stage, self.totality end
@@ -611,9 +795,19 @@ function Runtime:AntiSpam(key, seconds)
 end
 
 -- ── Counters ──────────────────────────────────────────────────────────────────
+-- Counter values are mirrored into the legacy `Addon._mechCount` contract under the
+-- row's option key (W4d extension 8): the shipped Four Horsemen tracker reads
+-- `Addon._mechCount["naxxramas:fourhorsemen:markcd"]` for its header, and the port
+-- must not touch that file.
+local function mirrorCount(rt, key, value)
+    Addon._mechCount = Addon._mechCount or {}
+    Addon._mechCount[API.OptionKey(rt.id, key)] = value
+end
+
 function Runtime:Count(key, delta)
     local v = (self.counters[key] or 0) + (delta or 1)
     self.counters[key] = v
+    mirrorCount(self, key, v)
     Addon:FireEngineEvent("COUNTER", self.id, key, v, delta or 1)
     return v
 end
@@ -633,8 +827,12 @@ function Runtime:SetState(key, to)
     if from == to then return false end
     self.states[key] = to
     Addon:FireEngineEvent("STATE", self.id, key, from, to)
+    -- W4d extension 6, the other half: a state transition is an event. This is what
+    -- makes "when BOTH adds are dead" (Thaddius) a declared rule instead of code.
+    self:RouteSynthetic({ on = "state", key = key, from = from, to = to })
     return true
 end
+
 
 function Runtime:GetState(key) return self.states[key] end
 
@@ -702,6 +900,42 @@ end
 -- `ev` is the normalised event table the lifecycle layer hands us:
 --   { on=, spellId=, sourceGUID=, sourceId=, destGUID=, destId=, destName=,
 --     sourceName=, amount=, school=, text=, pct=, stage=, unit= }
+-- W4d extension 2 helpers. Each is a pure predicate over (trigger spec, event).
+local function inList(want, got)
+    if type(want) == "table" then
+        for _, v in ipairs(want) do if v == got then return true end end
+        return false
+    end
+    return want == got
+end
+
+-- `index` selects ticks of a scheduled loop: an exact tick, a list of ticks, every
+-- other tick (`odd` / `even` — the shape of every two-state scripted loop), or an
+-- arbitrary stride.
+local function indexMatches(spec, i)
+    if i == nil then return false end
+    if type(spec) == "number" then return spec == i end
+    if type(spec) ~= "table" then return false end
+    if spec.odd  then return (i % 2) == 1 end
+    if spec.even then return (i % 2) == 0 end
+    if spec.every then
+        local off = spec.offset or 0
+        return i >= off and ((i - off) % spec.every) == 0
+    end
+    return inList(spec, i)
+end
+
+local function counterMatches(rt, spec)
+    local list = spec[1] and spec or { spec }
+    for _, c in ipairs(list) do
+        local v = rt.counters[c.key] or 0
+        if c.eq  ~= nil and v ~= c.eq  then return false end
+        if c.min ~= nil and v <  c.min then return false end
+        if c.max ~= nil and v >  c.max then return false end
+    end
+    return true
+end
+
 local function triggerMatches(rt, tr, ev)
     if tr.spellId ~= nil then
         if type(tr.spellId) == "table" then
@@ -757,9 +991,53 @@ local function triggerMatches(rt, tr, ev)
         for _, s in ipairs(want) do if got:match(s) then hit = true break end end
         if not hit then return false end
     end
+
+    -- ── W4d extension 2: the new filters ──────────────────────────────────────
+    -- `fromKey` scopes a synthetic event to the row that raised it: schedules, scan
+    -- results and state changes all carry the originating row's key, and without this
+    -- every `on = "schedule"` row in an encounter would answer every other row's tick.
+    if tr.fromKey ~= nil and ev.key ~= tr.fromKey then return false end
+    if tr.index ~= nil and not indexMatches(tr.index, ev.index) then return false end
+    if tr.spellName ~= nil and not inList(tr.spellName, ev.spellName) then return false end
+    if tr.where ~= nil then
+        for field, want in pairs(tr.where) do
+            local got = ev[field]
+            if type(want) == "boolean" then
+                if (got and true or false) ~= want then return false end
+            elseif not inList(want, got) then
+                return false
+            end
+        end
+    end
+    if tr.states ~= nil then
+        for k, want in pairs(tr.states) do
+            if rt.states[k] ~= want then return false end
+        end
+    end
+    if tr.counter ~= nil and not counterMatches(rt, tr.counter) then return false end
+    if tr.condition ~= nil then
+        local f = API.Conditions[tr.condition]
+        if not f or not f(rt, ev, tr) then return false end
+    end
+    if tr.conditionNot ~= nil then
+        local f = API.Conditions[tr.conditionNot]
+        if f and f(rt, ev, tr) then return false end
+    end
+    -- `dedupe` is LAST because it is the only filter with a side effect: it records
+    -- the value it just admitted. ("<horseman> died, de-duplicated by GUID".)
+    if tr.dedupe ~= nil then
+        local v = ev[tr.dedupe]
+        if v ~= nil then
+            local set = rt.dedupe[tr]
+            if not set then set = {}; rt.dedupe[tr] = set end
+            if set[v] then return false end
+            set[v] = true
+        end
+    end
     return true
 end
 API.TriggerMatches = triggerMatches
+API.IndexMatches   = indexMatches
 
 -- Dispatch one normalised event into an engagement. Returns the number of rows
 -- that acted, which is what the harness asserts against.
@@ -783,14 +1061,40 @@ local function fmtCount(text, n)
     return text .. " " .. tostring(n)
 end
 
-function Runtime:Act(entry, ev)
+-- W4d extension 1. A deferred act is an ordinary act that runs later, scheduled with
+-- the RUNTIME as its owner (so combat end sweeps it) and the ROW KEY as its leading
+-- argument (so §3.2's partial-match Unschedule can cancel a row's pending acts
+-- without knowing which trigger raised them).
+local function deferredAct(rowKey, entry, ev, rt)
+    if not rt.engaged then return end
+    return rt:Act(entry, ev, true)
+end
+API.DeferredAct = deferredAct
+
+function Runtime:Act(entry, ev, deferred)
     local c, row = entry.consumer, entry.consumer.row
     local tr = entry.trigger
 
-    if tr.antispam and not self:AntiSpam(row.key .. ":" .. tostring(tr.on), tr.antispam) then
-        return false
+    if c.kind == "cancel" then
+        -- Cancels never throttle and never defer: they exist to unmake a schedule.
+        local n = Addon.Sched:Unschedule(deferredAct, self, row.key)
+        return n > 0
     end
-    if row.antispam and not self:AntiSpam(row.key, row.antispam) then return false end
+
+    if not deferred then
+        if tr.antispam and not self:AntiSpam(row.key .. ":" .. tostring(tr.on), tr.antispam) then
+            return false
+        end
+        if row.antispam and not self:AntiSpam(row.key, row.antispam) then return false end
+
+        -- `row.delay` on a SCAN row already means something else (svc_scan's own
+        -- pre-scan delay, §5.3), so only the trigger-level form applies there.
+        local delay = tr.delay or (c.kind ~= "scan" and row.delay or nil)
+        if delay and delay > 0 then
+            Addon.Sched:Schedule(delay, deferredAct, self, row.key, entry, ev, self)
+            return true
+        end
+    end
 
     if c.kind == "timer" then
         if not Addon.API.IsRowEnabled(self.id, row) then return false end
@@ -810,7 +1114,11 @@ function Runtime:Act(entry, ev)
         end
         local n = (self.counters["__occ:" .. row.key] or 0) + 1
         self.counters["__occ:" .. row.key] = n
-        local dur = API.ResolveDuration(row, n, self.stage)
+        if row.count then mirrorCount(self, row.key, n) end
+        -- W4d extension 3: a trigger may carry the duration for ITS path. One bar can
+        -- then have several cadences (Noth's curse: a pull window, a recurring
+        -- variance, and a fixed value on each return to the room).
+        local dur = tr.duration or API.ResolveDuration(row, n, self.stage)
         if ident ~= nil then t:Start(dur, ident) else t:Start(dur) end
         return true
     end
@@ -819,10 +1127,15 @@ function Runtime:Act(entry, ev)
         if row.key and not Addon.API.IsRowEnabled(self.id, row) then return false end
         local text = row.text or row.key
         if row.count then text = fmtCount(text, self:Count("__warn:" .. row.key)) end
+        -- W4d extension 7: the event's target fills a `%s` in the text and rides along
+        -- to the batchers, which is what makes "Void Zone on <name>" data.
+        local target
+        if row.target ~= false then target = ev and (ev.destName or ev.targetName) end
+        if target and text:find("%%s") then text = (text:gsub("%%s", target)) end
         if (row.tier or "announce") == "special" then
-            Addon:EmitSpecial(self.id, row, text)
+            Addon:EmitSpecial(self.id, row, text, target)
         else
-            Addon:EmitAnnounce(self.id, row, text)
+            Addon:EmitAnnounce(self.id, row, text, target)
         end
         return true
     end
@@ -884,15 +1197,46 @@ end
 
 -- Pull-seeded schedules (Noth's teleports, Heigan's dance, Gothik's waves,
 -- Chromaggus's two breath pre-warnings, C'Thun's Dark Glare loop).
+-- W4d extension 5: the pre-tick value for tick `i`. A number applies to every tick;
+-- a list CYCLES, which is how a two-state loop carries a different lead time per
+-- direction (Heigan: 15 s before the room ends, 10 s before the dance ends).
+local function preAt(row, i)
+    local p = row.pre
+    if p == nil then return nil end
+    if type(p) == "number" then return p end
+    if #p == 0 then return nil end
+    return p[((i - 1) % #p) + 1]
+end
+
 function Runtime:StartPullSchedules()
     local S = Addon.Sched
     for _, row in ipairs(self.def.schedule) do
         if Addon.API.IsRowEnabled(self.id, row) then
             if row.gaps then
-                S:LoopTable(row.gaps, function(_, i)
+                -- The pre-tick for tick `i` is scheduled from the PREVIOUS tick (and,
+                -- for tick 1, from the pull), because only then is the gap it leads
+                -- known. It routes the same event with `pre = true`, so a pre-warning
+                -- is an ordinary row with `where = { pre = true }`.
+                local function firePre(i)
+                    self:Route({ on = "schedule", key = row.key, index = i, pre = true })
+                    if row.preAnnounce then
+                        Addon:EmitAnnounce(self.id, row, fmtCount(row.preAnnounce, i))
+                    end
+                end
+                local function armPre(i)
+                    local p = preAt(row, i)
+                    if not p or (row.count and i > row.count) then return end
+                    local gap = S.GapAt(row.gaps, i)
+                    if gap and gap > p then S:Schedule(gap - p, firePre, self, i) end
+                end
+                local st
+                st = S:LoopTable(row.gaps, function(_, i)
                     self:Route({ on = "schedule", key = row.key, index = i })
                     if row.announce then Addon:EmitAnnounce(self.id, row, fmtCount(row.announce, i)) end
+                    if row.count and i >= row.count then S:CancelLoop(st) return end
+                    armPre(i + 1)
                 end, self, row.immediate)
+                armPre(1)
             elseif row.at then
                 local list = type(row.at) == "table" and row.at or { row.at }
                 for _, t in ipairs(list) do
@@ -981,6 +1325,86 @@ end
 function API.StopSpecials(enc, rt, wiped)
     if type(Addon.StopAllModules) == "function" then pcall(Addon.StopAllModules, Addon) end
     if type(enc.OnEnd) == "function" then pcall(enc.OnEnd, enc, rt, wiped) end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  E. THE OPTIONS PROJECTION (W4d extension 9)
+-- ══════════════════════════════════════════════════════════════════════════════
+--  options.lua reads a raid -> boss -> mechanic tree: `Addon:GetRaids()`, then
+--  `raid.bosses[i].mechanics[j]`, and addresses every checkbox by
+--  `Addon:MechKey(raidId, bossId, mechId)`. The 1.x data files built that tree by
+--  hand; `Addon:RegisterRaid` (core_boot.lua) still REFUSES them, and stays refusing.
+--
+--  This is the replacement: the tree is PROJECTED from the encounter registry, and
+--  the projection is exact rather than approximate because the two key schemes were
+--  designed to coincide —
+--        API.OptionKey(encId, rowKey)  ==  Addon:MechKey(raidId, bossId, rowKey)
+--  when the encounter id is "<raidId>:<bossId>". So a checkbox options.lua writes is
+--  the same SavedVariables entry `API.IsRowEnabled` reads, with no adapter between
+--  them, and the shipped specials that hard-code a mechanic key (thaddius.lua's
+--  "naxxramas:thaddius:polarity", the Four Horsemen tracker's
+--  "naxxramas:fourhorsemen:markcd") keep working untouched.
+Addon.zones     = Addon.zones or {}      -- ordered array of zone descriptors
+Addon.zonesById = Addon.zonesById or {}
+
+-- { id = "naxxramas", name = "Naxxramas", order = 70, mapID = 533, size = 40, icon = }
+function Addon:RegisterZone(def)
+    if type(def) ~= "table" or type(def.id) ~= "string" then
+        return nil, "a zone needs a string id"
+    end
+    if Addon.zonesById[def.id] then
+        for i, z in ipairs(Addon.zones) do if z.id == def.id then Addon.zones[i] = def break end end
+    else
+        Addon.zones[#Addon.zones + 1] = def
+    end
+    Addon.zonesById[def.id] = def
+    return def
+end
+
+-- One row of the encounter grammar becomes one row of the options tree. `row.options`
+-- is a verbatim passthrough for the legacy mechDef fields the detail editor reads
+-- (icon/style/sound/colour, and `polarityWatch`, which is how thaddius.lua's
+-- polarity sub-panel is reached).
+local function projectRow(row, kind)
+    local m = {
+        id      = row.key,
+        name    = row.name or row.text or row.key,
+        icon    = row.icon,
+        default = API.RowDefault(row),
+        _rowKind = kind,
+    }
+    if type(row.options) == "table" then
+        for k, v in pairs(row.options) do m[k] = v end
+    end
+    return m
+end
+
+function API.PublishOptionsTree()
+    local raids, byId, npc = {}, {}, {}
+    for _, z in ipairs(Addon.zones) do
+        local raid = { id = z.id, name = z.name or z.id, order = z.order,
+                       mapID = z.mapID, size = z.size, icon = z.icon, bosses = {} }
+        raids[#raids + 1] = raid
+        byId[z.id] = raid
+    end
+    for _, enc in ipairs(Addon.encounters) do
+        local lg = enc.legacy
+        local raid = lg and byId[lg.raidId]
+        if raid then
+            local boss = { id = lg.bossId, name = enc.name or lg.bossId,
+                           npcIDs = enc.creatureIds, encId = enc.id, mechanics = {} }
+            for _, row in ipairs(enc.timers)   do boss.mechanics[#boss.mechanics + 1] = projectRow(row, "timer") end
+            for _, row in ipairs(enc.warnings) do boss.mechanics[#boss.mechanics + 1] = projectRow(row, "warning") end
+            for _, row in ipairs(enc.schedule) do
+                if row.key then boss.mechanics[#boss.mechanics + 1] = projectRow(row, "schedule") end
+            end
+            raid.bosses[#raid.bosses + 1] = boss
+            for _, cid in ipairs(enc.creatureIds) do npc[cid] = boss end
+        end
+    end
+    table.sort(raids, function(a, b) return (a.order or 999) < (b.order or 999) end)
+    Addon.raids, Addon.raidsById, Addon.npcIndex = raids, byId, npc
+    return raids
 end
 
 return API
