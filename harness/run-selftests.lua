@@ -62,7 +62,12 @@
 --                          arbitrations: the three DUAL-ID rows driven once per id,
 --                          the thirteen restored 1.x rows driven with their shipped
 --                          defaults, and the provenance comments pinned textually
---   AQ/-DRIVE     §6/§7    Ruins + Temple of Ahn'Qiraj (wave 4c), incl. C'Thun's three
+--   AQ/-DRIVE     §6/§7    Ruins + Temple of Ahn'Qiraj (wave 4c), plus the owner's
+--                          2026-08-07 "Same as Naxx" arbitrations: the two restored
+--                          log-verified timers driven at their field cadences, the
+--                          thirteen restored 1.x keys driven with their shipped
+--                          defaults, and the provenance comments pinned textually.
+--                          Also incl. C'Thun's three
 --                          timer value sets and its roster-relayed stomach probe,
 --                          Viscidus's freeze/shatter machine and hit rates, Ouro's
 --                          submerge cycle, and the reflect miss-type path
@@ -5016,6 +5021,182 @@ do
            "…at the exact SavedVariables key the 1.x options tree wrote")
     end
 
+    -- ── THE OWNER'S 2026-08-07 AQ ARBITRATIONS ("SAME AS NAXX") ───────────────
+    -- Two explicit decisions from the W4c cross-check, pinned here so a later wave
+    -- cannot quietly undo either:
+    --   1. the two LOG-VERIFIED TIMERS the spec lacks are restored as variance bars
+    --   2. all THIRTEEN dropped 1.x data_aq40.lua keys are back as encounter rows
+    -- The provenance COMMENTS are asserted too. A "cleanup" that drops a restored row
+    -- has to delete the note that explains it, and deleting the note reddens this gate.
+    do
+        local SRC = readFile(P("enc_aq40.lua")) or ""
+
+        local n = 0
+        for _ in SRC:gmatch("— owner 2026%-08%-07, per Same%-as%-Naxx") do n = n + 1 end
+        eq(n, 9, "AQ RESTORATION: all nine restoration sites carry the owner's provenance note")
+        n = 0
+        for _ in SRC:gmatch("RESTORED — owner 2026%-08%-07") do n = n + 1 end
+        eq(n, 7, "…seven of them restoring dropped 1.x DATA rows…")
+        n = 0
+        for _ in SRC:gmatch("RESTORED TIMER — owner 2026%-08%-07") do n = n + 1 end
+        eq(n, 2, "…and two restoring the log-verified TIMERS the spec lacks")
+        n = 0
+        for _ in SRC:gmatch("1%.x field values 2026%-07%-26") do n = n + 1 end
+        eq(n, 9, "…every one naming the 2026-07-26 field values its numbers came from")
+        n = 0
+        for _ in SRC:gmatch("tripwire") do n = n + 1 end
+        ck(n >= 3, "…and the sites that overrule the spec name the tripwire as what settles it")
+        n = 0
+        for _ in SRC:gmatch("CHATTER%-CLASS ROWS SHIP DEFAULT%-OFF") do n = n + 1 end
+        eq(n, 4, "…every chatter-class site states WHY it ships off (the honest middle)")
+        n = 0
+        for _ in SRC:gmatch("DO NOT \"clean this up\"") do n = n + 1 end
+        eq(n, 3, "…and the three id-conflict sites carry the do-not-collapse instruction")
+        ck(SRC:find("26084 is the whirlwind TICK", 1, true) ~= nil,
+           "…Sartura's names the tick id the timer must NOT read")
+        ck(SRC:find("25646 is a SHARED id", 1, true) ~= nil,
+           "…Fankriss's names the shared Mortal Wound id its creature gate exists for")
+        ck(SRC:find("the spec attaches the NAME \"Sundering Cleave\" to", 1, true)
+           or SRC:find("The spec attaches the NAME \"Sundering Cleave\" to", 1, true),
+           "…and the Sundering Cleave site names the spec's competing id outright")
+
+        local function idsOf(tr)
+            local v = tr and tr.spellId
+            if v == nil then return {} end
+            return type(v) == "table" and v or { v }
+        end
+        local function has(list, id)
+            for _, v in ipairs(list) do if v == id then return true end end
+            return false
+        end
+
+        -- ── decision 1: the two log-verified timers the spec lacks ────────────
+        -- { encounter, key, spell id, kind, min, max, ships off? }
+        local TIMERS = {
+            { "aq40:sartura",  "whirlwindcd",   26083, "cd", 25.9, 29.1, false },
+            { "aq40:fankriss", "mortalwoundcd", 25646, "cd",  6.5,  9.7, false },
+        }
+        for _, r in ipairs(TIMERS) do
+            local enc = Addon:GetEncounter(r[1])
+            local row = enc and enc.rowsByKey[r[2]]
+            ck(row ~= nil, "RESTORED TIMER " .. r[1] .. ":" .. r[2] .. " is an encounter row")
+            if row then
+                eq(row.kind, r[4], "…as a " .. r[4] .. " bar (the shape 1.x shipped)")
+                eq(row.spellId, r[3], "…on the field-verified 1.x spell id " .. r[3])
+                local d = Timers.ParseDuration(row.duration)
+                ck(d and d.hasVariance and d.min == r[5] and d.max == r[6],
+                   "…and a VARIANCE window of " .. r[5] .. "-" .. r[6] ..
+                   " s, not an invented exact number")
+                eq(row.default, r[7] and false or nil,
+                   "…shipping " .. (r[7] and "OFF" or "ON, as the 1.x radial did"))
+                -- the creature gate is what stops a shared id re-arming the wrong bar
+                ck(row.start and row.start.creatureId ~= nil,
+                   "…gated to the creature that actually casts it")
+            end
+        end
+        -- the spec's own rows are UNTOUCHED alongside them (additive, not replacing)
+        do
+            local sa = Addon:GetEncounter("aq40:sartura")
+            ck(sa.rowsByKey.whirlwind ~= nil and sa.rowsByKey.whirlwind.tier == "announce"
+               and sa.rowsByKey.whirlwind.kind == nil,
+               "SARTURA: the 1.x `whirlwind` OPTION KEY still names the spec's announce")
+            eq((sa.rowsByKey.whirlwindcd or {}).start
+               and sa.rowsByKey.whirlwindcd.start.antispam, 4,
+               "…and the restored bar arms once per cast, as the announce announces once")
+            local fk = Addon:GetEncounter("aq40:fankriss")
+            local mw, mwo = fk.rowsByKey.mortalwound or {}, fk.rowsByKey.mortalwoundon or {}
+            eq(mw.kind, "target",
+               "FANKRISS: the spec's 20 s Mortal Wound TARGET bar survives untouched…")
+            near(mw.duration, 20, 0.001, "…still at 20 s")
+            eq(mwo.role, "Tank",
+               "…and the ALERT half is still the suite's Mortal Wound shape (Tank)…")
+            eq(mwo.stacks, true, "…carrying the live STACK")
+            eq((fk.rowsByKey.mortalwoundcd or {}).role, "Tank",
+               "…so the restored interval bar is aimed at the same audience")
+        end
+
+        -- ── decision 2: all thirteen dropped data_aq40.lua keys are back ──────
+        -- { encounter, 1.x row id (== the 2.0 option key), spell id, ships off?, timer? }
+        local RESTORED = {
+            { "aq40:skeram",   "earthshock",  26194, false, false },
+            { "aq40:bugtrio",  "cleave",      15584, true,  false },
+            { "aq40:bugtrio",  "poisoncloud", 26590, false, false },
+            { "aq40:bugtrio",  "thrash",       3391, true,  false },
+            { "aq40:bugtrio",  "ravage",       3242, true,  false },
+            { "aq40:bugtrio",  "knockaway",   18670, true,  true  },
+            { "aq40:bugtrio",  "knockdown",   19128, true,  true  },
+            { "aq40:bugtrio",  "charge",      26561, true,  true  },
+            { "aq40:bugtrio",  "vengeance",   25790, false, false },
+            { "aq40:sartura",  "cleave",      25174, true,  false },
+            { "aq40:viscidus", "poisonshock", 25993, true,  false },
+            { "aq40:twinemps", "arcaneburst",   568, true,  false },
+            { "aq40:twinemps", "healbrother",  7393, true,  false },
+        }
+        eq(#RESTORED, 13, "…thirteen keys, exactly the W4c report's dropped list")
+        for _, r in ipairs(RESTORED) do
+            local enc = Addon:GetEncounter(r[1])
+            local row = enc and enc.rowsByKey[r[2]]
+            ck(row ~= nil, r[1] .. ":" .. r[2] .. " is RESTORED as an encounter row")
+            if row then
+                local trs = {}
+                if row.trigger then trs[#trs + 1] = row.trigger end
+                if row.start   then trs[#trs + 1] = row.start   end
+                if row.restart then trs[#trs + 1] = row.restart end
+                for _, tr in ipairs(row.triggers or {}) do trs[#trs + 1] = tr end
+                local found = false
+                for _, tr in ipairs(trs) do
+                    if has(idsOf(tr), r[3]) then found = true end
+                end
+                ck(found, "…on the field-verified 1.x spell id " .. r[3])
+                if r[4] then
+                    eq(row.default, false, "…and SHIPS OFF (owner: chatter-class / 1.x default)")
+                else
+                    eq(row.default, nil, "…and keeps the 1.x default (on for its audience)")
+                end
+                -- a 1.x cooldown radial comes back as a TIMER, an alert as a WARNING
+                if r[5] then
+                    eq(row.kind, "cd", "…as the COOLDOWN RADIAL 1.x shipped, not an announce")
+                else
+                    ck(row.kind == nil, "…as an announce row, not a bar")
+                end
+                -- the key IS the 1.x option key, so a 1.x SavedVariables choice survives
+                eq(API.OptionKey(r[1], r[2]),
+                   Addon:MechKey("aq40", r[1]:match(":(.+)$"), r[2]),
+                   "…under the same SavedVariables key 1.x wrote")
+            end
+        end
+
+        -- Vem's three radials all die with Vem, exactly as the trio's other bars do
+        for _, k in ipairs({ "knockaway", "knockdown", "charge" }) do
+            local row = Addon:GetEncounter("aq40:bugtrio").rowsByKey[k] or {}
+            eq(row.stop and row.stop.creatureId, 15544,
+               "BUG TRIO: the restored `" .. k .. "` bar stops when Vem dies")
+            eq(row.start and row.start.creatureId, 15544, "…and only Vem can arm it")
+        end
+        -- the two death-event rows come back LOUD, as the 1.x raid warnings they were
+        for _, k in ipairs({ "poisoncloud", "vengeance" }) do
+            local row = Addon:GetEncounter("aq40:bugtrio").rowsByKey[k] or {}
+            eq(row.tier or "announce", "announce", "…the restored `" .. k .. "` is an ANNOUNCE…")
+            eq(row.color, 4, "…at the top announce colour (a bug dying is not chatter)")
+        end
+        -- SHAPE GUARD: every restored announce whose 1.x row was a self-replacing BAR
+        -- carries an anti-spam window, so ticking its box cannot make it a spam source
+        for _, p in ipairs({ { "aq40:bugtrio",  "cleave",      3 },
+                             { "aq40:bugtrio",  "thrash",      3 },
+                             { "aq40:bugtrio",  "ravage",      3 },
+                             { "aq40:sartura",  "cleave",      3 },
+                             { "aq40:twinemps", "arcaneburst", 3 },
+                             { "aq40:twinemps", "healbrother", 3 } }) do
+            local row = Addon:GetEncounter(p[1]).rowsByKey[p[2]] or {}
+            eq(row.antispam, p[3],
+               "SHAPE GUARD " .. p[1] .. ":" .. p[2] .. " carries a " .. p[3] .. " s window")
+        end
+        -- …and the one restoration with a MEASURED floor above the guard line does not
+        local ps = Addon:GetEncounter("aq40:viscidus").rowsByKey.poisonshock
+        ck(ps ~= nil and ps.antispam == nil,
+           "…while Poison Shock's measured 8.1 s floor needs none, and is not given one")
+    end
+
     do  -- the options projection: two more raids in the tree options.lua reads
         API.PublishOptionsTree()
         local r20, r40 = Addon:GetRaid("aq20"), Addon:GetRaid("aq40")
@@ -5254,11 +5435,15 @@ do
            "…and the cloud is matched on spell NAME as well as id (Era quirk)")
     end
 
-    -- ── §7.3 Sartura — no cooldown bars, a range-gated whirlwind ──────────────
+    -- ── §7.3 Sartura — the restored whirlwind cooldown, a range-gated whirlwind ─
     do
         local rt = engage("aq40:sartura", 15516)
-        eq(#Addon:GetEncounter("aq40:sartura").timers, 0,
-           "SARTURA: declares NO cooldown timers (the whirlwind interval was never characterised)")
+        -- (was "declares NO cooldown timers, the whirlwind interval was never
+        -- characterised" before the owner's 2026-08-07 arbitration restored the 1.x
+        -- cooldown on our own field characterisation — see the AQ gate's
+        -- restoration table and the driven cadence below)
+        eq(#Addon:GetEncounter("aq40:sartura").timers, 1,
+           "SARTURA: declares exactly ONE cooldown timer — the owner's restored Whirlwind")
         eq(rt:GetCount("guards"), 3, "…with three Royal Guards on the census")
         Addon:ClearEventLog()
         Life:Deliver({ on = "UNIT_DIED", creatureId = 15984, destId = 15984,
@@ -5545,6 +5730,188 @@ do
         ck(Addon.Scan.rosterByKey["aq40:cthun:fleshtentacles"] == nil,
            "…and the tentacle scan is torn down with it")
         W.group = { "player" }
+    end
+
+    -- ══════════════════════════════════════════════════════════════════════════
+    --  THE OWNER'S 2026-08-07 AQ ARBITRATIONS ("SAME AS NAXX"), THROUGH THE ENGINE
+    --  Decision 1: the two log-verified timers the spec lacks are driven at their
+    --  FIELD CADENCES, and their creature gates are driven with the wrong caster.
+    --  Decision 2: each of the thirteen restored rows is driven trigger -> warning
+    --  or bar, with its shipped default asserted BOTH WAYS (a default-off row stays
+    --  SILENT on defaults and fires the moment the player ticks its box — that is
+    --  what "the honest middle" has to mean in the engine, not just in the registry).
+    -- ══════════════════════════════════════════════════════════════════════════
+    do
+        Addon.db.mechanics = Addon.db.mechanics or {}
+        local function tick(key, on)   -- the SavedVariables override a player's tick writes
+            Addon.db.mechanics[key] = on and { masterEnabled = true } or nil
+        end
+
+        -- ── 1a. Sartura's Whirlwind cooldown, on OUR characterisation ───────────
+        do
+            local rt = engage("aq40:sartura", 15516)
+            eq(bar(rt, "whirlwindcd"), nil,
+               "RESTORED TIMER sartura:whirlwindcd shows NO bar before the first cast " ..
+               "(no pull window was ever measured, so none is invented)")
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15516 })
+            local mn, mx = barWindow(rt, "whirlwindcd")
+            ck(mn == 25.9 and mx == 29.1,
+               "…and the cast arms the field-measured 25.9-29.1 window")
+            -- the tick id must not touch it (26084 is what the GTFO reads)
+            rt = engage("aq40:sartura", 15516)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26084, sourceId = 15516 })
+            eq(bar(rt, "whirlwindcd"), nil,
+               "…the whirlwind TICK (26084) does NOT arm it — 76 ticks a pull would")
+            -- a Royal Guard whirlwinding must not restart the BOSS's cooldown
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15984 })
+            eq(bar(rt, "whirlwindcd"), nil,
+               "…nor does a Royal Guard's whirlwind (the creature gate 1.x carried)")
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15516 })
+            ck(bar(rt, "whirlwindcd") ~= nil, "…while Sartura's own cast does")
+            -- one arming per cast: a duplicate inside 4 s is the same whirlwind
+            advance(10)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15516 })
+            local b = bar(rt, "whirlwindcd")
+            near(Timers.Remaining(b), b.total, 0.05, "…a fresh cast re-arms the bar in full")
+            advance(1)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15516 })
+            b = bar(rt, "whirlwindcd")
+            near(Timers.Remaining(b), b.total - 1, 0.05,
+                 "…and a duplicate inside the 4 s window is the SAME whirlwind, not a new one")
+        end
+
+        -- ── 1b. Fankriss's Mortal Wound cast interval, alongside the 20 s bar ───
+        do
+            local rt = engage("aq40:fankriss", 15510)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 25646, sourceId = 15510 })
+            local mn, mx = barWindow(rt, "mortalwoundcd")
+            ck(mn == 6.5 and mx == 9.7,
+               "RESTORED TIMER fankriss:mortalwoundcd runs the field-measured 6.5-9.7 window")
+            -- the spec's per-target debuff bar is untouched and still 20 s
+            Addon:ClearEventLog()
+            Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25646, destName = "Bob",
+                           amount = 1 })
+            local tgt = rt.timers.mortalwound and rt.timers.mortalwound:Get("Bob")
+            ck(tgt ~= nil and math.abs(tgt.total - 20) < 0.01,
+               "…while the spec's 20 s per-target bar still runs alongside it")
+            ck(sawWarn("WARN_ANNOUNCE", "Mortal Wound Bob (1)"),
+               "…and the suite's Mortal Wound announce still carries the stack")
+            -- 25646 is shared: Gluth's cast must not arm Fankriss's cooldown
+            rt = engage("aq40:fankriss", 15510)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 25646, sourceId = 15932 })
+            eq(bar(rt, "mortalwoundcd"), nil,
+               "…and a SHARED-id cast from another creature does not arm it (the gate 1.x carried)")
+        end
+
+        -- ── 2. every restored row, driven, with its shipped default asserted ────
+        -- { encounter, cid, key, deliver-event, ships off?, needle }
+        local R = {
+            { "aq40:skeram", 15263, "earthshock",
+              { on = "SPELL_CAST_SUCCESS", spellId = 26194, sourceId = 15263 },
+              false, "Earth Shock" },
+            { "aq40:bugtrio", 15544, "poisoncloud",
+              { on = "SPELL_CAST_SUCCESS", spellId = 26590, sourceId = 15511 },
+              false, "Kri died — poison cloud" },
+            { "aq40:bugtrio", 15544, "vengeance",
+              { on = "SPELL_AURA_APPLIED", spellId = 25790, destId = 15511 },
+              false, "Vem died — Vengeance" },
+            { "aq40:bugtrio", 15544, "cleave",
+              { on = "SPELL_CAST_SUCCESS", spellId = 15584, sourceId = 15511 },
+              true, "Cleave" },
+            { "aq40:bugtrio", 15544, "thrash",
+              { on = "SPELL_CAST_SUCCESS", spellId = 3391, sourceId = 15511 },
+              true, "Thrash" },
+            { "aq40:bugtrio", 15544, "ravage",
+              { on = "SPELL_CAST_SUCCESS", spellId = 3242, sourceId = 15543 },
+              true, "Ravage" },
+            { "aq40:sartura", 15516, "cleave",
+              { on = "SPELL_CAST_SUCCESS", spellId = 25174, sourceId = 15516 },
+              true, "Sundering Cleave" },
+            { "aq40:viscidus", 15299, "poisonshock",
+              { on = "SPELL_CAST_SUCCESS", spellId = 25993, sourceId = 15299 },
+              true, "Poison Shock" },
+            { "aq40:twinemps", 15276, "arcaneburst",
+              { on = "SPELL_CAST_SUCCESS", spellId = 568, sourceId = 15276 },
+              true, "Arcane Burst" },
+            { "aq40:twinemps", 15276, "healbrother",
+              { on = "SPELL_CAST_SUCCESS", spellId = 7393, sourceId = 15275 },
+              true, "Heal Brother" },
+        }
+        for _, r in ipairs(R) do
+            local encId, key, off, needle = r[1], r[3], r[5], r[6]
+            local optKey = API.OptionKey(encId, key)
+            local boss = encId:match(":(.+)$")
+            tick(optKey, nil)                            -- ON DEFAULTS
+            engage(encId, r[2])
+            Addon:ClearEventLog()
+            Life:Deliver(r[4])
+            if off then
+                ck(not sawWarn("WARN_ANNOUNCE", needle),
+                   "RESTORED " .. boss .. ":" .. key .. " is SILENT on defaults (ships off)")
+                tick(optKey, true)                       -- …and the player ticks the box
+                engage(encId, r[2])
+                Addon:ClearEventLog()
+                Life:Deliver(r[4])
+                ck(sawWarn("WARN_ANNOUNCE", needle), "…and FIRES once enabled: " .. needle)
+                tick(optKey, nil)
+            else
+                ck(sawWarn("WARN_ANNOUNCE", needle),
+                   "RESTORED " .. boss .. ":" .. key .. " fires on defaults: " .. needle)
+            end
+        end
+
+        -- Vem's three restored RADIALS: no bar on defaults, the measured window once ticked
+        for _, r in ipairs({ { "knockaway", 18670, 10.8, 20.0 },
+                             { "knockdown", 19128, 10.9, 21.0 },
+                             { "charge",    26561, 17.7, 24.2 } }) do
+            local optKey = API.OptionKey("aq40:bugtrio", r[1])
+            tick(optKey, nil)
+            local rt = engage("aq40:bugtrio", 15544)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = r[2], sourceId = 15544 })
+            eq(bar(rt, r[1]), nil,
+               "RESTORED bugtrio:" .. r[1] .. " starts NO bar on defaults (ships off)")
+            tick(optKey, true)
+            rt = engage("aq40:bugtrio", 15544)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = r[2], sourceId = 15544 })
+            local mn, mx = barWindow(rt, r[1])
+            ck(mn == r[3] and mx == r[4],
+               "…and once enabled runs the field-measured " .. r[3] .. "-" .. r[4] .. " window")
+            -- it belongs to Vem, so it dies with Vem
+            Life:Deliver({ on = "UNIT_DIED", creatureId = 15544, destId = 15544,
+                           destGUID = "Creature-0-0-0-0-15544-1" })
+            eq(bar(rt, r[1]), nil, "…and STOPS when Vem dies, as the trio's other bars do")
+            tick(optKey, nil)
+        end
+
+        -- SHAPE GUARDS, driven: an announce that replaced a 1.x self-replacing BAR
+        -- must not become a spam source the moment a player does tick its box.
+        do
+            tick("aq40:bugtrio:cleave", true)
+            engage("aq40:bugtrio", 15544)
+            Addon:ClearEventLog()
+            for _ = 1, 4 do
+                Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 15584, sourceId = 15511 })
+                advance(0.5)
+            end
+            eq(warnCount("WARN_ANNOUNCE", "Cleave"), 1,
+               "SHAPE GUARD: four Cleaves inside the 3 s window announce ONCE")
+            advance(3.1)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 15584, sourceId = 15511 })
+            eq(warnCount("WARN_ANNOUNCE", "Cleave"), 2,
+               "…and the window RE-ARMS after 3 s (throttled, not swallowed)")
+            tick("aq40:bugtrio:cleave", nil)
+
+            tick("aq40:twinemps:arcaneburst", true)
+            engage("aq40:twinemps", 15276)
+            Addon:ClearEventLog()
+            for _ = 1, 5 do
+                Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 568, sourceId = 15276 })
+                advance(0.4)
+            end
+            eq(warnCount("WARN_ANNOUNCE", "Arcane Burst"), 1,
+               "…and five Arcane Bursts inside the 3 s window announce ONCE")
+            tick("aq40:twinemps:arcaneburst", nil)
+        end
     end
 
     -- ── §6.7 / §7.10 the two zone-wide trash modules ──────────────────────────

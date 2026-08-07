@@ -35,6 +35,42 @@
     precedent by which W4d shipped Gothik's wave model without Gothik's census frame.
     The AQ40 trash Anubisath ability DOSSIER (the aura-scan half of §7.10) is not
     built at all this wave — its ALERTS are all here; its per-mob ability table is not.
+
+    ────────────────────────────────────────────────────────────────────────────────
+    OWNER ARBITRATIONS, 2026-08-07 (from the W4c cross-check) — DO NOT UNDO
+    ────────────────────────────────────────────────────────────────────────────────
+    "SAME AS NAXX." The owner applied the W4d Naxxramas arbitration verbatim to this
+    file: where the spec and our own Anniversary field logs (2026-07-26) disagree, the
+    field logs are honoured, and nothing the 1.x file measured is thrown away. Both
+    decisions are commented in place at every site AND pinned by the AQ / AQ-DRIVE
+    gates, so "cleaning them up" reddens the harness rather than quietly reverting a
+    decision.
+
+      1. THE TWO LOG-VERIFIED TIMERS THE SPEC LACKS ARE BACK.
+         * Sartura's Whirlwind cooldown (`whirlwindcd`) — the spec records the
+           interval as "never characterised"; our logs characterised it at 25.9-29.1 s,
+           so it ships as a VARIANCE timer on the measured window. Our field
+           characterisation replaces the spec's silence, and the early-refresh
+           tripwire (§4.3) reports if this server disagrees.
+         * Fankriss's Mortal Wound cast INTERVAL (`mortalwoundcd`) — log-verified at
+           6.5-9.7 s, alongside (not instead of) the surviving 20 s `mortalwound`
+           target bar the spec ships. The ALERT half is already covered by
+           `mortalwoundon` in the suite's Mortal Wound shape (25646, stacks, Tank).
+      2. ALL THIRTEEN DROPPED 1.x KEYS ARE BACK — each under the option key its 1.x
+         row used, so a player's existing SavedVariables choice survives. Values come
+         from the parked data_aq40.lua at 4df7977^ (field-verified 2026-07-26).
+         Tank-relevant and raid-event rows ship ON with their audience; the
+         CHATTER-CLASS rows (cleave / thrash / ravage / knock-about / the two Twin
+         positioning rows) ship DEFAULT-OFF on the poison-class rationale — the spec's
+         authors judged the class too noisy to carry at all, the owner restored them
+         knowingly, and off-by-default with the toggle present is the honest middle.
+         Every restoration site carries a RESTORED note naming the owner and the date
+         (grep the file for it; the gate counts them).
+
+      SHAPE GUARD, as in Naxx: 1.x rendered several of these as self-replacing BARS,
+      and a 2.0 announce row fires once per event. Every restored announce whose 1.x
+      row was a bar with no measured floor above 2 s carries an anti-spam window, so
+      ticking the box cannot turn the restoration into a spam source.
 --]]
 
 local _, Addon = ...
@@ -86,6 +122,15 @@ Addon:RegisterEncounter({
           sound = 1, voice = "kickcast", role = "HasInterrupt", filter = "interrupt",
           text = "Interrupt Arcane Explosion",
           trigger = { on = "SPELL_CAST_START", spellId = 26192, antispam = 3 } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the 1.x row the W4c port
+        -- dropped, back under its 1.x option key (`earthshock`), spell id from the
+        -- parked data_aq40.lua (1.x field values 2026-07-26 — 3 casts of 26194, an
+        -- interruptible ranged silence-nuke). Not chatter-class, so it keeps the 1.x
+        -- default (ON) and the whole-raid audience it had in 1.x; the interrupt CALL
+        -- for this boss is `arcaneexplosion` above and stays the only special.
+        { key = "earthshock", name = "Earth Shock", tier = "announce", color = 2,
+          text = "Earth Shock", icon = ICON .. "Spell_Nature_EarthShock",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 26194, creatureId = 15263 } },
     },
     icons = {
         -- 8 -> 7 -> 6 -> 5 -> 4 as victims land, and the counter goes back to 8 after
@@ -127,6 +172,31 @@ Addon:RegisterEncounter({
           start   = { on = "pull" },
           restart = { on = "SPELL_CAST_SUCCESS", spellId = 25812 },
           stop    = { on = "UNIT_DIED", creatureId = 15511 } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: Vem's three 1.x cooldown
+        -- RADIALS, back under their 1.x option keys (`knockaway`, `knockdown`,
+        -- `charge`), spell ids and cadences from the parked data_aq40.lua
+        -- (1.x field values 2026-07-26). 1.x called these "quiet tank-info radials,
+        -- off by default"; that is exactly the class rule, and
+        -- CHATTER-CLASS ROWS SHIP DEFAULT-OFF, so all three keep their 1.x default
+        -- (OFF) and come back as TIMERS, not as announces — the same
+        -- treatment Naxx gave Thaddius's Chain Lightning. The measured intervals are
+        -- ranges, so each ships as a variance window rather than a fake exact number,
+        -- and each STOPS when Vem dies, exactly as the trio's other bars do.
+        { key = "knockaway", name = "Knock Away (Vem)", kind = "cd", spellId = 18670,
+          color = 2, default = false, icon = ICON .. "INV_Gauntlets_05",
+          duration = "v10.8-20.0",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 18670, creatureId = 15544 },
+          stop  = { on = "UNIT_DIED", creatureId = 15544 } },
+        { key = "knockdown", name = "Knockdown (Vem)", kind = "cd", spellId = 19128,
+          color = 2, default = false, icon = ICON .. "Spell_Frost_Stun",
+          duration = "v10.9-21.0",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 19128, creatureId = 15544 },
+          stop  = { on = "UNIT_DIED", creatureId = 15544 } },
+        { key = "charge", name = "Berserker Charge (Vem)", kind = "cd", spellId = 26561,
+          color = 2, default = false, icon = ICON .. "Ability_Warrior_Charge",
+          duration = "v17.7-24.2",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 26561, creatureId = 15544 },
+          stop  = { on = "UNIT_DIED", creatureId = 15544 } },
     },
     counters = {
         -- The model behind "all three bugs' health": how many are left, announced as
@@ -159,20 +229,90 @@ Addon:RegisterEncounter({
             -- not always carry the id we know it by
             { on = "SPELL_PERIODIC_DAMAGE", spellName = { "Poison Cloud", "Toxin" },
               dest = "player" } } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the two 1.x DEATH-EVENT rows
+        -- the W4c port dropped, back under their 1.x option keys (`poisoncloud`,
+        -- `vengeance`), spell ids from the parked data_aq40.lua
+        -- (1.x field values 2026-07-26: 26590 on Kri's death, 25790 on Vem's). Both were 1.x
+        -- raid-warning flashes, so both come back LOUD — top announce colour — and
+        -- both keep the 1.x default (ON): a bug dying and changing the fight is not
+        -- chatter. `poisoncloud` is deliberately NOT a second GTFO; the personal
+        -- "you are standing in it" call is the `gtfo` special above, and this row is
+        -- the raid-wide "it just spawned" event the spec has no place for.
+        { key = "poisoncloud", name = "Poison Cloud (Kri death)", tier = "announce",
+          color = 4, text = "Kri died — poison cloud", antispam = 5,
+          icon = ICON .. "Spell_Nature_Acid_01",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 26590 } },
+        { key = "vengeance", name = "Vengeance (Vem death)", tier = "announce",
+          color = 4, text = "Vem died — Vengeance, bosses enraged", antispam = 5,
+          icon = ICON .. "Ability_Racial_Avatar",
+          trigger = { on = "SPELL_AURA_APPLIED", spellId = 25790 } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the three 1.x melee-chatter
+        -- rows the W4c port dropped, back under their 1.x option keys (`cleave`,
+        -- `thrash`, `ravage`), spell ids from the parked data_aq40.lua
+        -- (1.x field values 2026-07-26: Kri's Cleave ~20 s, Yauj's Ravage ~12.2 s apart).
+        -- CHATTER-CLASS ROWS SHIP DEFAULT-OFF, which is also the default 1.x shipped:
+        -- a boss cleaving its tank is not a call anybody acts on, the spec's authors
+        -- dropped the class entirely, and off-by-default with the toggle present is
+        -- the honest middle. Each is gated to the bug that actually casts it.
+        { key = "cleave", name = "Cleave (Kri)", tier = "announce", color = 2,
+          default = false, text = "Cleave", antispam = 3,
+          icon = ICON .. "Ability_Warrior_Cleave",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 15584, creatureId = 15511 } },
+        { key = "thrash", name = "Thrash (Kri)", tier = "announce", color = 2,
+          default = false, text = "Thrash", antispam = 3,
+          icon = ICON .. "INV_Misc_MonsterClaw_02",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 3391, creatureId = 15511 } },
+        { key = "ravage", name = "Ravage (Yauj)", tier = "announce", color = 2,
+          default = false, text = "Ravage", antispam = 3,
+          icon = ICON .. "Ability_Druid_Ravage",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 3242, creatureId = 15543 } },
     },
 })
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  §7.3 BATTLEGUARD SARTURA
 -- ══════════════════════════════════════════════════════════════════════════════
--- NO COOLDOWN TIMERS: the spec records that Whirlwind's interval was never
--- characterised, and we do not invent one. The whirlwind special is gated on a
--- "can you actually be hit" check, which on Era is the range ladder.
+-- ONE COOLDOWN TIMER, AND IT IS AN OWNER ARBITRATION. The spec records that
+-- Whirlwind's interval was never characterised, and the W4c port therefore shipped
+-- Sartura with no timers at all. Our own logs DID characterise it, so the owner
+-- restored the 1.x cooldown (see the RESTORED note on the row). The whirlwind special
+-- is gated on a "can you actually be hit" check, which on Era is the range ladder.
 Addon:RegisterEncounter({
     id = "aq40:sartura", name = "Battleguard Sartura", zone = 531,
     creatureId = { 15516 }, encounterId = { 711 },
     legacy = { raidId = "aq40", bossId = "sartura" },
     detect = { mode = "combat" },
+    timers = {
+        -- RESTORED TIMER — owner 2026-08-07, per Same-as-Naxx: the 1.x Whirlwind
+        -- cooldown radial the W4c port dropped because the spec says the interval was
+        -- "never characterised". 1.x field values 2026-07-26 characterised it —
+        -- 26083 at intervals of 25.9-29.1 s — so OUR FIELD CHARACTERISATION REPLACES
+        -- THE SPEC'S SILENCE and it ships as a variance window on the measured range
+        -- rather than 1.x's flat 26. The early-refresh tripwire (§4.3) telemetry
+        -- arbitrates if this server disagrees with the window.
+        --
+        -- OPTION KEY: the 1.x row id was `whirlwind`, and W4c already gave that key to
+        -- the ANNOUNCE below (the AQ gate pins it as a preserved 1.x key). A key can
+        -- only mean one row, so the restored TIMER takes `whirlwindcd` — C'Thun's
+        -- `darkglarecd`/`darkglare` naming, applied here. The 1.x SavedVariables
+        -- choice therefore keeps following the announce, which is what a player who
+        -- ticked `aq40:sartura:whirlwind` off was silencing; the new bar is a new
+        -- checkbox and ships ON, as 1.x shipped the radial.
+        --
+        -- TWO ID GUARDS, BOTH LOAD-BEARING. DO NOT "clean this up":
+        --   * 26084 is the whirlwind TICK (76 casts logged 2026-07-26), not the cast.
+        --     It is what the `gtfo` row below reads; a timer keyed off it would
+        --     re-arm several times per whirlwind. This bar is 26083 and only 26083.
+        --   * the creature gate is Sartura (15516) alone. Her Royal Guards whirlwind
+        --     too, and an ungated bar would restart the BOSS's cooldown every time a
+        --     guard span up. 1.x carried the same npcID gate for the same reason.
+        -- The 4 s anti-spam matches the `whirlwind` announce: one arming per cast.
+        { key = "whirlwindcd", name = "Whirlwind", kind = "cd", spellId = 26083,
+          color = 2, icon = ICON .. "Ability_Whirlwind",
+          duration = "v25.9-29.1",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 26083, creatureId = 15516,
+                    antispam = 4 } },
+    },
     counters = {
         { key = "guards", name = "Royal Guards remaining", scope = "census", from = 3,
           step = 1,
@@ -196,6 +336,21 @@ Addon:RegisterEncounter({
           -- damage only: 26084 applies no aura, which is why there is no aura trigger
           triggers = { { on = "SPELL_DAMAGE",          spellId = 26084, dest = "player" },
                        { on = "SPELL_PERIODIC_DAMAGE", spellId = 26084, dest = "player" } } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the 1.x row the W4c port
+        -- dropped, back under its 1.x option key (`cleave`), spell id from the parked
+        -- data_aq40.lua (1.x field values 2026-07-26). CHATTER-CLASS ROWS SHIP
+        -- DEFAULT-OFF, which is also the default 1.x shipped.
+        --
+        -- ID CONFLICT WITH THE SPEC — DO NOT "clean this up" by folding this row into
+        -- the `gtfo` row above. The spec attaches the NAME "Sundering Cleave" to
+        -- 26084, which our logs show is the whirlwind TICK; 1.x attached it to 25174,
+        -- the cast Sartura actually makes at her tank. Both survive: 26084 keeps the
+        -- ground-damage GTFO (that is what hurts you), and 25174 keeps this announce
+        -- under the 1.x key. The tripwire telemetry arbitrates which name is right.
+        { key = "cleave", name = "Sundering Cleave (cast)", tier = "announce", color = 2,
+          default = false, text = "Sundering Cleave", antispam = 3,
+          icon = ICON .. "Ability_Warrior_Sunder",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 25174, creatureId = 15516 } },
     },
 })
 
@@ -217,6 +372,28 @@ Addon:RegisterEncounter({
           starts = { { on = "SPELL_AURA_APPLIED", spellId = 25646 },
                      { on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646 } },
           stop   = { on = "SPELL_AURA_REMOVED", spellId = 25646 } },
+        -- RESTORED TIMER — owner 2026-08-07, per Same-as-Naxx: the 1.x Mortal Wound
+        -- CAST INTERVAL the W4c port dropped. 1.x field values 2026-07-26 measured it
+        -- at 6.5-9.7 s between casts, so it ships as a variance window; the
+        -- early-refresh tripwire (§4.3) telemetry arbitrates. This is ADDITIVE — the
+        -- spec's 20 s per-target debuff bar (`mortalwound`, above) is untouched and
+        -- keeps the 1.x key. "When is the next stack coming" and "how long does this
+        -- stack last" are two different questions and 1.x's row only answered one of
+        -- them by accident; the ALERT half of the 1.x row is already covered by
+        -- `mortalwoundon` below in the suite's Mortal Wound shape (25646, stacks,
+        -- Tank), the same shape Naxx's Gluth restoration ships.
+        --
+        -- OPTION KEY: the 1.x row id `mortalwound` is already the target bar's key
+        -- (pinned by the AQ gate), so the restored interval takes `mortalwoundcd`.
+        --
+        -- CREATURE GATE — DO NOT "clean this up". 25646 is a SHARED id: Gluth, the
+        -- Anubisath and Ossirian all carry it, and 1.x carried the same npcID gate
+        -- with the same note. Without `creatureId = 15510` a summoned worm's or an
+        -- adjacent pull's Mortal Wound would re-arm Fankriss's cooldown.
+        { key = "mortalwoundcd", name = "Mortal Wound (next)", kind = "cd",
+          spellId = 25646, color = 2, role = "Tank",
+          icon = ICON .. "Ability_Criticalstrike", duration = "v6.5-9.7",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 25646, creatureId = 15510 } },
         { key = "entangle", name = "Entangle", kind = "target", spellId = 720, color = 3,
           duration = 8, perTarget = true, icon = ICON .. "Spell_Nature_StrangleVines",
           start = { on = "SPELL_AURA_APPLIED", spellId = { 720, 731, 1121 } },
@@ -364,6 +541,18 @@ Addon:RegisterEncounter({
           soundClass = 8, voice = "watchfeet", text = "Move out of the poison",
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 25989, dest = "player",
                       antispam = 3 } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the 1.x row the W4c port
+        -- dropped, back under its 1.x option key (`poisonshock`), spell id from the
+        -- parked data_aq40.lua (1.x field values 2026-07-26: intervals of 8.1-34 s).
+        -- CHATTER-CLASS ROWS SHIP DEFAULT-OFF, which is also the default 1.x shipped —
+        -- the raid is already being told about the volley, the freeze ladder and the
+        -- cloud, and a fourth poison line is the noise the spec's authors cut. The
+        -- measured floor is 8.1 s, well clear of the 2 s shape-guard line, so this
+        -- restoration announces per cast with no anti-spam window.
+        { key = "poisonshock", name = "Poison Shock", tier = "announce", color = 2,
+          default = false, text = "Poison Shock",
+          icon = ICON .. "Spell_Nature_Acid_01",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 25993, creatureId = 15299 } },
     },
 })
 
@@ -519,6 +708,29 @@ Addon:RegisterEncounter({
           triggers = { { on = "SPELL_AURA_APPLIED",    spellId = 26607, dest = "player" },
                        { on = "SPELL_DAMAGE",          spellId = 26607, dest = "player" },
                        { on = "SPELL_PERIODIC_DAMAGE", spellId = 26607, dest = "player" } } },
+        -- RESTORED — owner 2026-08-07, per Same-as-Naxx: the two 1.x rows the W4c
+        -- port dropped, back under their 1.x option keys (`arcaneburst`,
+        -- `healbrother`), spell ids from the parked data_aq40.lua
+        -- (1.x field values 2026-07-26). CHATTER-CLASS ROWS SHIP DEFAULT-OFF, which is also the default
+        -- 1.x shipped: 1.x itself filed Arcane Burst as "positioning info, off by
+        -- default", and the heal is background noise for as long as the twins are
+        -- within range of each other.
+        --
+        -- SHAPE GUARD: both were self-replacing 1.x BARS and NEITHER carries a
+        -- measured interval in the parked file — an unmeasured bar is not evidence of
+        -- a slow cadence, and both of these repeat inside a single pull (Arcane Burst
+        -- is Vek'lor's melee-range punish, Heal Brother re-fires for as long as the
+        -- emperors are together). A 2.0 announce fires once per event, so each
+        -- restoration carries a 3 s window: ticking the box cannot make it a spam
+        -- source, and the window re-arms rather than swallowing.
+        { key = "arcaneburst", name = "Arcane Burst (Vek'lor)", tier = "announce",
+          color = 2, default = false, text = "Arcane Burst", antispam = 3,
+          icon = ICON .. "Spell_Nature_WispSplode",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 568, creatureId = 15276 } },
+        { key = "healbrother", name = "Heal Brother", tier = "announce", color = 2,
+          default = false, text = "Heal Brother", antispam = 3,
+          icon = ICON .. "Spell_Holy_GreaterHeal",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 7393 } },
     },
     icons = {
         { key = "mutateicons", name = "Mutated bug nameplate icon", default = true,

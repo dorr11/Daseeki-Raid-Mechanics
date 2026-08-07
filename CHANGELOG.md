@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, Ahn'Qiraj data arbitrations (internal)
+- **Two Temple bars are back that the rebuild had no numbers for.** Battleguard
+  Sartura's Whirlwind now has a cooldown bar again: the reference data says nobody ever
+  timed it, but our own logs did — 26 to 29 seconds — so the bar shows that range rather
+  than a made-up exact number. Fankriss gets a "next Mortal Wound" bar on its measured 6
+  to 10 second cadence, alongside (not instead of) the 20-second bar showing how long
+  the debuff on the tank has left.
+- **Thirteen Temple alerts the rebuild had dropped are back.** Skeram's Earth Shock;
+  the Bug Trio's Cleave, Thrash, Ravage, Knock Away, Knockdown and Berserker Charge,
+  plus the two that matter most — the poison cloud when Kri dies and the Vengeance
+  enrage when Vem does; Sartura's Sundering Cleave; Viscidus's Poison Shock; and the
+  Twin Emperors' Arcane Burst and Heal Brother. Each one is a toggle under its boss,
+  stored under **exactly the key it used before the rebuild**, so if you had one of
+  these switched off it is still switched off.
+- The two "a bug just died and the fight changed" alerts come back LOUD. The melee
+  chatter — cleaves, thrashes, knockdowns and the Twins' positioning spam — comes back
+  switched OFF, the same way it shipped before: it fires often enough that the reference
+  authors dropped it entirely, so having the toggle there and unticked is the honest
+  middle. Turn any of them on and it works. The ones that repeat several times a second
+  are throttled rather than repeated once per cast.
+- Vem's three restored bars stop the moment Vem dies, like the trio's other bars.
+  Sartura's new bar ignores her Royal Guards' whirlwinds and the whirlwind's own damage
+  ticks, and Fankriss's ignores every other boss that shares the Mortal Wound spell — so
+  none of them can be restarted by the wrong thing.
+
 ## Unreleased — 2.0.0 rebuild, Naxxramas data arbitrations (internal)
 - **Three Naxx alerts now fire on either spell id.** When the rebuild was cross-checked
   against our own Anniversary combat logs, three mechanics turned out to use a different
