@@ -437,6 +437,100 @@ function Scan.Repeated(opts, cb)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
+--  (d) ROSTER-RELAYED SCANNER  (W4c extension 13)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- The three scanners above all ask the same question — "what is the BOSS looking
+-- at". This one inverts it: "what are MY PEOPLE looking at". C'Thun's Flesh
+-- Tentacles live inside the stomach and are unreachable from outside it, so the only
+-- units that can see them are the players the stomach ate; their target token is a
+-- unit token nobody else has.
+--
+-- Generalised deliberately: any creature that a subset of the raid can see and the
+-- rest cannot is readable this way, and the subset is whatever roster the encounter
+-- already maintains.
+--
+-- The dossier is HELD, not rebuilt: a tentacle that dies (or whose watcher stops
+-- looking at it) stays in the list, flagged, for `hold` seconds. LESSON CLASS 6 —
+-- a sample that comes back empty is not proof the thing is gone; only a death is.
+Scan.rosterScans = {}
+
+local function rosterMemberUnits(rt, rosterKey, out)
+    local r = rt and rt.rosters and rt.rosters[rosterKey]
+    if not r then return out end
+    local L = Addon.Lifecycle
+    local byName = {}
+    for name in pairs(r) do byName[name] = true end
+    if L and type(L.env.ForEachGroupMember) == "function" then
+        L.env.ForEachGroupMember(function(u)
+            local n = Scan.env.UnitName(u)
+            if n and byName[n] then out[#out + 1] = u end
+            return false
+        end)
+    end
+    return out
+end
+
+function Scan.RosterSample(h)
+    if h.done then return end
+    local rt = Addon.Lifecycle and Addon.Lifecycle:GetRuntime(h.encId)
+    if not rt or not rt.engaged then return end
+    local now = S():Now()
+    local units = rosterMemberUnits(rt, h.roster, {})
+    local L = Addon.Lifecycle
+    for i = 1, #units do
+        local t = units[i] .. "target"
+        if Scan.env.UnitExists(t) then
+            local cid = Scan.CreatureIdOf(t)
+            if cid == h.creatureId then
+                local guid = Scan.env.UnitGUID(t)
+                local pct  = L and L:HealthPct(t)
+                local dead = Scan.env.UnitIsDeadOrGhost(t) and true or false
+                local e = h.seen[guid]
+                if not e then
+                    e = { guid = guid, first = now }
+                    h.seen[guid] = e
+                    h.order[#h.order + 1] = guid
+                end
+                e.pct, e.dead, e.at = pct, dead, now
+                rt:Route({ on = "probe", key = h.key, destGUID = guid, creatureId = cid,
+                           pct = pct, dead = dead, unit = t })
+            end
+        end
+    end
+    -- Age the dossier out. `hold` seconds after a member was last SEEN, it goes.
+    if h.hold and h.hold > 0 then
+        for j = #h.order, 1, -1 do
+            local guid = h.order[j]
+            local e = h.seen[guid]
+            if e and (now - (e.at or now)) > h.hold then
+                h.seen[guid] = nil
+                table.remove(h.order, j)
+            end
+        end
+    end
+    Addon:FireEngineEvent("PROBE", h.encId, h.key, h.seen, h.order)
+end
+
+function Scan.Roster(opts)
+    opts = opts or {}
+    local h = {
+        kind = "roster",
+        encId = opts.encId, key = opts.key,
+        roster = opts.roster, creatureId = opts.creatureId,
+        interval = opts.interval or 1, hold = opts.hold or 30,
+        seen = {}, order = {}, startedAt = S():Now(),
+    }
+    Scan.rosterScans[h] = true
+    h.loop = S():Loop(h.interval, function() Scan.RosterSample(h) end, Scan)
+    return h
+end
+
+-- One live handle per (encounter, row): re-arming an already-running roster scan is
+-- a no-op rather than a second loop. The spec's arm trigger (a stomach debuff
+-- landing) fires once per victim, and forty victims must not mean forty loops.
+Scan.rosterByKey = {}
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  LIFECYCLE
 -- ══════════════════════════════════════════════════════════════════════════════
 function Scan.Stop(h)
@@ -452,6 +546,10 @@ function Scan.Stop(h)
     elseif h.kind == "repeated" then
         Scan.repeats[h] = nil
         S():CancelLoop(h.loop)
+    elseif h.kind == "roster" then
+        Scan.rosterScans[h] = nil
+        Scan.rosterByKey[tostring(h.encId) .. ":" .. tostring(h.key)] = nil
+        S():CancelLoop(h.loop)
     end
     return true
 end
@@ -461,6 +559,7 @@ function Scan.StopAll()
     for h in pairs(Scan.active)   do if Scan.Stop(h) then n = n + 1 end end
     for h in pairs(Scan.watchers) do if Scan.Stop(h) then n = n + 1 end end
     for h in pairs(Scan.repeats)  do if Scan.Stop(h) then n = n + 1 end end
+    for h in pairs(Scan.rosterScans) do if Scan.Stop(h) then n = n + 1 end end
     Scan.ClearTokenCache()
     return n
 end
@@ -522,7 +621,27 @@ function Scan.Dispatch(encId, row, ev)
     local kind = row.type or "poll"
     if kind == "event"    then return Scan.Event(opts, report) end
     if kind == "repeated" then return Scan.Repeated(opts, report) end
+    if kind == "roster" then
+        local id = tostring(encId) .. ":" .. tostring(row.key)
+        local live = Scan.rosterByKey[id]
+        if live and not live.done then return live end
+        local h = Scan.Roster({ encId = encId, key = row.key, roster = row.roster,
+                                creatureId = row.creatureId, interval = row.interval,
+                                hold = row.hold })
+        Scan.rosterByKey[id] = h
+        return h
+    end
     return Scan.Poll(opts, report)
+end
+
+-- A declared `stop` trigger on a scan row tears its scanner down (C'Thun's Weakened
+-- emote clears the whole tentacle list). Keyed by row, so one encounter's scans do
+-- not stop each other.
+function Scan.DispatchStop(encId, row)
+    local id = tostring(encId) .. ":" .. tostring(row.key)
+    local h = Scan.rosterByKey[id]
+    if h then return Scan.Stop(h) end
+    return false
 end
 
 function Scan.Init()
@@ -530,6 +649,9 @@ function Scan.Init()
     Scan._inited = true
     Addon:RegisterEngineCallback("SCAN_REQUEST", function(_, encId, row, ev)
         return Scan.Dispatch(encId, row, ev)
+    end, Scan)
+    Addon:RegisterEngineCallback("SCAN_STOP", function(_, encId, row)
+        return Scan.DispatchStop(encId, row)
     end, Scan)
     -- Every scanner is fight-scoped: a scan still running after the fight is a
     -- 0.05 s poll nobody is reading.
