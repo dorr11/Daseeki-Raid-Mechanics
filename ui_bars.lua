@@ -491,6 +491,17 @@ function Bars.Restyle(barId, style)
     return row
 end
 
+-- W4b: the DECLARATIVE seam. `Bars.Restyle` shipped in W2 with the Chromaggus
+-- contract written above it and nothing in the encounter grammar able to reach it;
+-- a restyle row (core_api extension 19) raises RESTYLE_REQUEST and this answers it.
+-- The engine has already decided WHICH identity the evidence means and has already
+-- swallowed the no-change case — this is pure presentation.
+function Bars.OnRestyleRequest(_, encId, row, style, ev, ident)
+    if not (row and row.timer and type(style) == "table") then return nil end
+    if ident ~= nil then return Bars.RestyleRow(encId, row.timer, style, ident) end
+    return Bars.RestyleRow(encId, row.timer, style)
+end
+
 -- Convenience for encounter data: address the bar through the row key it was
 -- started under rather than through the composed bar id.
 function Bars.RestyleRow(encId, rowKey, style, ...)
@@ -844,6 +855,8 @@ function Bars.Init()
     Addon:RegisterEngineCallback("TIMER_PAUSE",     onPauseResume,  Bars)
     Addon:RegisterEngineCallback("TIMER_RESUME",    onPauseResume,  Bars)
     Addon:RegisterEngineCallback("TIMER_COUNTDOWN", onCountdown,    Bars)
+    -- W4b extension 19: the Chromaggus contract, now reachable from encounter data.
+    Addon:RegisterEngineCallback("RESTYLE_REQUEST", Bars.OnRestyleRequest, Bars)
     -- Kept bars outlive their own expiry by design; they must not outlive the fight.
     Addon:RegisterEngineCallback("ENGINE_END", function() Bars.Sweep("fight-end") end, Bars)
     return true

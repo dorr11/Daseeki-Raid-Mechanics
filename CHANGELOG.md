@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 4b (Blackwing Lair + Zul'Gurub — internal)
+- **Blackwing Lair and Zul'Gurub are in.** All eight BWL bosses plus a zone-wide trash
+  module, and all ten Zul'Gurub bosses. Zul'Gurub had never shipped at all; Blackwing
+  Lair had a handful of bars per boss and now carries the full set — every timer, every
+  warning, the audience each one defaults on for, the phase rules, and the Era-specific
+  detection each fight needs.
+- **Chromaggus finally knows which school he is vulnerable to.** The bar changes colour,
+  icon and NAME to the current school the moment anything proves what it is, without
+  restarting — so the time left on it stays honest. It reads that from three completely
+  independent places, because on this client the vulnerability is only in the combat log
+  while somebody is holding Detect Magic on him: the combat-log event, a direct read of
+  his own buffs (which works with nobody dispelling anything), and the "skin shimmers"
+  emote, which proves the school just changed even when nothing can say to what. And the
+  rule that matters most: **not being able to see a school never clears one.** A read
+  that comes back empty changes nothing at all.
+- The rest of Chromaggus is complete too. Both pull breath bars are labelled separately
+  and each is closed by hand when its breath actually lands, instead of counting into a
+  window forever. Each breath then gets its OWN 61.5-second bar, named for itself, so two
+  breaths mean two clocks. "Breath soon" is called before every one of them. Your own
+  brood afflictions are counted up AND back down, and you are told the moment you are
+  carrying three of the five.
+- **Nefarian's phases work with nothing to work with.** There is no combat-log event and
+  no yell for phase 1 ending on this client, so the mod watches whether the game itself
+  still thinks an encounter is running: it stops while the drakonid waves finish, and
+  starts again as he lands. The drakonid counter runs 42 down to 0, de-duplicated so a
+  corpse cannot be counted twice. All nine class calls announce to the raid, shout at you
+  personally if it is your class, and put a 30-second bar up named for the class that was
+  called — and the Shaman call shouts at everybody, because the totems are everybody's
+  problem.
+- Razorgore's egg count is announced for every single egg, and **the fight now knows the
+  difference between a kill and a wipe.** Dying in phase 1 means somebody dropped the orb;
+  only dying in phase 2 counts as a kill, and the game's own (wrong) verdict is ignored.
+- Vaelastrasz counts you in: hearing "Too late, friends!" starts a 43.5-second pull
+  countdown so the raid knows exactly how long the speech has left. Burning Adrenaline
+  puts a bar on each victim, shouts at you when it is you, and calls you out five seconds
+  before it kills you — and that call is cancelled the instant the debuff comes off.
+- Ebonroc, Flamegor, Firemaw, Broodlord and the BWL trash all behave: Wing Buffet and
+  Shadow Flame cooldowns with correct first-cast windows, Flame Buffet counted from four
+  stacks upward, per-Seether Flamestrike bars, and a "get out of the fire" alert.
+- **Hakkar's hard mode is detected.** There is no difficulty setting for it anywhere — the
+  only difference is that he has more health — so the mod reads his maximum health off
+  whoever can see him, and above 1,079,325 it arms all five Aspect timers. A fight it
+  cannot prove is hard runs as a normal fight, which is the safe way to be wrong.
+- Mandokir's gaze is read from his **yell**, not the combat log, because the yell arrives
+  a full two seconds earlier — and two seconds is the whole mechanic. Arlokk's vanish has
+  no event at all on this client, so her return is worked out from the first time she
+  swings at somebody. Venoxis, Jeklik, Mar'li, Thekal, Jin'do and Gahz'ranka are all in,
+  with resurrection windows, interrupt calls, dispel calls and totem-switch calls.
+- **The Edge of Madness bosses ship switched off, on purpose.** Their spell IDs are flagged
+  as unverified in the source material we built from, and an alert keyed to an ID nobody
+  has confirmed is worse than no alert: it teaches a raid to trust a bar that may never
+  fire. Every row is there and every row is off, ready to be switched on by anyone helping
+  verify them.
+- Both new options sections are real: every bar and every warning is its own toggle under
+  its boss. **Blackwing Lair settings carry over** — where the old data and the new spec
+  agree on a mechanic, the setting is stored under the same key it always was.
+- Internal: the encounter grammar gained seven more general primitives — dynamic bar
+  identity (restyle rows), per-event-field bar identity, the encounter-in-progress poll,
+  a unit-fact sweep for auras and maximum health, numeric field tests, a kill-stage gate,
+  and RP-driven pull countdowns — plus row suppression and a "this call is for your class"
+  predicate. `data_bwl.lua`, the last parked 1.x data file, was diffed against the spec
+  and then deleted; the spec won every disagreement, one log-verified mechanic the spec
+  lacks entirely was carried over switched off, and everything is listed in the wave
+  report.
+
 ## Unreleased — 2.0.0 rebuild, wave 4c (Ruins + Temple of Ahn'Qiraj — internal)
 - **Both Ahn'Qiraj raids are in.** All six Ruins bosses and all nine Temple bosses now
   run on the new engine, plus a zone-wide trash module for each instance. The Ruins had

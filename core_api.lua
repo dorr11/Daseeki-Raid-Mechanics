@@ -95,6 +95,56 @@
          shatter is inferred from him swinging at someone MORE THAN 5 s after he
          froze, and "more than 5 s after" is a property of the machine, not the swing.
 
+    W4B GRAMMAR EXTENSIONS (Blackwing Lair + Zul'Gurub wave). Seven more. Chromaggus
+    is the reason for four of them and Nefarian, Razorgore, Vaelastrasz and Hakkar for
+    one each — but every one is written as a PRIMITIVE, because a "vulnerability
+    system" that only Chromaggus can use is code wearing a data costume.
+
+     19. RESTYLE ROWS.  `restyles = { … }` — one BAR, several identities, chosen by
+         evidence. A restyle row names the `timer` whose running bar it re-labels and
+         carries `variants`, each a trigger plus a `style = { text =, icon =, color = }`.
+         W2 built `Bars.Restyle` for exactly this and nothing could reach it from data;
+         this is the seam (`RESTYLE_REQUEST`). Chromaggus's vulnerability bar (five
+         schools) and his breath bars (ten breath spells, two of them per lockout) are
+         the design cases. Identity changes; elapsed time does not.
+     20. IDENTITY BY EVENT FIELD.  `identBy = "<event field>"` on a timer row — one bar
+         per distinct value of that field. `perTarget` (destName) and `nameplate`
+         (sourceGUID) were the only two identities the engine had; Chromaggus needs one
+         bar per BREATH SPELL, which is neither.
+     21. THE ENCOUNTER-IN-PROGRESS POLL.  `scans[].type = "progress"` — sample
+         Blizzard's own "is an encounter running" flag at a fixed rate and route each
+         CHANGE as an ordinary `on = "progress"` trigger. Nefarian's P1 -> intermission
+         -> P2 transition has no combat-log or yell trigger on Era at all; the flag is
+         the only evidence that exists.
+     22. THE UNIT-FACT SWEEP.  `scans[].type = "unit"` — resolve a creature through the
+         Era token ladder and report facts ABOUT it: which of a declared aura set it is
+         carrying (`on = "aura"`), and its maximum health (`on = "probe"`). Chromaggus's
+         vulnerability is only in the combat log when somebody has Detect Magic up, so
+         reading the boss's buffs is one of three independent evidence paths; Hakkar's
+         hard mode has no difficulty flag and is inferred from his max health.
+         LESSON CLASS 4/6, hard-wired: a sweep that finds NOTHING routes NOTHING. An
+         empty read is not proof of absence, and this scanner may never clear state.
+     23. NUMERIC FIELD TESTS.  `atLeast` / `atMost` on a trigger — `{ field = value }`
+         maps. `where` answers equality; "his maximum health is at least 1,079,325"
+         is not an equality question.
+     24. KILL-STAGE GATE.  `combat.killMinStage` — the boss's death only counts as a
+         KILL from stage N; before that it is a wipe. Razorgore dies in phase 1 every
+         time somebody drops the orb, and Blizzard's ENCOUNTER_END lies about it.
+     25. RP PULL COUNTDOWN.  `detect.pullCountdown = { seconds =, yellFind =, … }` — a
+         chat line that precedes the pull by a known interval starts the engine's own
+         pull timer (§11.4) without engaging anything. Vaelastrasz's forced dialogue is
+         43.5 s of standing still with no bar unless something declares it.
+     26. ROW SUPPRESSION.  `suppressedBy = "<row key>"` on a warning row — the row stays
+         quiet while the named row is ENABLED. The spec writes this as "replaces the
+         announce when enabled" and it appears seven times across BWL and ZG alone
+         (Firemaw's buffet, Ebonroc's taunt, Flamegor's and Hakkar's tranq calls,
+         Venoxis's and Mar'li's dispel calls). Two alerts for one fact is worse than
+         either alone, and which one you get is a preference.
+     27. (API.Conditions, not a new shape) `playerClassIs` — "…and the class this
+         trigger names is YOUR class". Nefarian calls out one class at a time by yell;
+         the mapping from yell to class is data, so the predicate reads `tr.class`
+         instead of one warning row per class per arm.
+
     THE ESCAPE HATCH IS THE CONTRACT WITH W4d. The five shipped Naxx specials
     (mod_loatheb_healers, mod_fourhorsemen_rotation, mod_fourhorsemen_tracker,
     mod_gothik_waves, mod_razuvious_understudy, thaddius) are NOT touched by this
@@ -139,6 +189,7 @@ API.EVENTS = {
     -- services other waves own
     "SCAN_REQUEST",         -- (encId, scanDecl, ctx)     -> W2 target scanners
     "ICON_REQUEST",         -- (encId, iconDecl, ctx)     -> W2 raid icons
+    "RESTYLE_REQUEST",      -- (encId, restyleRow, style, ctx) -> W2 Bars.Restyle (W4b ext 19)
     "SYNC_SEND",            -- (subPrefix, ...)           -> W3 addon channel, outbound
     "SYNC_RECV",            -- (subPrefix, sender, ...)   -> W3 addon channel, inbound
     "ENGINE_PULL",          -- (seconds, source, target)  -> W3 pull timer (§11.4)
@@ -287,6 +338,8 @@ API.TRIGGER_EVENTS = {
     aura = true,            -- a unit-aura sweep result (Chromaggus/Thaddius icon reads)
     roster = true,          -- W4c: a roster membership change (C'Thun's stomach list)
     probe = true,           -- W4c: a roster-relayed unit sample (C'Thun's Flesh Tentacles)
+                            --      W4b: also the unit-fact sweep's max-health report
+    progress = true,        -- W4b: Blizzard's encounter-in-progress flag changed (Nefarian)
 }
 
 -- W4c extension 16. The four *_MISSED sub-events carry a miss TYPE that nothing
@@ -307,7 +360,11 @@ API.ROLE_GATES = {
 
 -- W4c extension 13 adds the fourth shape: `roster`, which samples through OTHER
 -- PLAYERS' targets rather than through the boss's.
-API.SCAN_TYPES  = { poll = true, event = true, repeated = true, roster = true }
+-- W4b adds the two shapes that ask about a unit rather than about its target:
+-- `progress` (Blizzard's encounter flag) and `unit` (that creature's own auras and
+-- maximum health).
+API.SCAN_TYPES  = { poll = true, event = true, repeated = true, roster = true,
+                    progress = true, unit = true }
 API.COUNTER_SCOPES = { global = true, self = true, boss = true, census = true, target = true }
 API.WARN_TIERS  = { announce = true, special = true }
 
@@ -388,6 +445,19 @@ API.Conditions.playerNearSource = function(rt, ev, tr)
     end
     if not unit then return true end       -- cannot see it: do not swallow the alert
     return Era.CheckRange(unit, (tr and tr.range) or 10) and true or false
+end
+
+-- "…and the class this trigger names is YOUR class" (W4b extension 27). Nefarian's
+-- twelve class calls are one mechanic with a per-class payload, and the payload is
+-- carried by the trigger (`class = "DRUID"`), so the personal arm is ONE row with one
+-- trigger per yell rather than one row per class. Reads the class resolver svc_era
+-- installs, which is also what `classDefault` reads, so both answers agree.
+API.Conditions.playerClassIs = function(rt, ev, tr)
+    local want = tr and tr.class
+    if not want then return false end
+    local f = Addon.ClassResolver
+    if type(f) ~= "function" then return false end   -- unanswerable: do not claim it is you
+    return f() == want
 end
 
 -- "…and the mob that gained it is on a nameplate." The Twin Emperors' Explode Bug
@@ -538,6 +608,26 @@ local function validateTrigger(errs, where, tr)
     if tr.dedupe ~= nil and type(tr.dedupe) ~= "string" then
         errs[#errs + 1] = where .. ": `dedupe` must name an event field"
     end
+    -- W4b extension 23: numeric field tests. `where` answers equality and nothing else,
+    -- so "his maximum health is at least N" had no expression at all.
+    for _, field in ipairs({ "atLeast", "atMost" }) do
+        local spec = tr[field]
+        if spec ~= nil then
+            if type(spec) ~= "table" then
+                errs[#errs + 1] = where .. ": `" .. field .. "` must be { <event field> = number }"
+            else
+                local n = 0
+                for k, v in pairs(spec) do
+                    n = n + 1
+                    if type(k) ~= "string" or type(v) ~= "number" then
+                        errs[#errs + 1] = where .. ": `" .. field ..
+                            "` maps an event field name to a number"
+                    end
+                end
+                if n == 0 then errs[#errs + 1] = where .. ": `" .. field .. "` is empty" end
+            end
+        end
+    end
     if tr.duration ~= nil then validateDuration(errs, where .. ".duration", tr.duration) end
 end
 
@@ -623,6 +713,15 @@ function API.Validate(def)
         if row.color and (type(row.color) ~= "number" or row.color < 1 or row.color > API.COLOR_MAX) then
             errs[#errs + 1] = where .. ": colour index out of range 1.." .. API.COLOR_MAX
         end
+        -- W4b extension 20. Three identities cannot be true of one bar at once, and a
+        -- row that declared two would silently pick whichever the dispatcher tested first.
+        if row.identBy ~= nil then
+            if type(row.identBy) ~= "string" then
+                errs[#errs + 1] = where .. ": `identBy` must name an event field"
+            elseif row.perTarget or row.nameplate then
+                errs[#errs + 1] = where .. ": `identBy` cannot combine with perTarget/nameplate"
+            end
+        end
     end
 
     for i, row in ipairs(def.warnings or {}) do
@@ -652,6 +751,26 @@ function API.Validate(def)
         end
         if row.stacks and row.count then
             errs[#errs + 1] = where .. ": a row fills `%d` from `stacks` OR `count`, not both"
+        end
+        -- W4b extension 26: a suppressor that names nothing suppresses nothing, forever
+        -- and silently. (Resolved after the loop, once every row key is known.)
+        if row.suppressedBy ~= nil and type(row.suppressedBy) ~= "string" then
+            errs[#errs + 1] = where .. ": `suppressedBy` must name another row"
+        end
+    end
+    do
+        local warnKeys = {}
+        for _, row in ipairs(def.warnings or {}) do if row.key then warnKeys[row.key] = true end end
+        for i, row in ipairs(def.warnings or {}) do
+            if type(row.suppressedBy) == "string" then
+                if not warnKeys[row.suppressedBy] then
+                    errs[#errs + 1] = ("%s.warnings[%s]: `suppressedBy` names no row ('%s')")
+                        :format(tostring(def.id), tostring(row.key or i), row.suppressedBy)
+                elseif row.suppressedBy == row.key then
+                    errs[#errs + 1] = ("%s.warnings[%s]: a row cannot suppress itself")
+                        :format(tostring(def.id), tostring(row.key or i))
+                end
+            end
         end
     end
 
@@ -757,6 +876,51 @@ function API.Validate(def)
         end
     end
 
+    -- W4b extension 19: restyle rows. A row that names a timer that does not exist is
+    -- a silent no-op forever, which is exactly the class of mistake validation is for.
+    do
+        local timerKeys = {}
+        for _, row in ipairs(def.timers or {}) do if row.key then timerKeys[row.key] = true end end
+        for i, row in ipairs(def.restyles or {}) do
+            local where = ("%s.restyles[%s]"):format(tostring(def.id), tostring(row.key or i))
+            rowKey("restyle", row, i)
+            if type(row.timer) ~= "string" then
+                errs[#errs + 1] = where .. ": a restyle row must name the `timer` it re-labels"
+            elseif not timerKeys[row.timer] then
+                errs[#errs + 1] = where .. ": `timer` names no timer row ('" .. row.timer .. "')"
+            end
+            if row.identBy ~= nil and type(row.identBy) ~= "string" then
+                errs[#errs + 1] = where .. ": `identBy` must name an event field"
+            end
+            local variants = row.variants or {}
+            if #variants == 0 then
+                errs[#errs + 1] = where .. ": a restyle row needs at least one variant"
+            end
+            for j, v in ipairs(variants) do
+                local vw = where .. ".variants[" .. j .. "]"
+                if type(v) ~= "table" then
+                    errs[#errs + 1] = vw .. ": variant must be a table"
+                else
+                    if type(v.style) ~= "table" then
+                        errs[#errs + 1] = vw .. ": variant has no `style` table"
+                    elseif v.style.text == nil and v.style.icon == nil and v.style.color == nil then
+                        errs[#errs + 1] = vw .. ": `style` changes nothing (text/icon/colour)"
+                    end
+                    if type(v.style) == "table" and v.style.color ~= nil
+                       and (type(v.style.color) ~= "number" or v.style.color < 1
+                            or v.style.color > API.COLOR_MAX) then
+                        errs[#errs + 1] = vw .. ": style colour out of range 1.." .. API.COLOR_MAX
+                    end
+                    if v.on == nil then
+                        errs[#errs + 1] = vw .. ": variant has no trigger"
+                    else
+                        validateTrigger(errs, vw, v)
+                    end
+                end
+            end
+        end
+    end
+
     for i, row in ipairs(def.phases or {}) do
         local where = ("%s.phases[%d]"):format(tostring(def.id), i)
         if row.stage == nil then errs[#errs + 1] = where .. ": phase row has no stage" end
@@ -778,6 +942,26 @@ function API.Validate(def)
     if def.legacy ~= nil then
         if type(def.legacy) ~= "table" or not def.legacy.raidId or not def.legacy.bossId then
             errs[#errs + 1] = tostring(def.id) .. ": `legacy` needs { raidId=, bossId= }"
+        end
+    end
+    -- W4b extension 24.
+    local kms = def.combat and def.combat.killMinStage
+    if kms ~= nil and (type(kms) ~= "number" or kms < 1) then
+        errs[#errs + 1] = tostring(def.id) .. ": `combat.killMinStage` must be a stage number >= 1"
+    end
+    -- W4b extension 25.
+    local pc = d.pullCountdown
+    if pc ~= nil then
+        local pw = tostring(def.id) .. ".detect.pullCountdown"
+        if type(pc) ~= "table" then
+            errs[#errs + 1] = pw .. ": must be a table"
+        else
+            if type(pc.seconds) ~= "number" or pc.seconds <= 0 then
+                errs[#errs + 1] = pw .. ": needs a positive `seconds`"
+            end
+            if not (pc.yell or pc.yellFind or pc.emote or pc.emoteFind or pc.say or pc.sayFind) then
+                errs[#errs + 1] = pw .. ": needs a chat line to start from"
+            end
         end
     end
     return errs
@@ -876,6 +1060,15 @@ local function compile(enc)
         enc.rowsByKey[row.key] = row
         if row.on then indexTrigger(enc, row.on, { kind = "icon", row = row }) end
     end
+    -- W4b extension 19. Each VARIANT is its own trigger carrying its own style, so the
+    -- dispatcher never has to search the row for "which identity did this event mean".
+    for _, row in ipairs(enc.restyles or {}) do
+        enc.rowsByKey[row.key] = row
+        indexCancels(enc, row)
+        for _, v in ipairs(row.variants or {}) do
+            indexTrigger(enc, v, { kind = "restyle", row = row, style = v.style })
+        end
+    end
     return enc
 end
 
@@ -902,6 +1095,7 @@ function Addon:RegisterEncounter(def)
     def.icons   = def.icons   or {}
     def.schedule = def.schedule or {}
     def.rosters = def.rosters or {}
+    def.restyles = def.restyles or {}
     def.creatureIds   = listify(def.creatureId) or {}
     def.encounterIds  = listify(def.encounterId) or {}
     def.zones         = listify(def.zone) or {}
@@ -1392,6 +1586,20 @@ local function triggerMatches(rt, tr, ev)
         end
     end
     if tr.counter ~= nil and not counterMatches(rt, tr.counter) then return false end
+    -- W4b extension 23. A MISSING field fails the test rather than passing it: an
+    -- unanswerable "is his max health >= 1,079,325" must not read as "yes, hard mode".
+    if tr.atLeast ~= nil then
+        for field, want in pairs(tr.atLeast) do
+            local got = ev[field]
+            if type(got) ~= "number" or got < want then return false end
+        end
+    end
+    if tr.atMost ~= nil then
+        for field, want in pairs(tr.atMost) do
+            local got = ev[field]
+            if type(got) ~= "number" or got > want then return false end
+        end
+    end
     -- W4c extension 12: "…and this player is (not) already in the set".
     if tr.inRoster ~= nil and not rt:RosterHas(tr.inRoster, ev.destName) then return false end
     if tr.notInRoster ~= nil and rt:RosterHas(tr.notInRoster, ev.destName) then return false end
@@ -1490,9 +1698,12 @@ function Runtime:Act(entry, ev, deferred)
         -- Passing a per-event value (a target name, a GUID) to a plain cooldown
         -- timer would mint a NEW bar every cast — which silently disables the
         -- early-refresh tripwire, because there would never be a bar to measure.
+        -- W4b extension 20 generalises the two identities that already existed: a bar
+        -- may be per-target (destName), per-mob (sourceGUID) or per ANY event field.
         local ident
         if row.perTarget then ident = ev.destName
-        elseif row.nameplate then ident = ev.sourceGUID or ev.destGUID end
+        elseif row.nameplate then ident = ev.sourceGUID or ev.destGUID
+        elseif row.identBy then ident = ev[row.identBy] end
         if c.act == "stop" then
             if ident ~= nil then t:Stop(ident) else t:Stop() end
             return true
@@ -1510,6 +1721,13 @@ function Runtime:Act(entry, ev, deferred)
 
     if c.kind == "warning" then
         if row.key and not Addon.API.IsRowEnabled(self.id, row) then return false end
+        -- W4b extension 26. The spec's "replaces the announce when enabled": the plain
+        -- row goes quiet while the sharper one is switched on, and comes back the
+        -- moment the player switches that one off.
+        if row.suppressedBy then
+            local other = self.def.rowsByKey and self.def.rowsByKey[row.suppressedBy]
+            if other and Addon.API.IsRowEnabled(self.id, other) then return false end
+        end
         local text = row.text or row.key
         -- W4c: STACK interpolation, the sibling of W4d's target interpolation. The
         -- spec writes these alerts as "<name> (N)" where N is the debuff's stack, not
@@ -1601,6 +1819,33 @@ function Runtime:Act(entry, ev, deferred)
 
     if c.kind == "icon" then
         Addon:FireEngineEvent("ICON_REQUEST", self.id, row, ev)
+        return true
+    end
+
+    -- W4b extension 19. The engine decides WHICH identity the evidence means and
+    -- publishes it; ui_bars decides how a bar wears it. The announce half of the same
+    -- fact is an ordinary warning row on the same trigger — a restyle never speaks.
+    if c.kind == "restyle" then
+        if not Addon.API.IsRowEnabled(self.id, row) then return false end
+        local style = entry.consumer.style
+        if not style then return false end
+        -- Announce-on-CHANGE, the spec's rule for the vulnerability school: re-seeing
+        -- the same school is not news, and re-styling the bar to what it already says
+        -- would burn a TIMER_UPDATE every sample of the aura sweep.
+        local sig = tostring(style.text) .. "\t" .. tostring(style.icon) .. "\t"
+                    .. tostring(style.color)
+        local ident = row.identBy and ev and ev[row.identBy] or nil
+        local slot  = tostring(row.key) .. "\t" .. tostring(ident)
+        self.restyled = self.restyled or {}
+        if self.restyled[slot] == sig then return false end
+        self.restyled[slot] = sig
+        -- THE STATE MOVES FIRST, and the order is load-bearing. The current identity is
+        -- state, so a warning row can be gated on it and a timer row can START on it —
+        -- which Chromaggus's vulnerability bar does, because the school changing is the
+        -- only thing that arms it. Restyling before the state moved would try to
+        -- re-label a bar that does not exist yet.
+        if row.state ~= false then self:SetState(row.key, style.text or sig) end
+        Addon:FireEngineEvent("RESTYLE_REQUEST", self.id, row, style, ev, ident)
         return true
     end
     return false
@@ -1813,6 +2058,10 @@ function API.PublishOptionsTree()
             -- so it gets a checkbox like every other row.
             for _, row in ipairs(enc.rosters or {}) do
                 boss.mechanics[#boss.mechanics + 1] = projectRow(row, "roster")
+            end
+            -- W4b: "should the bar follow the school" is a preference like any other.
+            for _, row in ipairs(enc.restyles or {}) do
+                boss.mechanics[#boss.mechanics + 1] = projectRow(row, "restyle")
             end
             raid.bosses[#raid.bosses + 1] = boss
             for _, cid in ipairs(enc.creatureIds) do npc[cid] = boss end
