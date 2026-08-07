@@ -43,6 +43,10 @@ local function API() return Addon.API end
 Life.ARM_COMBAT           = 1.5     -- combat-state pull detection arms after load
 Life.ARM_HEALTH           = 20      -- health-based pull detection arms after load
 Life.SWEEP_DELAYS         = { 0.5, 1.25, 2.0 }
+-- AUDIT RML-1: the sweep's tiebreak rule. See Life:SweepOrder. `true` = the mob the
+-- player is targeting wins a multi-creature sweep; otherwise lowest creature id.
+-- Either way the answer is a RULE, never a pairs() race.
+Life.PREFER_TARGETED      = true
 Life.HEALTH_REARM         = 2.1     -- health path re-arms after the sweeps
 Life.HEALTH_HIGH_PCT      = 97      -- above this, the engage delay is a flat 0.5 s
 Life.HEALTH_HIGH_DELAY    = 0.5
@@ -624,11 +628,46 @@ end
 -- resulting engagement would report trigger "sweep" and the fact that a YELL pulled
 -- the fight would be lost. Lord Kazzak's berserk bar is conditional on exactly that
 -- fact (§9.2), and §2.3 step 10's startedByMessage hook wants the same answer.
+-- AUDIT RML-1 (Brief G, lesson Class 8). The sweep used to walk `map` with pairs()
+-- and accumulate `started = started or Life:StartCombat(...)`. Two defects in one
+-- line: the WALK ORDER was a hash accident, and `or` short-circuits, so once ANY
+-- encounter started, every remaining matched encounter was silently skipped —
+-- meaning "which encounter wins a multi-creature pull" was decided by table
+-- lifetime. In Naxxramas' Four Horsemen chamber and AQ40's twin-boss rooms that is
+-- the difference between the right module arming and the wrong one.
+--
+-- The rule is now STATED: sort the matched creature ids ascending and take the
+-- FIRST encounter that successfully starts. Lowest creature id wins. It is
+-- arbitrary in the sense that any total order would do, but it is a rule — the
+-- same raid, the same pull, the same winner, every time and on every client.
+--
+-- The short-circuit is KEPT deliberately (one sweep starts one encounter, which is
+-- the §2.1(c) contract) — what changed is that the winner is chosen rather than
+-- raced. `Life.PREFER_TARGETED` lets a caller override the tiebreak with "the mob
+-- the player is actually looking at", which is the answer a human would give.
+function Life:SweepOrder(map)
+    local cids = {}
+    for cid in pairs(map) do cids[#cids + 1] = cid end
+    table.sort(cids)
+    -- The player's own target outranks the numeric order when it is in the map:
+    -- if the raid is looking at Thane Korth'azz, Thane Korth'azz is the pull.
+    if Life.PREFER_TARGETED then
+        local tcid = Life:CreatureIdOfUnit("target")
+        if tcid and map[tcid] then
+            for i, cid in ipairs(cids) do
+                if cid == tcid then table.remove(cids, i); table.insert(cids, 1, cid) break end
+            end
+        end
+    end
+    return cids
+end
+
 function Life:Sweep(delay, onlyEncId, trigger)
     if Life.pendingSweeps > 0 then Life.pendingSweeps = Life.pendingSweeps - 1 end
     local map = Life:BuildCreatureMap(delay)
     local started
-    for cid, unit in pairs(map) do
+    for _, cid in ipairs(Life:SweepOrder(map)) do
+        local unit = map[cid]
         local list = Addon.encByCreature[cid]
         if list then
             for _, enc in ipairs(list) do
@@ -640,11 +679,12 @@ function Life:Sweep(delay, onlyEncId, trigger)
                    and Life.env.UnitIsFriend("player", unit) then
                     skip = true
                 end
-                if not skip then
-                    started = started or Life:StartCombat(enc, delay, trigger or "sweep")
+                if not skip and not started then
+                    started = Life:StartCombat(enc, delay, trigger or "sweep")
                 end
             end
         end
+        if started then break end
     end
     return started
 end

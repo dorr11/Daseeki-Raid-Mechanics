@@ -150,7 +150,7 @@ end
 local ALL_LUA = {
     "core.lua", "theme.lua", "media.lua", "soundpacks.lua",
     "core_heap.lua", "core_telemetry.lua", "core_sched.lua", "core_timers.lua",
-    "core_api.lua", "core_lifecycle.lua", "core_boot.lua", "core_sync.lua",
+    "core_api.lua", "core_lifecycle.lua", "core_diag.lua", "core_boot.lua", "core_sync.lua",
     "svc_era.lua", "svc_scan.lua", "ui_bars.lua", "ui_warnings.lua", "public_api.lua",
     "alerts.lua", "dbm_bridge.lua", "modules.lua",
     "mod_loatheb_healers.lua", "mod_fourhorsemen_rotation.lua",
@@ -213,7 +213,7 @@ local CHANGE_SURFACE = {
     ["enc_worldbosses.lua"] = true,
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
-    ["core_boot.lua"] = true, [TOC_FILE] = true,
+    ["core_boot.lua"] = true, ["core_diag.lua"] = true, [TOC_FILE] = true,
     -- wave 3 authored these two; they are clean-room from the behaviour spec alone.
     ["core_sync.lua"] = true, ["dbm_bridge.lua"] = true,
     -- wave 2
@@ -454,7 +454,9 @@ local Addon = {}
 local ENGINE_FILES = {
     "core.lua", "theme.lua", "media.lua", "soundpacks.lua",
     "core_heap.lua", "core_telemetry.lua", "core_sched.lua",
-    "core_timers.lua", "core_api.lua", "core_lifecycle.lua", "core_boot.lua",
+    "core_timers.lua", "core_api.lua", "core_lifecycle.lua",
+    -- wave 5: the owner's diagnostics, split out of the retired core_boot scaffold.
+    "core_diag.lua", "core_boot.lua",
     -- wave 3: the addon channel, then the receive-only interop bridge that writes
     -- its prefixes into the channel's transmit firewall at LOAD time.
     "core_sync.lua", "dbm_bridge.lua",

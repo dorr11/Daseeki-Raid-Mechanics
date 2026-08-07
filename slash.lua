@@ -111,6 +111,29 @@ SlashCmdList["DASEEKIRM"] = function(msg)
             end
         end
 
+    -- W5: the early-refresh tripwire's ring, made readable in-game. This is the
+    -- ARBITRATION INSTRUMENT — the thing that says which shipped timer value is
+    -- wrong, with numbers from Drew's own raids — so it needs a one-word way in that
+    -- does not depend on the hub being installed.
+    elseif msg == "telemetry" or msg == "timers" then
+        Addon:ShowTelemetryReport()
+
+    elseif msg == "telemetry raw" then
+        local DS = _G.DaseekiSuite
+        local text = table.concat(Addon.Telemetry.Export(), "\n")
+        if DS and DS.ShowTextDialog then
+            DS.ShowTextDialog("DRM Engine Log (raw)", text, true)
+        else
+            for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+                if line ~= "" then p(line) end
+            end
+        end
+
+    elseif msg == "telemetry clear" then
+        local n = Addon.Telemetry.Clear()
+        if Addon.RefreshTelemetryLine then Addon:RefreshTelemetryLine() end
+        p(("Timer telemetry cleared (%d observation%s)."):format(n, n == 1 and "" or "s"))
+
     elseif msg == "enable" then
         Addon.db.settings.enabled = true
         p("Alerts " .. W("ok", "enabled") .. ".")
@@ -120,6 +143,6 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         p("Alerts " .. W("danger", "disabled") .. ".")
 
     else
-        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | demo | demo off | anchors | stats | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
+        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | demo | demo off | anchors | stats | telemetry | telemetry raw | telemetry clear | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
     end
 end

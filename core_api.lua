@@ -2097,6 +2097,54 @@ end
 Addon.zones     = Addon.zones or {}      -- ordered array of zone descriptors
 Addon.zonesById = Addon.zonesById or {}
 
+-- THE PROJECTED TREE AND ITS FOUR READERS.
+--
+-- W5 SCAFFOLD RETIREMENT: these lived in core_boot.lua from the wave-1 demolition
+-- until now, under a heading that called them "retirement shims". They never were
+-- shims — they are the READ SIDE of the projection defined thirty lines below, and
+-- W4d already replaced the thing that fills them. Leaving the readers in a file
+-- named "boot", labelled transitional, meant every reader of this codebase had to
+-- discover that the label was stale. They are here, next to the writer, because
+-- this is where they belong: `PublishOptionsTree` assigns these three tables and
+-- these four functions are how everything else asks about them.
+--
+-- Consumers: options.lua (the whole raid/boss drill-down), alerts.lua, svc_scan.lua
+-- and the special modules' `bossId` lookups.
+Addon.raids     = Addon.raids     or {}
+Addon.raidsById = Addon.raidsById or {}
+Addon.npcIndex  = Addon.npcIndex  or {}
+
+function Addon:GetRaids()  return Addon.raids end
+function Addon:GetRaid(id) return Addon.raidsById[id] end
+function Addon:GetBoss(raidId, bossId)
+    local r = Addon.raidsById[raidId]
+    if not r then return nil end
+    for _, b in ipairs(r.bosses or {}) do if b.id == bossId then return b end end
+    return nil
+end
+function Addon:GetBossByNpcID(npcID) return Addon.npcIndex[npcID] end
+
+-- THE 1.x REGISTRATION REFUSAL. Not a shim either — a permanent guard, and it is
+-- deliberately a HARD STOP rather than a silent no-op.
+--
+-- All three 1.x data files (data_naxxramas / data_aq40 / data_bwl) were consumed
+-- and deleted across W4b-d, and Molten Core, Onyxia and the world bosses never had
+-- one; the RETIRE gate asserts they stay deleted. So there is no caller left inside
+-- the addon. It stays because the reasons outlive the files: a third-party or
+-- hand-written plugin may still call `Addon:RegisterRaid`, and a silent no-op would
+-- be strictly worse than the function not existing — the plugin author would see
+-- their raid simply not appear, with nothing to read. A refusal that writes to the
+-- telemetry ring is the traceable answer, and it names the successor.
+function Addon:RegisterRaid(def)
+    if Addon.Telemetry then
+        Addon.Telemetry.Write("api.validate", {
+            reason = "legacy RegisterRaid refused (the 1.x encounter-data format was retired in 2.0)",
+            enc = def and def.id,
+        })
+    end
+    return nil, "the 1.x encounter-data format was retired in 2.0; use Addon:RegisterZone + Addon:RegisterEncounter"
+end
+
 -- { id = "naxxramas", name = "Naxxramas", order = 70, mapID = 533, size = 40, icon = }
 function Addon:RegisterZone(def)
     if type(def) ~= "table" or type(def.id) ~= "string" then
@@ -2163,7 +2211,32 @@ function API.PublishOptionsTree()
     end
     table.sort(raids, function(a, b) return (a.order or 999) < (b.order or 999) end)
     Addon.raids, Addon.raidsById, Addon.npcIndex = raids, byId, npc
+    Addon._optionsTreeRevision = (Addon._optionsTreeRevision or 0) + 1
     return raids
+end
+
+-- AUDIT RM-1, second half (Brief G, lesson Class 7). `projectRow` FREEZES the
+-- resolved answer: `default = API.RowDefault(row)` calls the role resolver ONCE, at
+-- boot. The engine itself is fine — `API.IsRowEnabled` re-resolves live on every
+-- fire — but everything that reads the PROJECTED tree (the options checkboxes,
+-- alerts.lua's Addon:GetMechanicConfig fallbacks) kept answering with the role the
+-- player had at login. Promoted to Main Tank at 20:05, tank rows still reading
+-- "off" at 23:00.
+--
+-- Re-projecting is cheap (it is a walk of already-built tables, no validation) and
+-- ROLE_CHANGED is rare by construction — svc_era only fires it on a respec or on a
+-- roster change that MOVED the answer. Registered once, from InitEngine, after the
+-- first projection exists.
+function API.WatchRoleChanges()
+    if API._roleWatchInstalled then return false end
+    API._roleWatchInstalled = true
+    Addon:RegisterEngineCallback("ROLE_CHANGED", function()
+        API.PublishOptionsTree()
+        -- Repaint any options section currently on screen; a no-op headless and a
+        -- no-op when the hub was never opened.
+        if Addon.RefreshAllRaidSections then Addon:RefreshAllRaidSections() end
+    end)
+    return true
 end
 
 return API

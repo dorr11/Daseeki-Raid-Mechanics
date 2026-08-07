@@ -1050,28 +1050,13 @@ function Addon:BuildGeneralOptions(flow)
         get = function() return Addon.db.settings.countdownVoice ~= false end,
         set = function(v) Addon.db.settings.countdownVoice = v and true or false end,
     })
-    local packs = Addon:GetVoiceCountPacks()
-    local packNames = {}
-    for _, pk in ipairs(packs) do packNames[#packNames + 1] = pk.name end
+    -- The countdown VOICE PACK picker moved to the Sounds section in W5 (all pack
+    -- choices in one place; DREW_UI_STYLE principle 2 — related things sit together).
+    -- What stays here is the end-to-end preview, because what it previews is the PULL
+    -- TIMER, which is this section's subject: countdown bar + voice count + "PULL!".
     local vrow = ap:AddRow()
-    vrow:Label("Voice")
-    panel.voiceDD = vrow:Dropdown({
-        width = 150, choices = packNames,
-        get = function()
-            local cur = packs[1] and packs[1].name or "None"
-            for _, pk in ipairs(packs) do
-                if pk.key == Addon.db.settings.voiceCountKey then cur = pk.name break end
-            end
-            return cur
-        end,
-        set = function(name)
-            for _, pk in ipairs(packs) do
-                if pk.name == name then Addon.db.settings.voiceCountKey = pk.key break end
-            end
-        end,
-    })
-    -- End-to-end preview: countdown bar + voice count + "PULL!" special warning.
-    vrow:Button({ text = "Test", width = 56, onClick = function()
+    vrow:Label("Preview the pull sequence")
+    vrow:Button({ text = "Test", width = 70, onClick = function()
         Addon:StartPullTimer(5, "test")
     end })
     ap:Checkbox({
@@ -1079,6 +1064,423 @@ function Addon:BuildGeneralOptions(flow)
         get = function() return Addon.db.settings.mirrorDBMPull ~= false end,
         set = function(v) Addon.db.settings.mirrorDBMPull = v and true or false end,
     })
+
+    Addon:BuildBarOptions(flow, panel)
+    Addon:BuildWarningOptions(flow, panel)
+    Addon:BuildSoundOptions(flow, panel)
+    Addon:BuildTelemetryOptions(flow, panel)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  W5 — TIMER BARS
+-- ══════════════════════════════════════════════════════════════════════════════
+-- ui_bars.lua owns two anchors (small / large) and one settings table; this is the
+-- surface for both. DREW_UI_STYLE: fixed-width bands (the sliders are a single
+-- SLIDER_W, the segmented pickers a single SEG_W), every control labelled, the two
+-- anchors laid out as one grid rather than two ragged stacks, and the placement
+-- affordances (anchors / demo) sit with the thing they place.
+local SLIDER_W = 210
+local PICK_W   = 120
+
+function Addon:BuildBarOptions(flow, panel)
+    local B = Addon.Bars
+    if not B then return end
+    local function S() return B.Settings() end
+
+    local sec = flow:AddSection("Timer Bars")
+    sec:Hint("Countdown bars for boss abilities. Two lists: SMALL is the normal stack, "
+        .. "LARGE holds the bars the encounter marked important (and the pull timer). "
+        .. "Use Show anchors below to drag either list where you want it.")
+
+    sec:Checkbox({
+        label = "Hide all timer bars",
+        get = function() return S().hideAll and true or false end,
+        set = function(v) S().hideAll = v and true or false end,
+    })
+
+    -- Size band. Bar width/height are top-level settings (barWidth/barHeight) that
+    -- shipped in 1.x and are read by Bars.Size — kept on those exact keys so an
+    -- existing user's sizing survives the rebuild untouched.
+    local szRow = sec:AddRow()
+    szRow:Slider({
+        label = "Bar width", width = SLIDER_W, min = 120, max = 400, step = 5,
+        format = function(v) return ("%dpx"):format(v) end,
+        get = function() return Addon.db.settings.barWidth or 200 end,
+        set = function(v) Addon.db.settings.barWidth = math.floor(v + 0.5) end,
+    })
+    szRow:Slider({
+        label = "Bar height", width = SLIDER_W, min = 10, max = 40, step = 1,
+        format = function(v) return ("%dpx"):format(v) end,
+        get = function() return Addon.db.settings.barHeight or 20 end,
+        set = function(v) Addon.db.settings.barHeight = math.floor(v + 0.5) end,
+    })
+    local padRow = sec:AddRow()
+    padRow:Slider({
+        label = "Gap between bars", width = SLIDER_W, min = 0, max = 12, step = 1,
+        format = function(v) return ("%dpx"):format(v) end,
+        get = function() return S().pad or 2 end,
+        set = function(v) S().pad = math.floor(v + 0.5) end,
+    })
+    padRow:Slider({
+        label = "Enlarge below", width = SLIDER_W, min = 0, max = 30, step = 1,
+        format = function(v) return v > 0 and ("%ds left"):format(v) or "off" end,
+        get = function() return S().enlargeAt or 0 end,
+        set = function(v) S().enlargeAt = math.floor(v + 0.5) end,
+    })
+
+    -- ONE GRID for the two anchors (principle 5): both rows carry the same three
+    -- controls at the same widths, under one set of column headers.
+    sec:AddSeparator()
+    local hdr = sec:AddRow()
+    hdr:Label("List")
+    hdr:Label("Grows")
+    hdr:Label("Sorted")
+    local function anchorRow(label, field, defGrow)
+        local r = sec:AddRow()
+        r:Label(label)
+        r:SegmentedChoice({
+            width = PICK_W, compact = true,
+            choices = { { value = "UP", text = "Up" }, { value = "DOWN", text = "Down" } },
+            get = function()
+                local t = S()[field]; return (t and t.grow) or defGrow
+            end,
+            set = function(v)
+                local t = S()[field]; if t then t.grow = v end
+            end,
+        })
+        r:SegmentedChoice({
+            width = PICK_W, compact = true,
+            choices = { { value = "asc", text = "Soonest" }, { value = "desc", text = "Latest" } },
+            get = function()
+                local t = S()[field]; return (t and t.sort) or "asc"
+            end,
+            set = function(v)
+                local t = S()[field]; if t then t.sort = v end
+            end,
+        })
+    end
+    anchorRow("Small bars", "small", "DOWN")
+    anchorRow("Large bars", "large", "UP")
+
+    sec:AddSeparator()
+    sec:Checkbox({
+        label = "Show spell icons on bars",
+        get = function() return S().icons and true or false end,
+        set = function(v) S().icons = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Show variance windows (a shaded band for \"between X and Y seconds\")",
+        get = function() return S().variance and true or false end,
+        set = function(v)
+            S().variance = v and true or false
+            if B.PushVarianceOption then B.PushVarianceOption() end
+        end,
+    })
+    sec:Checkbox({
+        label = "Variance countdown reaches zero at the EARLIEST time (then runs negative)",
+        get = function() return S().varianceCountdown and true or false end,
+        set = function(v) S().varianceCountdown = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Fade and animate bars",
+        get = function() return S().animate and true or false end,
+        set = function(v) S().animate = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Park long bars off-screen until they get close",
+        get = function() return S().hiddenMode and true or false end,
+        set = function(v) S().hiddenMode = v and true or false end,
+    })
+
+    -- Placement affordances sit WITH the thing they place (principle 2), and the
+    -- button row shares one grid with itself (principle 5).
+    local place = sec:AddRow()
+    place:Button({ text = "Show anchors", width = 130, onClick = function()
+        if Addon.Bars then Addon.Bars.EnsureAnchors() end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        Addon:ShowHudAnchors()
+    end })
+    place:Button({ text = "Demo", width = 130, onClick = function()
+        if Addon.Bars then Addon.Bars.EnsureAnchors() end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        Addon:ShowHudAnchors()
+        if Addon.Bars then Addon.Bars.Demo() end
+        if Addon.Warnings then Addon.Warnings.Demo() end
+    end })
+    place:Button({ text = "Lock", width = 130, onClick = function()
+        if Addon.Bars then Addon.Bars.StopDemo() end
+        if Addon.Warnings then Addon.Warnings.Reset() end
+        Addon:HideHudAnchors()
+    end })
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  W5 — WARNINGS
+-- ══════════════════════════════════════════════════════════════════════════════
+-- ui_warnings.lua's §5.4 suppressors, one checkbox each, grouped by the tier they
+-- silence so the page reads as "announcements" then "special warnings" rather than
+-- as a flat list of seven negatives.
+function Addon:BuildWarningOptions(flow, panel)
+    local W = Addon.Warnings
+    if not W then return end
+    local function S() return W.Settings() end
+
+    local sec = flow:AddSection("Warnings")
+    sec:Hint("Text warnings above the bars. ANNOUNCEMENTS are the ordinary line stack; "
+        .. "SPECIAL WARNINGS are the big centred text with the screen flash, used for "
+        .. "the things that kill you. Drag either with Show anchors under Timer Bars.")
+
+    sec:Checkbox({
+        label = "Hide all warnings",
+        get = function() return S().hideWarnings and true or false end,
+        set = function(v) S().hideWarnings = v and true or false end,
+    })
+
+    sec:AddSeparator()
+    sec:Checkbox({
+        label = "Silence boss-ability announcements",
+        get = function() return S().suppressBossAnnounce and true or false end,
+        set = function(v) S().suppressBossAnnounce = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Silence \"who has it\" target announcements",
+        tooltip = "On by default: on a 40-man these are the noisiest tier.",
+        get = function() return S().suppressTargetAnnounce and true or false end,
+        set = function(v) S().suppressTargetAnnounce = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Mirror warnings to the chat frame",
+        get = function() return S().mirrorToChat and true or false end,
+        set = function(v) S().mirrorToChat = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Sort combined target lists alphabetically",
+        get = function() return S().combineSort and true or false end,
+        set = function(v) S().combineSort = v and true or false end,
+    })
+
+    sec:AddSeparator()
+    sec:Checkbox({
+        label = "Silence special-warning TEXT",
+        get = function() return S().suppressSpecialText and true or false end,
+        set = function(v) S().suppressSpecialText = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Silence the special-warning screen FLASH",
+        get = function() return S().suppressSpecialFlash and true or false end,
+        set = function(v) S().suppressSpecialFlash = v and true or false end,
+    })
+    sec:Checkbox({
+        label = "Silence special-warning SOUNDS",
+        get = function() return S().suppressSpecialSound and true or false end,
+        set = function(v) S().suppressSpecialSound = v and true or false end,
+    })
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  W5 — SOUNDS (the sound pack + the countdown voice pack)
+-- ══════════════════════════════════════════════════════════════════════════════
+function Addon:BuildSoundOptions(flow, panel)
+    local sec = flow:AddSection("Sounds")
+    sec:Hint("Raid Mechanics ships the DBM and NovaWorldBuffs sound packs INSIDE the "
+        .. "addon, so they work whether or not those addons are installed, and picks up "
+        .. "anything registered with LibSharedMedia on top. Choosing a default pack "
+        .. "here is what makes the picker usable — it opens filtered to that pack.")
+
+    -- Default sound pack. Cycle-free: a plain labelled dropdown of pack NAMES, which
+    -- is what the picker's own filter strip mirrors.
+    local packs = Addon:GetSoundPacks()
+    local packNames = {}
+    for _, p in ipairs(packs) do packNames[#packNames + 1] = p.name end
+    local prow = sec:AddRow()
+    prow:Label("Default pack")
+    panel.soundPackDD = prow:Dropdown({
+        width = 220, choices = packNames,
+        get = function()
+            local cur = Addon.db.settings.soundPack or Addon.SOUNDPACK_ALL
+            for _, p in ipairs(packs) do if p.key == cur then return p.name end end
+            return packNames[1]
+        end,
+        set = function(name)
+            for _, p in ipairs(packs) do
+                if p.name == name then Addon.db.settings.soundPack = p.key break end
+            end
+        end,
+    })
+
+    -- The countdown VOICE pack is a different bucket (numbered lines, not one-shots),
+    -- so it gets its own labelled control rather than sharing the one above.
+    local vpacks = Addon:GetVoiceCountPacks()
+    local vnames = {}
+    for _, pk in ipairs(vpacks) do vnames[#vnames + 1] = pk.name end
+    local vrow = sec:AddRow()
+    vrow:Label("Countdown voice")
+    panel.voicePackDD = vrow:Dropdown({
+        width = 220, choices = vnames,
+        get = function()
+            local cur = vpacks[1] and vpacks[1].name or "None"
+            for _, pk in ipairs(vpacks) do
+                if pk.key == Addon.db.settings.voiceCountKey then cur = pk.name break end
+            end
+            return cur
+        end,
+        set = function(name)
+            for _, pk in ipairs(vpacks) do
+                if pk.name == name then Addon.db.settings.voiceCountKey = pk.key break end
+            end
+        end,
+    })
+    vrow:Button({ text = "Test", width = 70, onClick = function()
+        Addon:PlayVoiceCountdown(5, Addon.db.settings.voiceCountKey)
+    end })
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  W5 — TIMER TELEMETRY (the arbitration instrument, made readable)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Design doc, target architecture item 3: the early-refresh tripwire writes every
+-- out-of-window bar restart to the telemetry ring "INSTEAD OF DBM's 'please report'
+-- chat line", so that "timer data becomes self-auditing across Drew's raids".
+--
+-- A ring nobody can read is not an instrument, it is a landfill. This is the pane
+-- that turns it back into evidence: how many observations, how many were dropped by
+-- the cap, and a SUMMARY BY TIMER KEY — because the question the ring exists to
+-- answer is "which declared value is wrong", and that is answered by grouping the
+-- observations per key and reading the average delta, not by scrolling raw lines.
+-- The raw export is one button away for the cases where the summary is not enough.
+function Addon:BuildTelemetryOptions(flow, panel)
+    local T = Addon.Telemetry
+    if not T then return end
+
+    local sec = flow:AddSection("Timer Telemetry")
+    sec:Hint("Every time a countdown bar restarts EARLIER than its declared window "
+        .. "allows, that observation is written down here instead of being shouted at "
+        .. "your raid. After a few nights this is the evidence for correcting a timer.")
+
+    panel.telemetryLine = sec:Hint("")
+
+    local trow = sec:AddRow()
+    trow:Button({ text = "View observations", width = 160, onClick = function()
+        Addon:ShowTelemetryReport()
+    end })
+    trow:Button({ text = "Copy raw log", width = 160, onClick = function()
+        local DS = _G.DaseekiSuite
+        if not (DS and DS.ShowTextDialog) then
+            print(Addon:Tag("[DRM]") .. " Install " .. Addon:Wrap("text", "Daseeki Core") .. " to view the log.")
+            return
+        end
+        DS.ShowTextDialog("DRM Engine Log (raw)", table.concat(Addon.Telemetry.Export(), "\n"), true)
+    end })
+    trow:Button({ text = "Clear", width = 100, onClick = function()
+        local n = Addon.Telemetry.Clear()
+        print(Addon:Tag("[DRM]") .. (" Timer telemetry cleared (%d observations)."):format(n))
+        Addon:RefreshTelemetryLine()
+    end })
+
+    sec:Checkbox({
+        label = "Record timer observations",
+        tooltip = "Off means the addon stops learning which of its timers are wrong.",
+        get = function() return Addon.db.settings.engineTelemetry ~= false end,
+        set = function(v) Addon.db.settings.engineTelemetry = v and true or false end,
+    })
+
+    Addon:RefreshTelemetryLine()
+end
+
+function Addon:RefreshTelemetryLine()
+    local panel = Addon.optFrames and Addon.optFrames.general
+    local lbl = panel and panel.telemetryLine
+    if not lbl or not lbl._label then return end
+    local T = Addon.Telemetry
+    local n, dropped = T.Count(), T.Dropped()
+    if n == 0 then
+        lbl._label:SetText("No observations recorded yet.")
+    else
+        lbl._label:SetText(("%d observation%s recorded%s (build %s)."):format(
+            n, n == 1 and "" or "s",
+            dropped > 0 and (", %d older dropped by the cap"):format(dropped) or "",
+            T.BUILD))
+    end
+end
+
+-- The SUMMARY the ring exists to produce: one line per timer key, sorted by how far
+-- out of its declared window the observations sit. `n` observations, mean observed
+-- duration, mean signed delta, the declared window. This is the arbitration table.
+function Addon:BuildTelemetryReport()
+    local T = Addon.Telemetry
+    local ring = T.Ring(false)
+    local out = {}
+    out[#out + 1] = ("Daseeki Raid Mechanics — timer observations (build %s)"):format(T.BUILD)
+    out[#out + 1] = ""
+    if not ring or #ring == 0 then
+        out[#out + 1] = "Nothing recorded yet. Bars only write here when they restart"
+        out[#out + 1] = "EARLIER than the declared window allows, so an empty report"
+        out[#out + 1] = "means the shipped timers matched what your raid actually saw."
+        return table.concat(out, "\n")
+    end
+
+    local groups, order = {}, {}
+    local other = 0
+    for _, e in ipairs(ring) do
+        if e.kind == "timer.refresh" and e.key then
+            local id = tostring(e.enc or "?") .. ":" .. tostring(e.key)
+            local g = groups[id]
+            if not g then
+                g = { id = id, enc = e.enc, key = e.key, n = 0, obs = 0, delta = 0,
+                      expMin = e.expMin, expMax = e.expMax, worst = 0 }
+                groups[id] = g; order[#order + 1] = g
+            end
+            g.n = g.n + 1
+            g.obs = g.obs + (tonumber(e.obs) or 0)
+            local d = tonumber(e.delta) or 0
+            g.delta = g.delta + d
+            if math.abs(d) > math.abs(g.worst) then g.worst = d end
+        else
+            other = other + 1
+        end
+    end
+
+    -- Worst mean delta first — the timer most in need of correction at the top.
+    table.sort(order, function(a, b)
+        local ma, mb = math.abs(a.delta / a.n), math.abs(b.delta / b.n)
+        if ma ~= mb then return ma > mb end
+        return a.id < b.id
+    end)
+
+    out[#out + 1] = ("%-38s %5s %9s %9s %9s"):format("ENCOUNTER:TIMER", "N", "MEAN OBS", "MEAN DEV", "WORST")
+    out[#out + 1] = string.rep("-", 74)
+    for _, g in ipairs(order) do
+        out[#out + 1] = ("%-38s %5d %8.2fs %+8.2fs %+8.2fs"):format(
+            g.id:sub(1, 38), g.n, g.obs / g.n, g.delta / g.n, g.worst)
+        if g.expMin then
+            out[#out + 1] = ("%-38s       declared window %.2f-%.2fs"):format(
+                "", g.expMin, g.expMax or g.expMin)
+        end
+    end
+    out[#out + 1] = ""
+    out[#out + 1] = ("%d timer observation group%s; %d other engine entr%s."):format(
+        #order, #order == 1 and "" or "s", other, other == 1 and "y" or "ies")
+    local dropped = T.Dropped()
+    if dropped > 0 then
+        out[#out + 1] = ("%d older entries were dropped by the %d-entry cap."):format(dropped, T.MAX)
+    end
+    out[#out + 1] = ""
+    out[#out + 1] = "MEAN DEV is how far outside the declared window the bar actually ran."
+    out[#out + 1] = "Negative = the ability came back SOONER than the addon expected."
+    return table.concat(out, "\n")
+end
+
+function Addon:ShowTelemetryReport()
+    local text = Addon:BuildTelemetryReport()
+    local DS = _G.DaseekiSuite
+    if DS and DS.ShowTextDialog then
+        DS.ShowTextDialog("DRM Timer Observations", text, true)
+    else
+        for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+            if line ~= "" then print(Addon:Tag("[DRM]") .. " " .. line) end
+        end
+    end
+    return text
 end
 
 function Addon:RefreshGeneral()
@@ -1087,7 +1489,31 @@ function Addon:RefreshGeneral()
     if panel.deathSoundBtn then
         btnText(panel.deathSoundBtn, Addon:GetSoundName(Addon.db.settings.deathSoundKey or "raidwarning"))
     end
-    if panel.voiceDD then panel.voiceDD.Refresh() end
+    if panel.soundPackDD and panel.soundPackDD.Refresh then panel.soundPackDD.Refresh() end
+    if panel.voicePackDD and panel.voicePackDD.Refresh then panel.voicePackDD.Refresh() end
+    Addon:RefreshTelemetryLine()
+end
+
+-- AUDIT RM-1: repaint every raid section that has been built. Called from the
+-- ROLE_CHANGED re-projection in core_api.lua §E, so a mid-raid Main-Tank promotion
+-- moves the checkboxes the projection just re-resolved. Sorted (lesson Class 8) so
+-- the repaint order is stable — it is observable through the selection each rebuild
+-- validates, and a repaint that reshuffles selections is a bug report waiting to
+-- happen.
+function Addon:RefreshAllRaidSections()
+    local frames = Addon.optFrames
+    if type(frames) ~= "table" then return 0 end
+    local ids = {}
+    for id in pairs(frames) do
+        if id ~= "general" then ids[#ids + 1] = id end
+    end
+    table.sort(ids)
+    local n = 0
+    for _, id in ipairs(ids) do
+        Addon:RefreshRaidSection(id)
+        n = n + 1
+    end
+    return n
 end
 
 function Addon:RegisterOptions()

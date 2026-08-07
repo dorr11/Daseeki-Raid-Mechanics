@@ -59,6 +59,67 @@ function Addon:GetSounds()
     return list
 end
 
+-- ── W5: SOUND PACKS ───────────────────────────────────────────────────────────
+-- The sound list is FLAT and long — the bundled manifest alone is well over a
+-- thousand entries across dozens of packs, plus whatever LibSharedMedia brings.
+-- A flat list that long is not pickable, so the picker gains a PACK filter and the
+-- options surface gains a default pack. The grouping is derived, not a second
+-- source of truth: bundled keys are `pk:<Addon>/<Pack>/<file>.ogg`, so the pack
+-- name falls straight out of the key.
+Addon.SOUNDPACK_ALL      = "#all"
+Addon.SOUNDPACK_BUILTIN  = "#builtin"
+Addon.SOUNDPACK_LSM      = "#lsm"
+
+-- Which pack does this sound key belong to? Returns a pack key and a display name.
+function Addon:SoundPackOf(key)
+    key = tostring(key or "")
+    if key:sub(1, 4) == "lsm:" then return Addon.SOUNDPACK_LSM, "LibSharedMedia" end
+    local body = key:match("^pk:(.+)$")
+    if not body then return Addon.SOUNDPACK_BUILTIN, "Built-in" end
+    -- "DBM-Core/Alexander/1.ogg" -> pack "DBM-Core/Alexander"; a file sitting
+    -- directly in an addon's folder ("DBM-Core/AirHorn.ogg") -> pack "DBM-Core".
+    local dir = body:match("^(.*)/[^/]+$")
+    if not dir or dir == "" then return Addon.SOUNDPACK_BUILTIN, "Built-in" end
+    return "pk:" .. dir, (dir:gsub("/", " "))
+end
+
+-- Ordered pack list for the picker's filter and the options dropdown:
+--   { key, name, count }, "All sounds" first, then Built-in, then the bundled packs
+-- alphabetically, then LibSharedMedia. Sorted (lesson Class 8) so the control does
+-- not reshuffle between openings.
+function Addon:GetSoundPacks()
+    local byKey, order = {}, {}
+    for _, e in ipairs(Addon:GetSounds()) do
+        local pk, name = Addon:SoundPackOf(e.key)
+        local rec = byKey[pk]
+        if not rec then
+            rec = { key = pk, name = name, count = 0 }
+            byKey[pk] = rec; order[#order + 1] = rec
+        end
+        rec.count = rec.count + 1
+    end
+    local function rank(r)
+        if r.key == Addon.SOUNDPACK_BUILTIN then return 0 end
+        if r.key == Addon.SOUNDPACK_LSM then return 2 end
+        return 1
+    end
+    table.sort(order, function(a, b)
+        local ra, rb = rank(a), rank(b)
+        if ra ~= rb then return ra < rb end
+        return a.name < b.name
+    end)
+    local out = { { key = Addon.SOUNDPACK_ALL, name = "All sounds", count = #Addon:GetSounds() } }
+    for _, r in ipairs(order) do out[#out + 1] = r end
+    return out
+end
+
+function Addon:GetSoundPackName(key)
+    for _, p in ipairs(Addon:GetSoundPacks()) do
+        if p.key == key then return p.name end
+    end
+    return "All sounds"
+end
+
 function Addon:GetSoundByKey(key)
     if not key or key == "none" then return nil end
     for _, e in ipairs(Addon:GetSounds()) do

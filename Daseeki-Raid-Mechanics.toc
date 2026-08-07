@@ -14,13 +14,21 @@ soundpacks.lua
 
 # ── 2.0 engine core (wave 1) ───────────────────────────────────────────────────
 # Load order is a dependency chain: heap -> telemetry -> scheduler -> timers ->
-# encounter API -> lifecycle -> boot. Nothing below reaches upward at load time.
+# encounter API -> lifecycle -> diagnostics -> boot. Nothing below reaches upward
+# at load time.
+#
+# core_diag.lua (W5) holds the owner's measuring instruments — the SavedVariables
+# combat-log capture, the auto-debug policy, the Debug-Only indicator and the
+# kill-statistics text. It resolves Addon.Sched and Addon.Lifecycle at LOAD, so it
+# must follow both; core_boot.lua calls Addon.DLog and Addon:UpdateAutoDebug, so it
+# must follow this.
 core_heap.lua
 core_telemetry.lua
 core_sched.lua
 core_timers.lua
 core_api.lua
 core_lifecycle.lua
+core_diag.lua
 core_boot.lua
 
 # ── 2.0 addon channel + recovery (wave 3) ──────────────────────────────────────

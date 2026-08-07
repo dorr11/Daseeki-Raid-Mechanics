@@ -347,6 +347,51 @@ function Era.OnTalentsChanged()
     return true
 end
 
+-- ── AUDIT RM-1 (SUITE_ASYNC_AUDIT Brief G, lesson Class 7) ────────────────────
+-- A respec is not the only thing that changes the answer to "am I a tank". Being
+-- PROMOTED TO MAIN TANK mid-raid changes it too — `IsMainTankFlagged` would now
+-- answer true — but the event set above listened only for CHARACTER_POINTS_CHANGED,
+-- so nothing ever asked again. Worse, `roleState.tankLatched` latches FOR THE
+-- SESSION (§5.4, deliberately) and only `rederive` clears it: a warrior who tanked
+-- one pull and was then DEMOTED stayed "tank" until /reload.
+--
+-- The fix is not to weaken the latch — the latch is the spec — it is to make the
+-- latch RE-EARNED on roster churn instead of frozen. Clear it, ask again, and if
+-- the player is still stanced/flagged it re-latches within the same call and
+-- nothing was disturbed.
+--
+-- Roster events are BURSTY (a 40-man invite wave fires dozens), so this is
+-- throttled like the respec path, and — unlike the respec path — it stays SILENT
+-- when the derived answer did not actually move. A respec is always news; a raider
+-- joining the group usually is not, and re-projecting the whole options tree on
+-- every GROUP_ROSTER_UPDATE would be a boot-cost tax paid forty times a night.
+Era.ROLE_RECHECK_THROTTLE = 1
+Era.ROSTER_EVENTS = { "GROUP_ROSTER_UPDATE", "PLAYER_ROLES_ASSIGNED" }
+Era.ROSTER_EVENT_SET = {}
+for _, e in ipairs(Era.ROSTER_EVENTS) do Era.ROSTER_EVENT_SET[e] = true end
+
+-- The derived role tuple, read THROUGH the latch as it currently stands.
+local function roleSignature()
+    return tostring(Era.Spec()) .. "/" .. tostring(Era.IsTank()) .. "/" .. tostring(Era.IsHealer())
+end
+Era._roleSignature = roleSignature
+
+local function recheckRole()
+    local before = roleSignature()          -- the answer the addon is currently giving
+    Era.roleState.tankLatched = false       -- the latch must be re-EARNED, not frozen
+    Era.ClearCache()
+    local after = roleSignature()           -- re-latches inside this call if still true
+    if after == before then return false end
+    Addon:FireEngineEvent("ROLE_CHANGED", Era.Spec(), Era.IsTank(), Era.IsHealer())
+    return true
+end
+Era._recheckRole = recheckRole
+
+function Era.OnRosterChanged()
+    S():DelayedCall(Era.ROLE_RECHECK_THROTTLE, recheckRole, Era)
+    return true
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  §5.4 THE INTERRUPT FILTER — four independent gates
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -647,15 +692,25 @@ end
 
 function Era.BossHealthPct(creatureIds, opts)
     opts = opts or {}
-    local want = {}
+    -- AUDIT RME-1 (Brief G, lesson Class 8). `want` is a SET — membership only —
+    -- and the cached-token pass used to walk it with pairs(). On a multi-creature
+    -- encounter with several ids cached and alive (Four Horsemen is the case that
+    -- proves it), *which* boss's health got reported and RECORDED changed from call
+    -- to call. `order` keeps the caller's DECLARED sequence, which is the encounter
+    -- definition's creatureIds array, so "the first creature the encounter names
+    -- that is cached and alive" is a stated rule rather than a hash accident.
+    local want, order = {}, {}
     if type(creatureIds) == "table" then
-        for _, cid in ipairs(creatureIds) do want[cid] = true end
+        for _, cid in ipairs(creatureIds) do
+            if want[cid] == nil then want[cid] = true; order[#order + 1] = cid end
+        end
     elseif creatureIds then
-        want[creatureIds] = true
+        want[creatureIds] = true; order[1] = creatureIds
     end
 
-    -- 1. the cached token for each wanted creature id, re-validated first
-    for cid in pairs(want) do
+    -- 1. the cached token for each wanted creature id, re-validated first, in the
+    --    encounter's declared order (AUDIT RME-1)
+    for _, cid in ipairs(order) do
         local tok = Era.healthToken[cid]
         if tok then
             local pct = probe(tok, want)
@@ -769,9 +824,16 @@ function Era.Init()
         f:RegisterEvent("CHARACTER_POINTS_CHANGED")
         f:RegisterEvent("PLAYER_ENTERING_WORLD")
         f:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+        -- AUDIT RM-1: the two events that can change the Main-Tank answer without
+        -- touching a talent point. PLAYER_ROLES_ASSIGNED does not exist on Era —
+        -- registering it is a no-op there and correct on any client that has it —
+        -- so GROUP_ROSTER_UPDATE is the one that actually carries the signal for us.
+        for _, e in ipairs(Era.ROSTER_EVENTS) do pcall(f.RegisterEvent, f, e) end
         f:SetScript("OnEvent", function(_, event)
             if event == "CHARACTER_POINTS_CHANGED" then
                 Era.OnTalentsChanged()
+            elseif Era.ROSTER_EVENT_SET[event] then
+                Era.OnRosterChanged()
             else
                 -- §6.3: re-evaluated on every zone change and every loading screen.
                 Era.EvaluateWorldPosition()
