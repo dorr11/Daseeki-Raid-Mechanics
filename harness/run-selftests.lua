@@ -58,7 +58,10 @@
 -- 2.0 WAVE 4 — ENCOUNTER DATA. One registration gate and one DRIVEN gate per zone
 -- wave: the shipping data, through the shipping engine, on the injected clock.
 --
---   NAXX/-DRIVE   §8       Naxxramas (wave 4d)
+--   NAXX/-DRIVE   §8       Naxxramas (wave 4d), plus the owner's 2026-08-07
+--                          arbitrations: the three DUAL-ID rows driven once per id,
+--                          the thirteen restored 1.x rows driven with their shipped
+--                          defaults, and the provenance comments pinned textually
 --   AQ/-DRIVE     §6/§7    Ruins + Temple of Ahn'Qiraj (wave 4c), incl. C'Thun's three
 --                          timer value sets and its roster-relayed stomach probe,
 --                          Viscidus's freeze/shatter machine and hit rates, Ouro's
@@ -3923,6 +3926,139 @@ do
         eq(rz.rowsByKey.mindexhaust.classDefault, "PRIEST", "…including Mind Exhaustion")
     end
 
+    -- ── THE OWNER'S 2026-08-07 NAXX ARBITRATIONS ──────────────────────────────
+    -- Two explicit decisions from the W4d cross-check, pinned here so a later wave
+    -- cannot quietly undo either:
+    --   1. three field-log conflicts ship DUAL-ID triggers (spec id AND observed id)
+    --   2. the nine dropped 1.x rows are back as encounter rows
+    -- The provenance COMMENTS are asserted too. A "cleanup" that collapses a dual id
+    -- has to delete the note that explains it, and deleting the note reddens this gate.
+    do
+        local SRC = readFile(P("enc_naxxramas.lua")) or ""
+
+        local n = 0
+        for _ in SRC:gmatch("owner 2026%-08%-07: dual%-ID") do n = n + 1 end
+        eq(n, 3, "ARBITRATION: all three dual-ID sites carry the owner's provenance note")
+        ck(SRC:find("28798 AND our observed 28131", 1, true) ~= nil,
+           "…Faerlina's names both ids and which side each came from")
+        ck(SRC:find("28547 AND our observed 28560 (Summon Blizzard)", 1, true) ~= nil,
+           "…Sapphiron's names DBM's 28547 and our Summon Blizzard 28560")
+        ck(SRC:find("29208/29209/29210/29211", 1, true) ~= nil,
+           "…and Noth's names all four observed blink ids")
+        n = 0
+        for _ in SRC:gmatch("tripwire telemetry arbitrates") do n = n + 1 end
+        eq(n, 3, "…each naming the early-refresh tripwire as what will settle it")
+        n = 0
+        for _ in SRC:gmatch("DO NOT \"clean this up\"") do n = n + 1 end
+        eq(n, 3, "…and each carrying the explicit do-not-collapse instruction")
+
+        -- the spellId list a row's trigger actually carries
+        local function idsOf(tr)
+            local v = tr and tr.spellId
+            if v == nil then return {} end
+            return type(v) == "table" and v or { v }
+        end
+        local function has(list, id)
+            for _, v in ipairs(list) do if v == id then return true end end
+            return false
+        end
+        local function bothWays(tr, a, b, what)
+            local l = idsOf(tr)
+            ck(has(l, a) and has(l, b), what)
+        end
+
+        local fa = Addon:GetEncounter("naxxramas:faerlina")
+        bothWays(fa.rowsByKey.frenzy.trigger, 28798, 28131,
+                 "FAERLINA: the Enrage announce fires on 28798 OR 28131")
+        bothWays(fa.rowsByKey.defensive.trigger, 28798, 28131,
+                 "…so does the tank-defensive special (the owner named both surfaces)")
+        bothWays((fa.rowsByKey.enraged.transitions or {})[1], 28798, 28131,
+                 "…and the `enraged` gate the post-Embrace restart reads, or the bar dies")
+
+        local sa = Addon:GetEncounter("naxxramas:sapphiron")
+        local bz = sa.rowsByKey.blizzard
+        eq(#bz.triggers, 3, "SAPPHIRON: the Blizzard GTFO still has its three arms")
+        for i, tr in ipairs(bz.triggers) do
+            bothWays(tr, 28547, 28560,
+                     "…arm " .. i .. " (" .. tr.on .. ") fires on 28547 OR 28560")
+        end
+
+        local no = Addon:GetEncounter("naxxramas:noth")
+        local bl = idsOf(no.rowsByKey.blink.trigger)
+        eq(#bl, 4, "NOTH: Blink carries all four observed ids, not the spec's one")
+        for _, id in ipairs({ 29208, 29209, 29210, 29211 }) do
+            ck(has(bl, id), "…including " .. id)
+        end
+
+        -- ── decision 2: every dropped 1.x row is back, at its 1.x option key ──
+        n = 0
+        for _ in SRC:gmatch("RESTORED — owner 2026%-08%-07") do n = n + 1 end
+        eq(n, 10, "RESTORATION: every restoration site carries the owner's provenance note")
+        n = 0
+        for _ in SRC:gmatch("POISON%-CLASS ROWS SHIP DEFAULT%-OFF") do n = n + 1 end
+        eq(n, 4, "…and every poison-class row states WHY it ships off (the honest middle)")
+
+        -- { encounter, 1.x row id (== the 2.0 option key), spell id, ships off? }
+        local RESTORED = {
+            { "naxxramas:razuvious", "unbalancing",    26613, false },
+            { "naxxramas:gluth",     "mortalwound",    25646, false },
+            { "naxxramas:thaddius",  "powersurge",     28134, false },
+            { "naxxramas:thaddius",  "chainlightning", 28167, true  },
+            { "naxxramas:thaddius",  "balllightning",  28299, false },
+            { "naxxramas:gothik",    "shadowbolt",     29317, true  },
+            { "naxxramas:gothik",    "harvest",        28679, false },
+            { "naxxramas:heigan",    "fever",          29998, false },
+            { "naxxramas:heigan",    "disrupt",        29310, false },
+            { "naxxramas:maexxna",   "necrotic",       28776, true  },
+            { "naxxramas:faerlina",  "poisonbolt",     28796, true  },
+            { "naxxramas:grobbulus", "slimespray",     28157, true  },
+            { "naxxramas:loatheb",   "deathbloom",     29865, true  },
+        }
+        eq(#RESTORED, 13, "…thirteen rows across the owner's nine-item list")
+        for _, r in ipairs(RESTORED) do
+            local enc = Addon:GetEncounter(r[1])
+            local row = enc and enc.rowsByKey[r[2]]
+            ck(row ~= nil, r[1] .. ":" .. r[2] .. " is RESTORED as an encounter row")
+            if row then
+                -- the spell id, taken from the parked 1.x evidence, reaches a trigger
+                local trs = {}
+                if row.trigger then trs[#trs + 1] = row.trigger end
+                if row.start   then trs[#trs + 1] = row.start   end
+                if row.restart then trs[#trs + 1] = row.restart end
+                for _, tr in ipairs(row.triggers or {}) do trs[#trs + 1] = tr end
+                local found = false
+                for _, tr in ipairs(trs) do
+                    if has(idsOf(tr), r[3]) then found = true end
+                end
+                ck(found, "…on the field-verified 1.x spell id " .. r[3])
+                if r[4] then
+                    eq(row.default, false, "…and SHIPS OFF (owner: poison-class / 1.x default)")
+                else
+                    eq(row.default, nil, "…and keeps the 1.x default (on for its audience)")
+                end
+                -- the key IS the 1.x option key, so a 1.x SavedVariables choice survives
+                eq(API.OptionKey(r[1], r[2]),
+                   Addon:MechKey("naxxramas", r[1]:match(":(.+)$"), r[2]),
+                   "…under the same SavedVariables key 1.x wrote")
+            end
+        end
+
+        -- the two tank rows announce LOUDLY, to a tank-relevant audience (owner's words)
+        local rzv = Addon:GetEncounter("naxxramas:razuvious").rowsByKey.unbalancing
+        eq(rzv.tier or "announce", "announce", "RAZUVIOUS: Unbalancing Strike is an ANNOUNCE…")
+        eq(rzv.color, 4, "…at the top announce colour (loud)")
+        eq(rzv.role, "Tank|Healer", "…gated to the tank-relevant audience")
+        local glm = Addon:GetEncounter("naxxramas:gluth").rowsByKey.mortalwound
+        eq(glm.role, "Tank", "GLUTH: Mortal Wound is the suite's tank-stack shape…")
+        eq(glm.stacks, true, "…carrying the live STACK, as on Ossirian and the Anubisath")
+        -- and the one restored row 1.x shipped as a cooldown radial is a TIMER, not a warning
+        local thc = Addon:GetEncounter("naxxramas:thaddius")
+        ck(thc.rowsByKey.chainlightning.kind == "cd",
+           "THADDIUS: Chain Lightning comes back as the COOLDOWN radial 1.x shipped")
+        near(thc.rowsByKey.chainlightning.duration, 8.5, 0.001,
+           "…on the field-measured 8.5 s cadence")
+    end
+
     do  -- the options projection: the tree options.lua actually reads
         API.PublishOptionsTree()
         local raid = Addon:GetRaid("naxxramas")
@@ -4173,8 +4309,10 @@ do
     do
         local rt = engage("naxxramas:heigan", 15936, "You are mine now.")
         ck(rt ~= nil, "HEIGAN: engages on the spec's yell")
-        eq(#Addon:GetEncounter("naxxramas:heigan").warnings, 2,
-           "…and carries exactly the two scheduled warnings (no combat-log triggers at all)")
+        -- (was "exactly two warnings, no combat-log triggers at all" before the owner's
+        -- 2026-08-07 restoration put Decrepit Fever and Spell Disruption back)
+        eq(#Addon:GetEncounter("naxxramas:heigan").warnings, 4,
+           "…and its PHASE surface is still purely scheduled (2 scheduled + the 2 restored)")
         near(bar(rt, "teleportdance").total, 90, 0.01, "…the first teleport is 90 s from pull")
         Addon:ClearEventLog()
         advance(75.1)                                   -- 90 - 15
@@ -4522,6 +4660,185 @@ do
         eq(Life:ArmZones(409), 0, "…zoning into another instance disarms it")
         ck(not Life:IsZoneArmed("naxxramas:trash"), "…leaving nothing armed")
         W.instanceID = 533
+    end
+
+    -- ══════════════════════════════════════════════════════════════════════════
+    --  THE OWNER'S 2026-08-07 ARBITRATIONS, THROUGH THE ENGINE
+    --  Decision 1: each dual-ID row is driven ONCE PER ID and must fire either way.
+    --  Decision 2: each restored row is driven trigger -> warning/timer, with its
+    --  shipped default asserted (an off-by-default row must stay SILENT on defaults
+    --  and fire the moment the player ticks its box — that is what "the honest
+    --  middle" has to mean in the engine, not just in the registry).
+    -- ══════════════════════════════════════════════════════════════════════════
+    do
+        Addon.db.mechanics = Addon.db.mechanics or {}
+        local function tick(key, on)   -- the SavedVariables override a player's tick writes
+            Addon.db.mechanics[key] = on and { masterEnabled = true } or nil
+        end
+
+        -- ── 1a. Faerlina's Enrage: 28798 (spec/DBM) AND 28131 (our field logs) ───
+        for _, id in ipairs({ 28798, 28131 }) do
+            local rt = engage("naxxramas:faerlina", 15953, "Kneel before me, worm!")
+            Addon:ClearEventLog()
+            Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = id, destId = 15953 })
+            ck(sawWarn("WARN_ANNOUNCE", "Enrage"),
+               "DUAL-ID FAERLINA: the Enrage announce fires on " .. id)
+            eq(rt:GetState("enraged"), "yes",
+               "…and " .. id .. " records that she IS enraged (the restart gate)")
+            -- …so the Embrace cycle restarts the bar whichever id arrived
+            Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 28732, destId = 15953 })
+            Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 28732, destId = 15953 })
+            local mn, mx = barWindow(rt, "enrage")
+            ck(mn == 56 and mx == 76,
+               "…and the post-Embrace restart works off " .. id .. " too")
+        end
+        -- the tank-defensive special, both ids, with YOU as the boss's target
+        do
+            local prev = API.Conditions.playerIsBossTarget
+            API.Conditions.playerIsBossTarget = function() return true end
+            for _, id in ipairs({ 28798, 28131 }) do
+                engage("naxxramas:faerlina", 15953, "Kneel before me, worm!")
+                Addon:ClearEventLog()
+                Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = id, destId = 15953 })
+                ck(sawWarn("WARN_SPECIAL", "use a defensive"),
+                   "…and the tank-defensive special fires on " .. id .. " as well")
+            end
+            API.Conditions.playerIsBossTarget = prev
+        end
+
+        -- ── 1b. Sapphiron's Blizzard GTFO: 28547 (spec/DBM) AND 28560 (observed) ─
+        for _, id in ipairs({ 28547, 28560 }) do
+            engage("naxxramas:sapphiron", 15989)
+            for _, sub in ipairs({ "SPELL_AURA_APPLIED", "SPELL_DAMAGE",
+                                   "SPELL_PERIODIC_DAMAGE" }) do
+                Addon:ClearEventLog()
+                Life:Deliver({ on = sub, spellId = id, destIsPlayer = true, destName = "Drew" })
+                ck(sawWarn("WARN_SPECIAL", "Move out of the Blizzard"),
+                   "DUAL-ID SAPPHIRON: " .. sub .. " on " .. id .. " raises the GTFO")
+                advance(3)   -- clear the 2.5 s anti-spam between arms
+            end
+        end
+
+        -- ── 1c. Noth's Blink: all four observed ids, not the spec's one ──────────
+        do
+            engage("naxxramas:noth", 15954, "Die, trespasser!")
+            for _, id in ipairs({ 29208, 29209, 29210, 29211 }) do
+                Addon:ClearEventLog()
+                Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = id, sourceId = 15954 })
+                ck(sawWarn("WARN_ANNOUNCE", "Blink"),
+                   "DUAL-ID NOTH: Blink announces on " .. id)
+            end
+        end
+
+        -- ── 2. every restored row, driven, with its shipped default asserted ─────
+        -- { encounter, cid, yell, key, deliver-event, ships off?, needle }
+        local R = {
+            { "naxxramas:razuvious", 16061, "Do as I taught you!", "unbalancing",
+              { on = "SPELL_CAST_SUCCESS", spellId = 26613, sourceId = 16061 },
+              false, "Unbalancing Strike — tank swap" },
+            { "naxxramas:gluth", 15932, nil, "mortalwound",
+              { on = "SPELL_AURA_APPLIED", spellId = 25646, destName = "Bob", amount = 3 },
+              false, "Mortal Wound Bob (3)" },
+            { "naxxramas:heigan", 15936, "You are mine now.", "fever",
+              { on = "SPELL_CAST_SUCCESS", spellId = 29998, sourceId = 15936 },
+              false, "Decrepit Fever" },
+            { "naxxramas:heigan", 15936, "You are mine now.", "disrupt",
+              { on = "SPELL_CAST_SUCCESS", spellId = 29310, sourceId = 15936 },
+              false, "Spell Disruption" },
+            { "naxxramas:gothik", 16060, nil, "harvest",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28679, sourceId = 16060 },
+              false, "Harvest Soul" },
+            { "naxxramas:gothik", 16060, nil, "shadowbolt",
+              { on = "SPELL_CAST_SUCCESS", spellId = 29317, sourceId = 16060 },
+              true, "Shadow Bolt" },
+            { "naxxramas:thaddius", 15929, "Stalagg crush you!", "powersurge",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28134 },
+              false, "Power Surge — Stalagg damage up" },
+            { "naxxramas:thaddius", 15929, "Stalagg crush you!", "balllightning",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28299, sourceId = 15928 },
+              false, "Ball Lightning" },
+            { "naxxramas:maexxna", 15952, nil, "necrotic",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28776, sourceId = 15952 },
+              true, "Necrotic Poison" },
+            { "naxxramas:faerlina", 15953, "Kneel before me, worm!", "poisonbolt",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28796, sourceId = 15953 },
+              true, "Poison Bolt Volley" },
+            { "naxxramas:grobbulus", 15931, nil, "slimespray",
+              { on = "SPELL_CAST_SUCCESS", spellId = 28157, sourceId = 15931 },
+              true, "Slime Spray" },
+            { "naxxramas:loatheb", 16011, nil, "deathbloom",
+              { on = "SPELL_AURA_APPLIED", spellId = 29865, destIsPlayer = true,
+                destName = "Drew" },
+              true, "Poison Aura" },
+        }
+        for _, r in ipairs(R) do
+            local encId, key, off, needle = r[1], r[4], r[6], r[7]
+            local optKey = API.OptionKey(encId, key)
+            local boss = encId:match(":(.+)$")
+            -- ON DEFAULTS
+            tick(optKey, nil)
+            engage(encId, r[2], r[3])
+            Addon:ClearEventLog()
+            Life:Deliver(r[5])
+            if off then
+                ck(not sawWarn("WARN_ANNOUNCE", needle),
+                   "RESTORED " .. boss .. ":" .. key .. " is SILENT on defaults (ships off)")
+                -- …and fires the moment the player ticks its box
+                tick(optKey, true)
+                engage(encId, r[2], r[3])
+                Addon:ClearEventLog()
+                Life:Deliver(r[5])
+                ck(sawWarn("WARN_ANNOUNCE", needle),
+                   "…and FIRES once enabled: " .. needle)
+                tick(optKey, nil)
+            else
+                ck(sawWarn("WARN_ANNOUNCE", needle),
+                   "RESTORED " .. boss .. ":" .. key .. " fires on defaults: " .. needle)
+            end
+        end
+
+        -- the two shape guards, driven: an announce row that replaced a 1.x BAR must
+        -- not become a spam source when a player does tick its box
+        do
+            tick("naxxramas:gothik:shadowbolt", true)
+            engage("naxxramas:gothik", 16060)
+            Addon:ClearEventLog()
+            for _ = 1, 3 do                        -- 3 casts at the field-measured 1.7 s
+                Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29317, sourceId = 16060 })
+                advance(1.7)
+            end
+            eq(warnCount("WARN_ANNOUNCE", "Shadow Bolt"), 1,
+               "SHAPE GUARD: Shadow Bolts at the logged 1.7 s cadence announce ONCE per window")
+            advance(5)
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29317, sourceId = 16060 })
+            eq(warnCount("WARN_ANNOUNCE", "Shadow Bolt"), 2,
+               "…and the window re-arms after 5 s (throttled, not swallowed)")
+            tick("naxxramas:gothik:shadowbolt", nil)
+            engage("naxxramas:thaddius", 15929, "Stalagg crush you!")
+            Addon:ClearEventLog()
+            for _ = 1, 4 do
+                Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28299, sourceId = 15928 })
+                advance(0.5)
+            end
+            eq(warnCount("WARN_ANNOUNCE", "Ball Lightning"), 1,
+               "…and four Ball Lightnings inside the 3 s window announce ONCE")
+        end
+
+        -- Thaddius's Chain Lightning is the one restored row that is a BAR, not an
+        -- announce — and it is off until the player asks for it.
+        do
+            local rt = engage("naxxramas:thaddius", 15929, "Stalagg crush you!")
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28167, sourceId = 15928 })
+            eq(bar(rt, "chainlightning"), nil,
+               "RESTORED thaddius:chainlightning starts NO bar on defaults (ships off)")
+            tick("naxxramas:thaddius:chainlightning", true)
+            rt = engage("naxxramas:thaddius", 15929, "Stalagg crush you!")
+            Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 28167, sourceId = 15928 })
+            local b = bar(rt, "chainlightning")
+            ck(b ~= nil, "…and once enabled the cast starts the cooldown radial")
+            if b then near(b.total, 8.5, 0.01, "…on the field-measured 8.5 s cadence") end
+            tick("naxxramas:thaddius:chainlightning", nil)
+        end
     end
 
     -- ── the escape hatch, driven per boss ─────────────────────────────────────

@@ -8,6 +8,26 @@
     that section is a row below. Room-1 material only: this file was written from the
     behavioural spec, never from third-party source.
 
+    ────────────────────────────────────────────────────────────────────────────────
+    OWNER ARBITRATIONS, 2026-08-07 (from the W4d cross-check) — DO NOT UNDO
+    ────────────────────────────────────────────────────────────────────────────────
+    Two explicit owner decisions overlay the spec in this file. Both are commented in
+    place at every site AND pinned by the NAXX / NAXX-DRIVE gates, so "cleaning them
+    up" reddens the harness rather than quietly reverting a decision.
+
+      1. DUAL-ID TRIGGERS where our own Anniversary field logs (2026-07-26) disagreed
+         with the spec about a spell id. Neither side is retired: the row fires on
+         EITHER id set, and the early-refresh tripwire (§4.3) reports which one this
+         server actually uses. Three sites: Faerlina's Enrage (28798 / 28131),
+         Sapphiron's Blizzard GTFO (28547 / 28560) and Noth's Blink (all four).
+      2. THE DROPPED 1.x ROWS ARE BACK — thirteen of them, each under the option key
+         its 1.x row used, so a player's existing SavedVariables choice survives.
+         Tank-swap rows announce loudly to the tank audience; the poison-class rows
+         ship DEFAULT-OFF, which is the honest middle between "DBM's authors judged
+         this class too noisy to carry" and "the owner wants the toggle to exist".
+         Every restoration site carries a RESTORED note naming the owner and the date
+         (grep the file for it; the gate counts them).
+
     THE TWO KEY SCHEMES COINCIDE, DELIBERATELY. An encounter is `naxxramas:<boss>` and
     a row key is a mechanic id, so
           API.OptionKey(encId, rowKey) == Addon:MechKey("naxxramas", boss, rowKey)
@@ -138,9 +158,17 @@ Addon:RegisterEncounter({
           duration = 30, color = 6, icon = ICON .. "Spell_Shadow_NightOfTheDead",
           start = { on = "SPELL_AURA_APPLIED", spellId = 28732, antispam = 5 } },
     },
+    -- ARBITRATION — owner 2026-08-07: dual-ID; field logs 2026-07-26 vs spec —
+    -- tripwire telemetry arbitrates. The spec (and DBM) key the Enrage off 28798; our
+    -- own Anniversary logs recorded 28798 never appearing and 28131 firing 12-15x per
+    -- pull instead. Neither side is retired: every Enrage rule below fires on
+    -- 28798 AND our observed 28131, and the early-refresh tripwire (§4.3) tells us
+    -- which one this server actually uses. DO NOT "clean this up" to a single id.
     states = {
         { key = "enraged", initial = "no", transitions = {
-            { on = "SPELL_AURA_APPLIED", spellId = 28798, to = "yes" },
+            -- the gate the enrage bar's post-Embrace restart reads: it has to answer
+            -- "yes" whichever id the server sent, or the bar never comes back
+            { on = "SPELL_AURA_APPLIED", spellId = { 28798, 28131 }, to = "yes" },
         } },
     },
     warnings = {
@@ -156,12 +184,22 @@ Addon:RegisterEncounter({
         { key = "embracefaded", name = "Widow's Embrace faded", tier = "announce", color = 3,
           text = "Widow's Embrace faded",
           trigger = { on = "SPELL_AURA_REMOVED", spellId = 28732 } },
+        -- dual-ID (see the ARBITRATION note above): spec 28798 OR field-log 28131
         { key = "frenzy", name = "Enrage!", tier = "announce", color = 4, text = "Enrage",
-          trigger = { on = "SPELL_AURA_APPLIED", spellId = 28798 } },
+          trigger = { on = "SPELL_AURA_APPLIED", spellId = { 28798, 28131 } } },
         { key = "defensive", name = "Use a defensive", tier = "special", sound = 3,
           voice = "defensive", text = "Enrage — use a defensive",
-          trigger = { on = "SPELL_AURA_APPLIED", spellId = 28798,
+          trigger = { on = "SPELL_AURA_APPLIED", spellId = { 28798, 28131 },
                       condition = "playerIsBossTarget", creatureId = 15953 } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back as an
+        -- encounter row under its 1.x option key (`poisonbolt`), spell id from the
+        -- parked data_naxxramas.lua. POISON-CLASS ROWS SHIP DEFAULT-OFF: DBM's Era
+        -- authors judged this class too noisy to carry at all, the owner restored it
+        -- knowingly, and off-by-default is the honest middle — the toggle exists.
+        { key = "poisonbolt", name = "Poison Bolt Volley", tier = "announce", color = 2,
+          default = false, text = "Poison Bolt Volley",
+          icon = ICON .. "Spell_Nature_CorrosiveBreath",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28796, creatureId = 15953 } },
         { key = "rainoffire", name = "Rain of Fire (GTFO)", tier = "special", sound = 1,
           voice = "watchfeet", soundClass = 8, text = "Move out of the fire",
           triggers = { { on = "SPELL_AURA_APPLIED",   spellId = 28794, dest = "player" },
@@ -223,6 +261,13 @@ Addon:RegisterEncounter({
         { key = "killspiderlings", name = "Kill the spiderlings", tier = "special",
           sound = 2, voice = "killmob", role = "Dps", text = "Kill the spiderlings",
           trigger = { on = "unitCast", spellId = 29434, sync = true } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`necrotic`), spell id from the parked data_naxxramas.lua.
+        -- POISON-CLASS ROWS SHIP DEFAULT-OFF (see Faerlina's poisonbolt).
+        { key = "necrotic", name = "Necrotic Poison", tier = "announce", color = 2,
+          default = false, text = "Necrotic Poison",
+          icon = ICON .. "Ability_Creature_Poison_03",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28776, creatureId = 15952 } },
     },
 })
 
@@ -328,8 +373,14 @@ Addon:RegisterEncounter({
         { key = "cursewarn", name = "Curse of the Plaguebringer", tier = "announce", color = 2,
           text = "Curse of the Plaguebringer",
           trigger = { on = "SPELL_CAST_SUCCESS", spellId = 29213 } },
+        -- ARBITRATION — owner 2026-08-07: dual-ID; field logs 2026-07-26 vs spec —
+        -- tripwire telemetry arbitrates. The spec carried ONE blink id; our Anniversary
+        -- logs recorded the boss using all four. The row fires on
+        -- 29208/29209/29210/29211 — every observed id, not the spec's single one.
+        -- DO NOT "clean this up" back to one id.
         { key = "blink", name = "Blink", tier = "announce", color = 3, text = "Blink",
-          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 29208 } },
+          trigger = { on = "SPELL_CAST_SUCCESS",
+                      spellId = { 29208, 29209, 29210, 29211 } } },
         { key = "dispelcurse", name = "Dispel the curse", tier = "special", sound = 1,
           voice = "dispelnow", role = "RemoveCurse", text = "Dispel the curse on %s",
           combine = 0.5, antispam = 3,
@@ -340,10 +391,11 @@ Addon:RegisterEncounter({
     },
 })
 
--- §8.5 Heigan the Unclean. ZERO combat-log triggers: a pure two-state scheduled loop.
--- Ticks alternate room->dance and dance->room, and the pre-warning lead alternates
--- with them (15 s before a room phase ends, 10 s before a dance ends), which is what
--- a cycling `pre` list is for.
+-- §8.5 Heigan the Unclean. The PHASE surface has zero combat-log triggers: a pure
+-- two-state scheduled loop. Ticks alternate room->dance and dance->room, and the
+-- pre-warning lead alternates with them (15 s before a room phase ends, 10 s before a
+-- dance ends), which is what a cycling `pre` list is for. The two ability announces
+-- below are the owner's 2026-08-07 restoration and are the only combat-log rows here.
 Addon:RegisterEncounter({
     id = "naxxramas:heigan", name = "Heigan the Unclean", zone = 533,
     creatureId = { 15936 }, encounterId = { 1112 },
@@ -372,6 +424,16 @@ Addon:RegisterEncounter({
         { key = "teleportsoon", name = "Teleport soon", tier = "announce", color = 2,
           text = "Teleport soon",
           trigger = { on = "schedule", fromKey = "dance", where = { pre = true } } },
+        -- RESTORED — owner 2026-08-07: the two 1.x rows the W4d port dropped, back under
+        -- their 1.x option keys (`fever`, `disrupt`), spell ids from the parked
+        -- data_naxxramas.lua. Neither is poison-class, so both keep the 1.x
+        -- default (ON); the audience is the whole raid, as it was in 1.x.
+        { key = "fever", name = "Decrepit Fever", tier = "announce", color = 2,
+          text = "Decrepit Fever", icon = ICON .. "Spell_Nature_NullifyDisease",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 29998, creatureId = 15936 } },
+        { key = "disrupt", name = "Spell Disruption", tier = "announce", color = 2,
+          text = "Spell Disruption", icon = ICON .. "Spell_Shadow_MindRot",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 29310, creatureId = 15936 } },
     },
 })
 
@@ -425,6 +487,16 @@ Addon:RegisterEncounter({
           default = false, text = "Heal now",
           trigger = { on = "SPELL_AURA_REMOVED", spellId = { 29184, 29195, 29197, 29199 },
                       dest = "player" } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`deathbloom`, kept verbatim so an existing SavedVariables
+        -- choice survives), spell id from the parked data_naxxramas.lua. 29865 is
+        -- "Poison Aura" on this server, applied to the ENTIRE raid every ~14.5 s
+        -- (field-verified 2026-07-26) — POISON-CLASS ROWS SHIP DEFAULT-OFF, and 1.x
+        -- shipped this one off for the same reason.
+        { key = "deathbloom", name = "Poison Aura", tier = "announce", color = 2,
+          default = false, text = "Poison Aura",
+          icon = ICON .. "Spell_Nature_NatureTouchDecay",
+          trigger = { on = "SPELL_AURA_APPLIED", spellId = 29865, dest = "player" } },
     },
 })
 
@@ -474,6 +546,16 @@ Addon:RegisterEncounter({
         { key = "shieldwallwarn", name = "Shield Wall ending", tier = "announce", color = 2,
           role = "Dps", text = "Shield Wall on %s",
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 29061, source = "pet", delay = 15 } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`unbalancing`). Spell id 26613 is field-verified (147 casts
+        -- logged 2026-07-26; the old 28491 never appeared once). THIS IS A TANK-SWAP
+        -- CALL, so it announces LOUDLY — top announce colour — to the tank-relevant
+        -- audience. It is deliberately NOT default-off: the poison-class rule does not
+        -- reach a tank-swap.
+        { key = "unbalancing", name = "Unbalancing Strike (tank swap)", tier = "announce",
+          color = 4, role = "Tank|Healer", text = "Unbalancing Strike — tank swap",
+          icon = ICON .. "Ability_Warrior_Disarm",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 26613, creatureId = 16061 } },
     },
 })
 
@@ -523,6 +605,21 @@ Addon:RegisterEncounter({
         { key = "knightdown", name = "Knight down", tier = "announce", color = 2,
           text = "Knight down",
           trigger = { on = "UNIT_DIED", creatureId = 16125, dedupe = "destGUID" } },
+        -- RESTORED — owner 2026-08-07: the two 1.x rows the W4d port dropped, back under
+        -- their 1.x option keys (`shadowbolt`, `harvest`), spell ids from the parked
+        -- data_naxxramas.lua. 29317 is field-verified (the old 27831 never logged).
+        -- Shadow Bolt ships OFF exactly as 1.x shipped it: 184 casts at 1.5-1.7 s
+        -- intervals were logged 2026-07-26 — a fast repeated P2 nuke, not a volley.
+        -- SHAPE GUARD: 1.x rendered it as a self-replacing BAR; an announce row fires
+        -- once per event, so the restoration carries a 5 s anti-spam window. Without it
+        -- a player who ticks the box gets ~35 warnings a minute.
+        { key = "shadowbolt", name = "Shadow Bolt", tier = "announce", color = 2,
+          default = false, text = "Shadow Bolt", antispam = 5,
+          icon = ICON .. "Spell_Shadow_ShadowBolt",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 29317, creatureId = 16060 } },
+        { key = "harvest", name = "Harvest Soul", tier = "announce", color = 3,
+          text = "Harvest Soul", icon = ICON .. "Spell_Shadow_SoulGem",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28679, creatureId = 16060 } },
     },
 })
 
@@ -635,6 +732,13 @@ Addon:RegisterEncounter({
           voice = "runout", text = "Injection on YOU — run out",
           yell = "Injection on me!", yellDefault = false,
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 28169, dest = "player" } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`slimespray`), spell id from the parked data_naxxramas.lua.
+        -- POISON-CLASS ROWS SHIP DEFAULT-OFF, which is also the default 1.x shipped.
+        { key = "slimespray", name = "Slime Spray", tier = "announce", color = 2,
+          default = false, text = "Slime Spray",
+          icon = ICON .. "Ability_Creature_Poison_02",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28157, creatureId = 15931 } },
     },
     icons = {
         { key = "injectionicons", name = "Injection raid icons", default = false,
@@ -682,6 +786,18 @@ Addon:RegisterEncounter({
         { key = "dispelfrenzy", name = "Dispel Frenzy", tier = "special", sound = 1,
           voice = "enrage", soundClass = 6, role = "RemoveEnrage", text = "Dispel the Frenzy",
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 28371 } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`mortalwound`). Spell id 25646 is field-verified (39 casts
+        -- logged 2026-07-26; the old 28467 never appeared) and is the SAME debuff id the
+        -- suite already carries on Ossirian (§6.1) and Anubisath (§7) — so this ships in
+        -- the suite's Mortal Wound SHAPE, announcing the carrier and the live STACK,
+        -- which is the tank-relevant fact. Tank audience, not default-off: the
+        -- poison-class rule does not reach a tank-stack row.
+        { key = "mortalwound", name = "Mortal Wound on <name>", tier = "announce", color = 3,
+          role = "Tank", stacks = true, text = "Mortal Wound %s (%d)",
+          icon = ICON .. "Ability_Criticalstrike",
+          triggers = { { on = "SPELL_AURA_APPLIED",      spellId = 25646 },
+                       { on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646 } } },
     },
 })
 
@@ -721,6 +837,16 @@ Addon:RegisterEncounter({
         { key = "polaritycast", name = "Polarity Shift (cast)", kind = "cast", spellId = 28089,
           duration = 3, color = 4,
           start = { on = "SPELL_CAST_START", spellId = 28089 } },
+        -- RESTORED — owner 2026-08-07: the 1.x row the W4d port dropped, back under its
+        -- 1.x option key (`chainlightning`), spell id and cadence from the parked
+        -- data_naxxramas.lua. This is the ONE restored row 1.x shipped as a COOLDOWN
+        -- RADIAL rather than a plain alert, so it comes back as a timer, not a warning:
+        -- 90 casts at ~8.5 s average were logged 2026-07-26. Quiet healer info —
+        -- no window warning, no sound, and OFF by default exactly as 1.x had it.
+        { key = "chainlightning", name = "Chain Lightning", kind = "cd", spellId = 28167,
+          color = 2, default = false, duration = 8.5,
+          icon = ICON .. "Spell_Nature_ChainLightning",
+          start = { on = "SPELL_CAST_SUCCESS", spellId = 28167, creatureId = 15928 } },
     },
     states = {
         -- emote-driven, synced, keyed on the add named in the emote
@@ -755,6 +881,23 @@ Addon:RegisterEncounter({
         { key = "polaritysoon", name = "Polarity Shift soon", tier = "announce", color = 3,
           text = "Polarity Shift soon",
           trigger = { on = "SPELL_CAST_START", spellId = 28089, delay = 20 } },
+        -- RESTORED — owner 2026-08-07: two more 1.x rows the W4d port dropped, back under
+        -- their 1.x option keys (`powersurge`, `balllightning`), spell ids from the
+        -- parked data_naxxramas.lua. Both field-verified 2026-07-26: Power Surge 28134
+        -- (16 casts, ~27.5 s apart, Stalagg's damage buff during the adds phase) and
+        -- Ball Lightning 28299 (the old 28338 is Stalagg's Magnetic Pull on this
+        -- server, an entirely different spell). Neither is poison-class → both keep
+        -- the 1.x default (ON). SHAPE GUARD, as on Gothik's Shadow Bolt: Ball Lightning
+        -- was a 1.x BAR and is a repeated P2 nuke, so the announce carries a 3 s
+        -- anti-spam window.
+        { key = "powersurge", name = "Power Surge", tier = "announce", color = 3,
+          text = "Power Surge — Stalagg damage up",
+          icon = ICON .. "Spell_Lightning_LightningBolt01",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28134 } },
+        { key = "balllightning", name = "Ball Lightning", tier = "announce", color = 2,
+          text = "Ball Lightning", antispam = 3,
+          icon = ICON .. "Spell_Nature_LightningShield",
+          trigger = { on = "SPELL_CAST_SUCCESS", spellId = 28299, creatureId = 15928 } },
     },
 })
 
@@ -835,12 +978,18 @@ Addon:RegisterEncounter({
         { key = "landed", name = "Sapphiron landed", tier = "announce", color = 4,
           text = "Sapphiron landed",
           trigger = { on = "state", fromKey = "flight", where = { to = "ground" } } },
+        -- ARBITRATION — owner 2026-08-07: dual-ID; field logs 2026-07-26 vs spec —
+        -- tripwire telemetry arbitrates. The spec (and DBM) key the Blizzard off 28547;
+        -- our own Anniversary logs recorded 59 casts of 28560 ("Summon Blizzard") and
+        -- zero of 28547. The GTFO fires on
+        -- 28547 AND our observed 28560 (Summon Blizzard) — every arm of it, on either
+        -- id. DO NOT "clean this up" to a single id.
         { key = "blizzard", name = "Blizzard (GTFO)", tier = "special", sound = 1,
           voice = "watchfeet", soundClass = 8, text = "Move out of the Blizzard",
           antispam = 2.5,
-          triggers = { { on = "SPELL_AURA_APPLIED",    spellId = 28547, dest = "player" },
-                       { on = "SPELL_DAMAGE",          spellId = 28547, dest = "player" },
-                       { on = "SPELL_PERIODIC_DAMAGE", spellId = 28547, dest = "player" } } },
+          triggers = { { on = "SPELL_AURA_APPLIED",    spellId = { 28547, 28560 }, dest = "player" },
+                       { on = "SPELL_DAMAGE",          spellId = { 28547, 28560 }, dest = "player" },
+                       { on = "SPELL_PERIODIC_DAMAGE", spellId = { 28547, 28560 }, dest = "player" } } },
         { key = "findshelter", name = "Find shelter", tier = "special", sound = 3,
           voice = "findshelter", text = "Find shelter",
           trigger = { on = "SPELL_CAST_START", spellId = 28524 } },
