@@ -188,7 +188,8 @@ end
 -- — `Addon:StartPullTimer(seconds, source)` / `Addon:CancelPullTimer()` — so nothing
 -- outside this file moved. A re-added copy here would shadow-or-be-shadowed by the
 -- real one depending on load order; the harness (GATE SYNC) asserts core_boot.lua no
--- longer defines either name.
+-- longer defines either name. W2's ui_bars.lua RENDERS the pull bar (category
+-- "pull", always-large class) — visibility landed in W2, ownership stays in W3.
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  STATS TEXT (ported; reads the same db.stats shape)
@@ -261,6 +262,16 @@ function Addon:InitEngine()
     if Addon.engineFrame then return Addon.engineFrame end
 
     Life:Boot()
+
+    -- WAVE 2 SERVICES + PRESENTATION. Each one registers against the dispatch seam
+    -- and owns nothing the engine already decided. Era goes first because it
+    -- installs the role/class resolvers core_api's ship-off defaults call, and a
+    -- row evaluated before they exist would default differently.
+    if Addon.Era      then Addon.Era.Init()      end   -- svc_era.lua
+    if Addon.Scan     then Addon.Scan.Init()     end   -- svc_scan.lua
+    if Addon.Bars     then Addon.Bars.Init()     end   -- ui_bars.lua
+    if Addon.Warnings then Addon.Warnings.Init() end   -- ui_warnings.lua
+    if Addon.Callbacks and Addon.Callbacks.Init then Addon.Callbacks.Init() end  -- public_api.lua
 
     if type(_G.CreateFrame) ~= "function" then
         Addon.engineFrame = false            -- headless: the harness drives Life directly

@@ -177,6 +177,71 @@ function Addon:PlayVoiceCountdown(seconds, voiceKey)
     return true
 end
 
+-- ── Wave 2: single-number + symbolic voice-line dispatch ──────────────────────--
+-- PlayVoiceCountdown above speaks a whole 5..1 sequence off C_Timer. The 2.0 engine
+-- does its own scheduling (ENGINE SPEC §4.4: "one scheduler task per second, keyed
+-- by bar ID, so a restart cancels them wholesale"), so it needs to speak exactly ONE
+-- number when its own task fires. That is this primitive; the sequencer stays for
+-- the 1.x alert path, which still owns its own timing.
+
+-- Max count the selected/first countdown pack declares (§5.5: packs declare 5 or 10;
+-- §4.4: "count depth ... capped by the selected voice pack's declared maximum").
+function Addon:VoiceCountMax(voiceKey)
+    BuildVoicePacks()
+    local pack = voiceByKey[voiceKey or (Addon.db and Addon.db.settings and Addon.db.settings.voiceCountKey)]
+                 or voicePacks[1]
+    return pack and pack.max or 0
+end
+
+-- Speak ONE number. Returns true when a file was actually played.
+function Addon:PlayVoiceNumber(n, voiceKey)
+    if not (Addon.db and Addon.db.settings.soundEnabled) then return false end
+    BuildVoicePacks()
+    local pack = voiceByKey[voiceKey or (Addon.db and Addon.db.settings.voiceCountKey)] or voicePacks[1]
+    if not pack then return false end
+    n = math.floor(tonumber(n) or 0)
+    local path = n >= 1 and pack.files[n]
+    if not path then return false end
+    if type(_G.PlaySoundFile) == "function" then _G.PlaySoundFile(path, "Master") end
+    return true
+end
+
+-- ENGINE SPEC §5.5: "Voice files are addressed by a SHORT SYMBOLIC NAME resolved to
+-- a per-pack path; callers may also pass an explicit path." The bundled voice pack
+-- ships one .ogg per symbolic line name, so resolution is a lookup in the generated
+-- manifest — never a string built by hand, so a renamed/removed file resolves to nil
+-- and degrades instead of erroring on a missing path (§9.3).
+local voiceLines            -- symbolic name -> path
+local VOICE_LINE_DIR = "DBM-VPVEM"
+-- The pack directory contains a hyphen, which is a LUA PATTERN QUANTIFIER, so the
+-- prefix must be escaped before it is used as a pattern. (Unescaped, "DBM-VPVEM"
+-- silently matches nothing and every voice line resolves to nil.)
+local VOICE_LINE_PATTERN = "^pk:" .. VOICE_LINE_DIR:gsub("(%W)", "%%%1") .. "/([%w_]+)%.ogg$"
+
+local function BuildVoiceLines()
+    if voiceLines then return end
+    voiceLines = {}
+    for _, e in ipairs(Addon.BundledSounds or {}) do
+        local name = e.key:match(VOICE_LINE_PATTERN)
+        if name then voiceLines[name] = e.value end
+    end
+end
+
+function Addon:GetVoiceLine(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    if name:find("[/\\]") then return name end        -- an explicit path wins
+    BuildVoiceLines()
+    return voiceLines[name]
+end
+
+function Addon:PlayVoiceLine(name)
+    if not (Addon.db and Addon.db.settings.soundEnabled) then return false end
+    local path = Addon:GetVoiceLine(name)
+    if not path then return false end
+    if type(_G.PlaySoundFile) == "function" then _G.PlaySoundFile(path, "Master") end
+    return true
+end
+
 -- ── Font bucket (for "text" style alerts, e.g. on-cast notifications) ──────────--
 -- Curated Blizzard built-ins (always present) PLUS any LibSharedMedia-3.0 "font" media.
 local FONT_BUILTINS = {

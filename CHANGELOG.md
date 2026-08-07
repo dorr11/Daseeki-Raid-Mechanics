@@ -70,6 +70,53 @@
   while it is regenerated in the new format. This build is an internal engine milestone,
   not a raid-night build.
 
+## Unreleased — 2.0.0 rebuild, wave 2 (timer bars, warnings, Era services)
+- Raid Mechanics has timer bars again, and this time they are part of the same
+  styled HUD as the rest of the addon rather than a separate look. Bars carry the
+  ability icon, its name, a running count where one applies, and the time left, on
+  two lists you place separately: a small list for everything that is coming, and a
+  large list that a bar promotes itself into as it gets close.
+- Bars understand ability WINDOWS properly on screen. A cast that lands somewhere
+  between 40 and 60 seconds draws to the 60, with the uncertain part of the bar
+  shaded so you can see the window rather than guess at it — while the sorting, the
+  "this is about to happen" enlargement and the spoken countdown all work off the
+  40. You are never told to relax during the part of the window where it can happen.
+- Bars can change their mind mid-fight. When a fight only tells you which ability
+  you got partway through (Chromaggus picking two breaths out of five), the running
+  bar is renamed and recoloured in place — it does not restart, so the time left
+  stays honest and the timer-accuracy record is not polluted with a false alarm.
+- The pull countdown is visible at last. It was already a real timer underneath;
+  now it draws with everything else, in its own colour, on the large list, with the
+  spoken count.
+- Warnings are now two clearly different things instead of one. Ordinary
+  announcements are three stacked lines that scroll; the important ones are a much
+  larger, outlined headline at their own spot with a screen flash, a sound picked
+  from four urgency levels, and a spoken line where one exists. You can move each of
+  the four HUD spots independently and they are labelled while you drag them.
+- Warnings that name people read better: names are class-coloured, carry the raid
+  marker if the person has one, and drop the realm suffix. When a mechanic hits
+  several people at once they arrive as one line ("Sting on A, B, C and 2 others")
+  instead of five lines fighting for the same slot.
+- Everything can be turned off individually: all bars, all warnings, just the big
+  warnings' text, just their flash, just their sound, just the controller rumble.
+  Turning off all three parts of the big warnings costs nothing at all — the addon
+  stops doing the work rather than doing it and hiding the result.
+- New under the hood, and it is what the encounter data will lean on: the addon can
+  now work out who a boss is about to hit (three different ways, depending on how
+  much time there is), how far away someone is on a client that has no distance
+  function inside raids, how much health a boss has when nobody is targeting it, and
+  whether YOU personally can interrupt or dispel the thing being warned about. That
+  last one is why you will stop seeing interrupt warnings you cannot act on.
+- New: a public hook for WeakAuras and nameplate addons. Every timer we start is
+  published with eighteen pieces of information about it, and it is published even
+  when you have chosen to hide our own bars — so hiding our display never silences
+  the aura you built on top of it.
+- `/drm demo` puts the whole thing on screen out of combat, and `/drm anchors` shows
+  just the four labelled drag handles, so you can place everything without a boss.
+- Internal: 712 assertions now run headless against the real code, including every
+  bar layout rule, both warning tiers, all three target scanners, the range ladder,
+  the boss-health fallback and every interrupt/dispel gate.
+
 ## Unreleased (internal)
 - The alert HUD now matches the rest of the Daseeki suite. Timer bars, the centre
   warnings, the Gothik / Four Horsemen / Loatheb / Mini-Boss widgets and the sound

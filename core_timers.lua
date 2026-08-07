@@ -251,7 +251,10 @@ local function armCountdown(timer, bar)
     local cd = timer.countdown
     if not cd or bar.fade then return 0 end
     local depth = cd.depth or Timers.COUNTDOWN_DEPTH
-    local cap = Addon.CountdownMax          -- W2 sets this from the selected voice pack
+    -- §4.4: the depth is "capped by the SELECTED VOICE PACK's declared maximum".
+    -- W2 FILLED THIS: ui_bars.lua's Bars.Init sets it from Addon:VoiceCountMax(),
+    -- which reads the max of the countdown pack the user actually selected.
+    local cap = Addon.CountdownMax
     if cap and depth > cap then depth = cap end
     local S = Sched()
     local audioEnd = bar.startedAt + bar.min     -- §4.2 audio counts to the EARLIEST cast
