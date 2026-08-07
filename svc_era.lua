@@ -338,6 +338,9 @@ Era.RESPEC_THROTTLE = 2
 local function rederive()
     Era.roleState.tankLatched = false     -- a respec invalidates the session latch
     Era.ClearCache()
+    -- A respec is ALWAYS news, so this fires unconditionally — but it still stamps
+    -- the signature, so the roster path below has a baseline to compare against.
+    if Era.RoleSignature then Era.RoleSignature() end
     Addon:FireEngineEvent("ROLE_CHANGED", Era.Spec(), Era.IsTank(), Era.IsHealer())
 end
 Era._rederive = rederive
@@ -370,18 +373,26 @@ Era.ROSTER_EVENTS = { "GROUP_ROSTER_UPDATE", "PLAYER_ROLES_ASSIGNED" }
 Era.ROSTER_EVENT_SET = {}
 for _, e in ipairs(Era.ROSTER_EVENTS) do Era.ROSTER_EVENT_SET[e] = true end
 
--- The derived role tuple, read THROUGH the latch as it currently stands.
-local function roleSignature()
-    return tostring(Era.Spec()) .. "/" .. tostring(Era.IsTank()) .. "/" .. tostring(Era.IsHealer())
+-- Derive the role tuple and REMEMBER it. The remembering is the load-bearing half:
+-- "has the answer changed" cannot be asked by evaluating twice, because the first
+-- evaluation re-latches. A promoted Main Tank read live already answers "tank", so a
+-- before/after comparison built from two live reads compares true against true and
+-- concludes nothing happened — which is the original bug wearing a disguise.
+--
+-- So the comparison is against the last answer the addon BROADCAST, and every
+-- derivation point stamps it.
+function Era.RoleSignature()
+    local sig = tostring(Era.Spec()) .. "/" .. tostring(Era.IsTank()) .. "/" .. tostring(Era.IsHealer())
+    Era.roleState.signature = sig
+    return sig
 end
-Era._roleSignature = roleSignature
 
 local function recheckRole()
-    local before = roleSignature()          -- the answer the addon is currently giving
+    local before = Era.roleState.signature
     Era.roleState.tankLatched = false       -- the latch must be re-EARNED, not frozen
     Era.ClearCache()
-    local after = roleSignature()           -- re-latches inside this call if still true
-    if after == before then return false end
+    local after = Era.RoleSignature()       -- re-latches inside this call if still true
+    if before ~= nil and after == before then return false end
     Addon:FireEngineEvent("ROLE_CHANGED", Era.Spec(), Era.IsTank(), Era.IsHealer())
     return true
 end
@@ -818,6 +829,10 @@ function Era.Init()
     Addon.RoleResolver  = Era.ResolveRole
     Addon.ClassResolver = Era.Class
     Era.EvaluateWorldPosition()
+    -- Seed the role signature at boot so the first roster re-check has a baseline
+    -- to compare against instead of firing on the first GROUP_ROSTER_UPDATE of the
+    -- session. This is also the answer PublishOptionsTree is about to freeze.
+    Era.RoleSignature()
 
     if type(_G.CreateFrame) == "function" then
         local f = _G.CreateFrame("Frame")

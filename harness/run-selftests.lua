@@ -475,6 +475,16 @@ do
     local chunk = assert(loadfile(P("modules.lua")))
     assert(pcall(chunk, ADDON_NAME, Addon))
 end
+-- W5: options.lua, for the parts of it that are NOT frame code. `Addon:RegisterOptions`
+-- and every build*() need DaseekiUI and CreateFrame and are correctly untestable
+-- headless — but the telemetry REPORT builder is pure string work over the ring, and
+-- it is the arbitration instrument, so it gets asserted like anything else. The file
+-- binds `local UI = DaseekiUI` at load (nil here) and only dereferences it inside
+-- frame-building functions, so executing the chunk is safe.
+do
+    local chunk = assert(loadfile(P("options.lua")))
+    assert(pcall(chunk, ADDON_NAME, Addon))
+end
 -- WAVE 4d: the Naxxramas encounter data. Kept as a re-runnable chunk because the
 -- earlier gates deliberately wipe the encounter registry to install their fixtures;
 -- the Naxx gates re-execute this to repopulate it with the SHIPPING data.
@@ -7362,8 +7372,916 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- GATE W5-SCAFFOLD — the design doc's "core_boot.lua should be gone by W5"
+--
+-- The wave-1 demolition left core_boot.lua as the file where homeless things lived,
+-- each labelled with the wave that would replace it. W5 is that wave. These are
+-- SOURCE assertions rather than behaviour assertions on purpose: the defect this
+-- guards against is a future wave quietly re-parking something there, and no runtime
+-- check can see that. The file is small enough now that reading it is cheap.
+----------------------------------------------------------------------
+gate("W5-SCAFFOLD  core_boot.lua is a composition root, not scaffolding")
+do
+    local boot = readFile(P("core_boot.lua")) or ""
+    local diag = readFile(P("core_diag.lua")) or ""
+    local api  = readFile(P("core_api.lua")) or ""
+
+    ck(#boot > 0, "core_boot.lua exists (the composition root still ships)")
+    ck(exists(P("core_diag.lua")), "core_diag.lua exists (the diagnostics got a real home)")
+
+    -- ONE public function. InitEngine is the composition root's whole job; anything
+    -- else defined here is by definition a tenant that has not been rehoused.
+    local defs = {}
+    for name in boot:gmatch("\nfunction%s+Addon[:%.]([%w_]+)") do defs[#defs + 1] = name end
+    eq(#defs, 1, "core_boot.lua defines exactly ONE Addon function")
+    eq(defs[1], "InitEngine", "…and it is InitEngine")
+
+    -- The specific tenants that left, each asserted at BOTH ends: gone from boot,
+    -- present in the file that now owns it. Asserting only the departure would pass
+    -- if a rehoming lost the function entirely.
+    local rehomed = {
+        { fn = "GetRaids",          to = "core_api.lua",  src = api  },
+        { fn = "GetRaid",           to = "core_api.lua",  src = api  },
+        { fn = "GetBoss",           to = "core_api.lua",  src = api  },
+        { fn = "GetBossByNpcID",    to = "core_api.lua",  src = api  },
+        { fn = "RegisterRaid",      to = "core_api.lua",  src = api  },
+        { fn = "BuildFullDebugLogText", to = "core_diag.lua", src = diag },
+        { fn = "DebugLogLineCount", to = "core_diag.lua", src = diag },
+        { fn = "UpdateAutoDebug",   to = "core_diag.lua", src = diag },
+        { fn = "UpdateDebugOnlyIndicator", to = "core_diag.lua", src = diag },
+        { fn = "BuildStatsText",    to = "core_diag.lua", src = diag },
+    }
+    for _, r in ipairs(rehomed) do
+        ck(not boot:match("\nfunction%s+Addon[:%.]" .. r.fn .. "%f[%W]"),
+           ("Addon:%s no longer lives in core_boot.lua"):format(r.fn))
+        ck(r.src:match("\nfunction%s+Addon[:%.]" .. r.fn .. "%f[%W]") ~= nil,
+           ("…it lives in %s"):format(r.to))
+    end
+    -- W3's departure stays departed (the SYNC-RETIRE gate's subject, re-asserted
+    -- here so ONE gate answers "what is core_boot allowed to contain").
+    ck(not boot:match("function%s+Addon[:%.]StartPullTimer"),
+       "the W3 pull-timer shim is still gone")
+
+    -- NOTHING IN THE BODY IS LABELLED TRANSITIONAL. The design doc's rule is not
+    -- "the file is small", it is "nothing in it is scaffolding". A word that says
+    -- otherwise, on live code in a file that is supposed to be finished, is the
+    -- defect. The scan is deliberately of the BODY ONLY — the header block narrates
+    -- what LEFT and where it went, which is exactly what a reader arriving from an
+    -- old comment needs, and forbidding the words there would delete the map.
+    do
+        local headEnd = boot:find("%-%-%]%]")
+        ck(headEnd ~= nil, "core_boot.lua opens with a header block")
+        local body = (boot:sub((headEnd or 0) + 3)):lower()
+        for _, word in ipairs({ "retirement shim", "stand%-in", "transitional", "shim for",
+                                "until w%d", "replaced by w%d", "parked here" }) do
+            ck(not body:match(word),
+               ("core_boot.lua's BODY contains no %q language"):format((word:gsub("%%", ""))))
+        end
+    end
+    -- Prove the header actually names the successors.
+    for _, name in ipairs({ "core_sync.lua", "core_api.lua", "core_diag.lua" }) do
+        ck(boot:find(name, 1, true) ~= nil,
+           ("core_boot.lua's header names %s as a successor"):format(name))
+    end
+
+    -- Load order: the new file has real load-time dependencies, and the toc must
+    -- express them (core_diag resolves Addon.Sched and Addon.Lifecycle at LOAD).
+    do
+        local pos = {}
+        for i, rel in ipairs(TOC_LUA) do pos[rel] = i end
+        ck(pos["core_diag.lua"], "core_diag.lua IS in the load list")
+        ck(pos["core_sched.lua"] < pos["core_diag.lua"],
+           "…and loads after core_sched.lua (it resolves Addon.Sched at load)")
+        ck(pos["core_lifecycle.lua"] < pos["core_diag.lua"],
+           "…and after core_lifecycle.lua (it resolves Addon.Lifecycle at load)")
+        ck(pos["core_diag.lua"] < pos["core_boot.lua"],
+           "…and before core_boot.lua (InitEngine calls Addon.DLog / UpdateAutoDebug)")
+    end
+
+    -- The rehomed surfaces still WORK — a source-only gate would pass on a file that
+    -- was moved and broken.
+    ck(type(Addon.GetRaids) == "function" and type(Addon:GetRaids()) == "table",
+       "Addon:GetRaids() still answers after the move")
+    ck(type(Addon.BuildStatsText) == "function" and type(Addon:BuildStatsText()) == "string",
+       "Addon:BuildStatsText() still answers after the move")
+    do
+        local r, why = Addon:RegisterRaid({ id = "legacy_zone" })
+        ck(r == nil and type(why) == "string",
+           "the 1.x RegisterRaid refusal still refuses, with a reason")
+        ck(why:find("RegisterZone", 1, true) ~= nil,
+           "…and names the successor API a plugin author should call instead")
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE W5-TREE — the options projection, end to end
+--
+-- W4 asserted per-zone that the tree PROJECTS. This asserts the surface options.lua
+-- actually consumes: eight raids in progression order, every boss reachable by the
+-- key the checkbox writes, ship-off defaults surviving the whole path from the
+-- encounter row to the config the panel reads, and a flip reaching the ENGINE.
+----------------------------------------------------------------------
+gate("W5-TREE  options projection: 8 raids, ship-off defaults, a flip reaches the row")
+do
+    -- Rebuild the SHIPPING registry from every zone chunk (earlier gates install
+    -- fixtures over it), then project exactly as InitEngine does.
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    for _, chunk in ipairs({ MC_CHUNK, ONY_CHUNK, BWL_CHUNK, ZG_CHUNK,
+                             AQ20_CHUNK, AQ40_CHUNK, NAXX_CHUNK, WB_CHUNK }) do
+        assert(pcall(chunk, ADDON_NAME, Addon))
+    end
+    API.PublishOptionsTree()
+
+    local raids = Addon:GetRaids()
+    eq(#raids, 8, "the projected tree is EIGHT raids")
+
+    -- Progression order is the order a player clears them, which is the order the
+    -- sidebar must show. Asserted by NAME, not by the `order` numbers, so renumbering
+    -- a zone cannot silently pass.
+    local WANT = { "mc", "onyxia", "bwl", "zg", "aq20", "aq40", "naxxramas", "world" }
+    local got = {}
+    for i, r in ipairs(raids) do got[i] = r.id end
+    eq(table.concat(got, ","), table.concat(WANT, ","),
+       "…in progression order, Molten Core first and the world bosses last")
+
+    for _, r in ipairs(raids) do
+        ck(r.size ~= nil, ("%s declares a raid size (options.lua's section filter)"):format(r.id))
+        ck(#r.bosses > 0, ("…and contributes at least one boss page"):format(r.id))
+        ck(type(r.name) == "string" and r.name ~= r.id,
+           ("…with a display name for the sidebar (%s)"):format(tostring(r.name)))
+    end
+
+    -- Every boss page is reachable by GetBoss, and every row on it carries the four
+    -- fields the mechanic list renders.
+    local bosses, rows = 0, 0
+    for _, r in ipairs(raids) do
+        for _, b in ipairs(r.bosses) do
+            bosses = bosses + 1
+            if Addon:GetBoss(r.id, b.id) ~= b then
+                fail(("GetBoss(%s,%s) does not return the projected page"):format(r.id, b.id))
+            end
+            for _, m in ipairs(b.mechanics) do
+                rows = rows + 1
+                if type(m.id) ~= "string" or type(m.name) ~= "string" or m.default == nil then
+                    fail(("row %s:%s:%s is missing id/name/default"):format(r.id, b.id, tostring(m.id)))
+                end
+            end
+        end
+    end
+    -- 70 pages, not 65: the 65 ENCOUNTERS plus the 5 zone-wide trash modules (MC,
+    -- BWL, AQ20, AQ40, Naxx), which carry a `legacy` seam of their own because trash
+    -- alerts are as configurable as boss alerts and need somewhere to be switched off.
+    eq(bosses, 70, "…70 boss pages: 65 encounters + the 5 zone-wide trash modules")
+    ck(rows > 400, ("…and %d togglable rows on them"):format(rows))
+
+    -- THE KEY IDENTITY. The whole projection rests on
+    --     API.OptionKey(encId, rowKey) == Addon:MechKey(raidId, bossId, rowKey)
+    -- If that ever drifts, a checkbox writes to one SavedVariables entry and the
+    -- engine reads another, and NOTHING VISIBLY BREAKS — the toggle just does
+    -- nothing. Asserted over the whole shipping registry, not a sample.
+    local drift = 0
+    for _, enc in ipairs(Addon.encounters) do
+        if enc.legacy then
+            for _, row in ipairs(enc.timers) do
+                if API.OptionKey(enc.id, row.key)
+                   ~= Addon:MechKey(enc.legacy.raidId, enc.legacy.bossId, row.key) then
+                    drift = drift + 1
+                end
+            end
+        end
+    end
+    eq(drift, 0, "the options key and the engine key are the SAME key, registry-wide")
+
+    -- SHIP-OFF DEFAULTS, end to end. A row declaring default=false must arrive at
+    -- Addon:GetMechanicConfig as masterEnabled=false WITHOUT the user ever touching
+    -- it — that is the whole "chatty alerts ship quiet" promise.
+    local offRow, offEnc
+    for _, enc in ipairs(Addon.encounters) do
+        for _, row in ipairs(enc.warnings) do
+            if row.default == false and enc.legacy then offRow, offEnc = row, enc break end
+        end
+        if offRow then break end
+    end
+    ck(offRow ~= nil, "the shipping data contains at least one default-OFF row")
+    if offRow then
+        local key = Addon:MechKey(offEnc.legacy.raidId, offEnc.legacy.bossId, offRow.key)
+        local boss = Addon:GetBoss(offEnc.legacy.raidId, offEnc.legacy.bossId)
+        local mech
+        for _, m in ipairs(boss.mechanics) do if m.id == offRow.key then mech = m end end
+        ck(mech ~= nil, "…the projection carries it onto the boss page")
+        eq(mech and mech.default, false, "…with default=false on the projected row")
+        Addon.db.mechanics[key] = nil
+        eq(Addon:GetMechanicConfig(key, mech).masterEnabled, false,
+           "…so the checkbox reads UNCHECKED with no user override present")
+        eq(API.IsRowEnabled(offEnc.id, offRow), false,
+           "…and the ENGINE agrees the row is off")
+
+        -- A FLIP REACHES THE ROW. This is the assertion that proves the surface is
+        -- wired: write through the same call options.lua's checkbox _set uses, and
+        -- ask the engine.
+        Addon:SetMechanicOption(key, "masterEnabled", true)
+        eq(API.IsRowEnabled(offEnc.id, offRow), true,
+           "flipping the checkbox ON reaches the engine's row gate")
+        eq(Addon:GetMechanicConfig(key, mech).masterEnabled, true,
+           "…and the checkbox reads back checked")
+        Addon:SetMechanicOption(key, "masterEnabled", false)
+        eq(API.IsRowEnabled(offEnc.id, offRow), false, "…and flipping it OFF again reaches it too")
+        Addon.db.mechanics[key] = nil
+    end
+
+    -- The reverse case: a default-ON row that the user switched off stays off.
+    do
+        local enc = Addon.encountersById["naxxramas:loatheb"] or Addon.encounters[1]
+        local row = enc.timers[1] or enc.warnings[1]
+        if row and enc.legacy then
+            local key = Addon:MechKey(enc.legacy.raidId, enc.legacy.bossId, row.key)
+            Addon:SetMechanicOption(key, "masterEnabled", false)
+            eq(API.IsRowEnabled(enc.id, row), false,
+               "a user override BEATS the shipped default (settings continuity)")
+            Addon.db.mechanics[key] = nil
+        end
+    end
+
+    -- The five specials still reach their config panels through the module seam that
+    -- options.lua's BuildModuleDetail drives.
+    do
+        local SPECIALS = { "naxxramas:fourhorsemen", "naxxramas:gothik",
+                           "naxxramas:loatheb", "naxxramas:razuvious", "naxxramas:thaddius" }
+        for _, encId in ipairs(SPECIALS) do
+            local enc = Addon.encountersById[encId]
+            ck(enc ~= nil, ("special encounter %s is registered"):format(encId))
+            if enc and enc.legacy then
+                local mods = Addon:GetBossModules(enc.legacy.raidId, enc.legacy.bossId)
+                ck(type(mods) == "table" and #mods > 0,
+                   ("…and GetBossModules finds its module (the BuildConfig seam)"):format(encId))
+            end
+        end
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE W5-BRIEF-G — SUITE_ASYNC_AUDIT.md Brief G, one block per finding
+--
+-- Five findings, lesson classes 7 (missing settle signal) and 8 (nondeterministic
+-- iteration). Each block is written so that REVERTING the fix reddens it — a
+-- determinism gate that passes on both the old and new code is worthless, so every
+-- one of these drives the real function rather than inspecting source.
+----------------------------------------------------------------------
+gate("W5-BRIEF-G  determinism + role re-derivation (RM-1, RMS-1, RMS-2, RME-1, RML-1)")
+do
+    ------------------------------------------------------------------
+    -- RM-1: the Main-Tank latch is RE-EARNED on roster change, not frozen.
+    ------------------------------------------------------------------
+    do
+        Sched:Flush()
+        W.class = "WARRIOR"
+        W.talents = { 0, 0, 31 }          -- 3rd tab deepest -> WARRIOR3
+        W.form = 0
+        W.mainTank = false
+        Era.roleState.tankLatched = false
+        Era.ClearCache()
+
+        -- Protection warrior (tab 2 deepest) in Battle Stance, not flagged: not a tank.
+        W.talents = { 0, 31, 0 }
+        Era.ClearCache()
+        eq(Era.IsTank(), false, "RM-1: a Prot warrior in Battle Stance, unflagged, is NOT a tank")
+        eq(Era.RoleSignature(), "WARRIOR2/false/false",
+           "…and that is the answer the addon has on record (the boot baseline)")
+
+        -- The event set must CARRY the signal.
+        local hasRoster = false
+        for _, e in ipairs(Era.ROSTER_EVENTS) do
+            if e == "GROUP_ROSTER_UPDATE" then hasRoster = true end
+        end
+        ck(hasRoster, "…svc_era declares GROUP_ROSTER_UPDATE (the fix)")
+        ck(Era.ROSTER_EVENT_SET["PLAYER_ROLES_ASSIGNED"] == true,
+           "…and PLAYER_ROLES_ASSIGNED, for clients that have it")
+        -- The list existing is not the same as the frame subscribing to it, and the
+        -- subscription lives behind `if type(_G.CreateFrame) == "function"`, which is
+        -- false headless — so this half is unreachable by behaviour and is asserted
+        -- at the source. Without it, deleting the RegisterEvent loop leaves the
+        -- suite green: found by mutation-testing this very gate.
+        do
+            local src = readFile(P("svc_era.lua")) or ""
+            -- Anchored to ONE LINE: Lua's `.` matches newlines, so a `.-` here would
+            -- happily span from the declaration loop to some unrelated RegisterEvent
+            -- further down the file and pass on deleted code. (Also found by mutation.)
+            ck(src:match("ipairs%(Era%.ROSTER_EVENTS%)%s*do[^\r\n]*RegisterEvent") ~= nil,
+               "…and Era.Init actually REGISTERS them on the event frame")
+            ck(src:match("Era%.ROSTER_EVENT_SET%[event%]") ~= nil,
+               "…and routes them to the role re-check rather than the zone handler")
+        end
+
+        local fired = 0
+        Addon:RegisterEngineCallback("ROLE_CHANGED", function() fired = fired + 1 end)
+
+        -- PROMOTED TO MAIN TANK MID-RAID. This is the live incident: the roster event
+        -- fires, and one second later the addon must notice.
+        W.mainTank = true
+        Era.OnRosterChanged()
+        eq(fired, 0, "…the re-check is THROTTLED (a 40-man invite wave is bursty)")
+        advance(Era.ROLE_RECHECK_THROTTLE + 0.2)
+        eq(fired, 1, "…and fires once the burst settles")
+        eq(Era.IsTank(), true, "…the promotion is visible: role-gated tank rows arm")
+
+        -- Silence when nothing moved: re-projecting the whole options tree on every
+        -- roster update would be a boot-cost tax paid forty times a night.
+        Era.OnRosterChanged()
+        advance(Era.ROLE_RECHECK_THROTTLE + 0.2)
+        eq(fired, 1, "…an unchanged answer fires NOTHING")
+
+        -- DEMOTION. This is the half that was impossible before: the session latch
+        -- meant a demoted tank kept receiving tank-only warnings until /reload.
+        W.mainTank = false
+        Era.OnRosterChanged()
+        advance(Era.ROLE_RECHECK_THROTTLE + 0.2)
+        eq(fired, 2, "…a DEMOTION also re-derives (the latch is re-earned, not frozen)")
+        eq(Era.IsTank(), false, "…and the player stops receiving tank-only warnings")
+
+        -- Debounce: many events in one burst collapse to one re-derivation.
+        W.mainTank = true
+        for _ = 1, 12 do Era.OnRosterChanged() end
+        advance(Era.ROLE_RECHECK_THROTTLE + 0.2)
+        eq(fired, 3, "…twelve roster events in one burst produce ONE re-derivation")
+
+        -- The latch itself still WORKS — the fix must not have weakened §5.4. A tank
+        -- who swaps to Battle Stance for a burst window keeps his tank warnings.
+        W.mainTank, W.form = false, Era.DEFENSIVE_STANCE_FORM
+        Era._rederive()
+        eq(Era.IsTank(), true, "…a Prot warrior in Defensive Stance is a tank")
+        W.form = 0
+        eq(Era.IsTank(), true, "…and STAYS one after swapping to Battle Stance (§5.4 latch intact)")
+
+        -- RM-1 SECOND HALF: the frozen projected default. The tree caches a RESOLVED
+        -- answer at boot; ROLE_CHANGED must re-resolve it.
+        ck(type(API.WatchRoleChanges) == "function",
+           "…API.WatchRoleChanges exists (the re-projection hook)")
+        do
+            Addon.zones, Addon.zonesById = {}, {}
+            Addon.encounters, Addon.encountersById = {}, {}
+            Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+            Addon:RegisterZone({ id = "rolez", name = "Role Zone", order = 1, size = 40 })
+            Addon:RegisterEncounter({
+                id = "rolez:boss", name = "Role Boss", zone = 1,
+                creatureId = { 99001 }, legacy = { raidId = "rolez", bossId = "boss" },
+                detect = { mode = "combat" }, combat = {},
+                warnings = { { key = "tankonly", text = "Tank thing", role = "Tank" } },
+            })
+            local prevResolver = Addon.RoleResolver
+            local isTank = false
+            Addon.RoleResolver = function(gateStr) return gateStr == "Tank" and isTank end
+
+            API.PublishOptionsTree()
+            local boss = Addon:GetBoss("rolez", "boss")
+            eq(boss.mechanics[1].default, false,
+               "…a tank-gated row projects OFF for a non-tank at boot")
+
+            -- The player is promoted. Without the hook the projection stays frozen.
+            isTank = true
+            API._roleWatchInstalled = nil
+            API.WatchRoleChanges()
+            Addon:FireEngineEvent("ROLE_CHANGED", "WARRIOR2", true, false)
+            local boss2 = Addon:GetBoss("rolez", "boss")
+            eq(boss2.mechanics[1].default, true,
+               "…and ROLE_CHANGED re-projects it ON (no /reload needed)")
+            ck((Addon._optionsTreeRevision or 0) > 0, "…the projection revision advanced")
+
+            Addon.RoleResolver = prevResolver
+        end
+        W.mainTank = false
+        Era.roleState.tankLatched = false
+        Era.ClearCache()
+    end
+
+    ------------------------------------------------------------------
+    -- RMS-1 / RMS-2: the recovery whispers are ORDERED.
+    ------------------------------------------------------------------
+    do
+        resetSync()
+        makeRaid()
+        Sync.replySeen = {}
+
+        Addon.encounters, Addon.encountersById = {}, {}
+        Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+
+        -- EIGHT bars, not three. A three-bar fixture is not evidence: pairs() over a
+        -- three-key table lands in sorted order one time in six by luck, and a
+        -- determinism gate that a coin-flip can satisfy proves nothing. Eight makes
+        -- the accidental-pass probability 1/40320, and the assertion below is on the
+        -- EXACT emitted sequence rather than on "is it monotonic".
+        local TIMERS = {}
+        for i = 1, 8 do TIMERS[i] = { key = "t" .. i, text = "T" .. i, duration = 400 } end
+        local enc = Addon:RegisterEncounter({
+            id = "ordering:boss", name = "Ordering Boss", zone = 533,
+            creatureId = { 99010 }, detect = { mode = "combat" }, combat = {},
+            timers = TIMERS,
+        })
+        local rt = Life:StartCombat(enc, 0, "test")
+        ck(rt ~= nil, "RMS: a fixture encounter is engaged")
+
+        -- Remaining times are the REVERSE of insertion order, so a table-ordered send
+        -- and an urgency-ordered send are maximally different.
+        local WANT_ORDER = {}
+        for i = 1, 8 do
+            rt:Timer("t" .. i):Start((9 - i) * 10)      -- t1=80s … t8=10s
+            WANT_ORDER[9 - i] = "t" .. i                 -- expected: t8, t7, … t1
+        end
+        -- Eight state variables, same reasoning.
+        local SKEYS = { "zulu", "alpha", "mike", "delta", "oscar", "bravo", "yankee", "kilo" }
+        for i, k in ipairs(SKEYS) do rt:SetState(k, tostring(i)) end
+
+        for i = #WIRE, 1, -1 do WIRE[i] = nil end
+        Sync.OnRequestTimers("Alpha-Whitemane", "WHISPER")
+        advance(4)                     -- let the send bucket drain the whole reply
+
+        local vi, tr = {}, {}
+        for _, m in ipairs(WIRE) do
+            local f = Sync.Split(m.payload)
+            if f[3] == "VI" and f[6] ~= "__stage" then vi[#vi + 1] = f[6] end
+            if f[3] == "TR" then tr[#tr + 1] = { key = f[6], left = tonumber(f[7]) } end
+        end
+
+        -- RMS-2 — the exact sequence, against an independently sorted expectation.
+        eq(#vi, #SKEYS, ("RMS-2: %d state-variable restores were sent"):format(#vi))
+        local wantVI = {}
+        for i, k in ipairs(SKEYS) do wantVI[i] = k end
+        table.sort(wantVI)
+        eq(table.concat(vi, ","), table.concat(wantVI, ","),
+           "…in SORTED key order, exactly (the comment's own contract)")
+
+        -- RMS-1 — likewise, and the sequence is the reverse of insertion, which is
+        -- what makes this an assertion rather than a coincidence.
+        local trKeys = {}
+        for i, e in ipairs(tr) do trKeys[i] = e.key end
+        eq(#tr, 8, ("RMS-1: %d timer restores were sent"):format(#tr))
+        eq(table.concat(trKeys, ","), table.concat(WANT_ORDER, ","),
+           "…MOST-URGENT-FIRST, exactly, and not in table order")
+        ck(tr[1] and tr[1].key == "t8",
+           "…so the 10-second bar reaches the joining raider before the 80-second one")
+
+        -- The reason it matters: the send bucket truncates. Prove the ordering is what
+        -- decides survival, not a nicety.
+        ck(Sync.BUCKET_CAP ~= nil and Sync.BUCKET_CAP < 100,
+           ("…and the send bucket is capped at %s, so order decides what arrives at all")
+               :format(tostring(Sync.BUCKET_CAP)))
+
+        Life:EndCombat(rt, false, "test")
+        resetLife()
+    end
+
+    ------------------------------------------------------------------
+    -- RME-1: BossHealthPct walks the encounter's DECLARED creature order.
+    ------------------------------------------------------------------
+    do
+        clearWorld()
+        Era.ResetHealth()
+        -- Four Horsemen shape: several ids, all cached, all alive, different health.
+        local IDS = { 16064, 16065, 16062, 16063 }
+        for i, cid in ipairs(IDS) do
+            local u = "nameplate" .. i
+            W.units[u] = { guid = "Creature-0-0-0-0-" .. cid .. "-000", hp = 100 * i,
+                           hpmax = 1000, dead = false }
+            W.nameplates[#W.nameplates + 1] = u
+            Era.healthToken[cid] = u
+        end
+        local first = { }
+        for _ = 1, 12 do
+            local _, cid = Era.BossHealthPct(IDS)
+            first[#first + 1] = cid
+        end
+        local stable = true
+        for i = 2, #first do if first[i] ~= first[1] then stable = false end end
+        ck(stable, "RME-1: twelve reads of a multi-creature encounter return the SAME boss")
+        eq(first[1], IDS[1], "…and it is the FIRST creature the encounter declares")
+
+        -- Reordering the declaration reorders the answer — proof the rule is the
+        -- declaration and not an accident that happens to be stable.
+        local rev = { IDS[4], IDS[3], IDS[2], IDS[1] }
+        local _, cidRev = Era.BossHealthPct(rev)
+        eq(cidRev, rev[1], "…and a different declared order yields that order's first")
+        Era.ResetHealth()
+        clearWorld()
+    end
+
+    ------------------------------------------------------------------
+    -- RML-1: Life:Sweep picks its winner by RULE.
+    ------------------------------------------------------------------
+    do
+        resetLife()
+        Addon.encounters, Addon.encountersById = {}, {}
+        Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+        local CIDS = { 50004, 50001, 50003, 50002 }
+        for _, cid in ipairs(CIDS) do
+            Addon:RegisterEncounter({
+                id = "sweep:" .. cid, name = "Sweep " .. cid, zone = 533,
+                creatureId = { cid }, detect = { mode = "combat" }, combat = {},
+            })
+        end
+
+        local function stageSweepWorld()
+            clearWorld()
+            W.difficultyID, W.instanceType, W.instanceID, W.inInstance = 9, "raid", 533, true
+            for i, cid in ipairs(CIDS) do
+                local u = "nameplate" .. i
+                W.units[u] = { guid = "Creature-0-0-0-0-" .. cid .. "-00" .. i,
+                               hp = 900, hpmax = 1000, combat = true }
+                W.nameplates[#W.nameplates + 1] = u
+            end
+        end
+
+        -- No target: the tiebreak is lowest creature id, every time.
+        local winners = {}
+        for _ = 1, 10 do
+            Life:Reset(); Sched:Flush()
+            Life.armedCombat, Life.armedHealthBoot = true, true
+            stageSweepWorld()
+            local rt = Life:Sweep(0.5, nil, "sweep")
+            winners[#winners + 1] = rt and rt.def and rt.def.id or "none"
+            if rt then Life:EndCombat(rt, false, "test") end
+        end
+        local same = true
+        for i = 2, #winners do if winners[i] ~= winners[1] then same = false end end
+        ck(same, "RML-1: ten sweeps over the same four-boss room pick the SAME winner")
+        eq(winners[1], "sweep:50001", "…and it is the lowest creature id, by the stated rule")
+
+        -- With a target, the mob the raid is actually looking at wins — the answer a
+        -- human would give, and still a rule rather than a race.
+        ck(Life.PREFER_TARGETED == true, "…PREFER_TARGETED is the shipped tiebreak")
+        Life:Reset(); Sched:Flush()
+        Life.armedCombat, Life.armedHealthBoot = true, true
+        stageSweepWorld()
+        W.units["target"] = { guid = "Creature-0-0-0-0-50003-003", hp = 900, hpmax = 1000, combat = true }
+        local rt = Life:Sweep(0.5, nil, "sweep")
+        eq(rt and rt.def and rt.def.id, "sweep:50003",
+           "…the TARGETED boss wins the pull when the player has one")
+        if rt then Life:EndCombat(rt, false, "test") end
+
+        -- And exactly one encounter starts: the §2.1(c) contract survived the fix.
+        eq(#Life.engaged, 0, "…and the sweep started exactly one encounter, now ended")
+        resetLife()
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE W5-TELEM — the arbitration instrument is READABLE
+--
+-- Design doc item 3: the tripwire writes observations down "instead of DBM's 'please
+-- report' chat line", so that "timer data becomes self-auditing across Drew's raids".
+-- A ring nobody can read is not an instrument. These assertions are about the REPORT.
+----------------------------------------------------------------------
+gate("W5-TELEM  timer-telemetry viewer: the ring is readable in-game")
+do
+    Tele.Clear()
+    ck(type(Addon.BuildTelemetryReport) == "function", "the report builder exists")
+    ck(type(Addon.ShowTelemetryReport) == "function", "…and a viewer that shows it")
+
+    -- Empty: says why it is empty, which for THIS instrument is good news.
+    local empty = Addon:BuildTelemetryReport()
+    ck(type(empty) == "string" and #empty > 0, "an empty ring still produces a report")
+    ck(empty:lower():find("nothing recorded", 1, true) ~= nil,
+       "…that says nothing is recorded rather than showing a blank table")
+
+    -- Two keys, several observations each, deliberately different mean deltas.
+    for i = 1, 4 do
+        Tele.Write("timer.refresh", { enc = "naxxramas:patchwerk", key = "hateful",
+                                      obs = 1.0 + i * 0.1, delta = -1.5, expMin = 2.5, expMax = 2.5 })
+    end
+    for i = 1, 2 do
+        Tele.Write("timer.refresh", { enc = "bwl:vaelastrasz", key = "burningadrenaline",
+                                      obs = 14.0, delta = -0.4, expMin = 15, expMax = 15 })
+    end
+    Tele.Write("lifecycle.engage", { enc = "bwl:vaelastrasz", path = "yell" })
+
+    local rep = Addon:BuildTelemetryReport()
+    ck(rep:find("naxxramas:patchwerk:hateful", 1, true) ~= nil, "the report names the timer key")
+    ck(rep:find("bwl:vaelastrasz:burningadrenaline", 1, true) ~= nil, "…and the second one")
+
+    -- The WORST offender is first: the report's job is "what should I fix", so the
+    -- ordering is the answer, not decoration.
+    local pPatch = rep:find("naxxramas:patchwerk", 1, true)
+    local pVael  = rep:find("bwl:vaelastrasz:burning", 1, true)
+    ck(pPatch and pVael and pPatch < pVael,
+       "…worst mean deviation first (-1.50s before -0.40s)")
+
+    ck(rep:find("declared window 2.50-2.50s", 1, true) ~= nil,
+       "…and each group states the window the data file promised")
+    ck(rep:find("1 other engine entr", 1, true) ~= nil,
+       "…non-tripwire entries are counted, not silently dropped from the total")
+
+    -- The raw export is the escape hatch, and it must carry the build token so an
+    -- observation from an older engine is never mistaken for current behaviour.
+    local raw = table.concat(Tele.Export(), "\n")
+    ck(raw:find(Tele.BUILD, 1, true) ~= nil, "the raw export is build-stamped")
+    eq(Tele.BUILD, "2.0.0", "…and the build token is the release version, not a wave tag")
+
+    -- Clearing is IN PLACE (the ring's own contract) and the viewer survives it.
+    local ringRef = Tele.Ring(false)
+    local n = Tele.Clear()
+    eq(n, 7, "Clear() reports how many observations it removed")
+    ck(Tele.Ring(false) == ringRef, "…and clears IN PLACE (nothing is left pointing at a corpse)")
+    ck(Addon:BuildTelemetryReport():lower():find("nothing recorded", 1, true) ~= nil,
+       "…and the report goes back to the empty case cleanly")
+
+    -- The option that turns recording off must actually stop it — an instrument you
+    -- cannot switch off is a different complaint, but one that lies about being off
+    -- is a defect.
+    Addon.db.settings.engineTelemetry = false
+    Tele.Write("timer.refresh", { enc = "x", key = "y", obs = 1, delta = -1 })
+    eq(Tele.Count(), 0, "recording OFF actually stops writes")
+    Addon.db.settings.engineTelemetry = true
+    Tele.Write("timer.refresh", { enc = "x", key = "y", obs = 1, delta = -1 })
+    eq(Tele.Count(), 1, "…and back ON resumes them")
+    Tele.Clear()
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE W5-RELEASE — the assertable rows of ROLLOUT_CONTINUITY_AUDIT.md's
+-- 21-point release-train checklist.
+--
+-- Most of the 21 are human sign-off (rehearse the upgrade on a WTF copy) or N/A for
+-- an addon that has never shipped. The ones a machine can hold are held here, and
+-- the numbering is the audit's so the walkthrough in the wave report lines up.
+----------------------------------------------------------------------
+gate("W5-RELEASE  the assertable release-gate rows")
+do
+    local toc = readFile(P(TOC_FILE)) or ""
+
+    -- #12: toc ## Version matches the tag the owner will cut.
+    local ver = toc:match("##%s*Version:%s*([%d%.]+)")
+    eq(ver, "2.0.0", "#12 the toc ## Version is 2.0.0")
+
+    -- #1: every SavedVariables global from the previous toc is still declared.
+    -- Undeclared = deleted at next logout, and this addon has exactly one.
+    local svs = {}
+    for s in toc:gmatch("##%s*SavedVariables:%s*([^\r\n]+)") do
+        for name in s:gmatch("[%w_]+") do svs[name] = true end
+    end
+    ck(svs["DaseekiRaidMechanicsDB"],
+       "#1 DaseekiRaidMechanicsDB is still declared (1.x's only SV global)")
+
+    -- #11: folder, SV global, project id and hub registration id unchanged.
+    ck(toc:match("X%-Curse%-Project%-ID:%s*1592413") ~= nil,
+       "#11 X-Curse-Project-ID is unchanged (1592413)")
+    do
+        local opts = readFile(P("options.lua")) or ""
+        ck(opts:find('id%s*=%s*"raidmechanics"') ~= nil,
+           "#11 the hub registration id is still \"raidmechanics\"")
+    end
+
+    -- #10: previous slash commands still resolve. Every 1.x verb, asserted present
+    -- in the dispatcher — a renamed command is a broken macro in someone's UI.
+    do
+        local sl = readFile(P("slash.lua")) or ""
+        ck(sl:find('SLASH_DASEEKIRM1 = "/drm"', 1, true) ~= nil, "#10 /drm still registered")
+        ck(sl:find('SLASH_DASEEKIRM2 = "/raidmech"', 1, true) ~= nil, "#10 /raidmech still registered")
+        for _, verb in ipairs({ "options", "config", "unlock", "test", "lock", "debug",
+                               "debugonly", "log", "savelog", "clearlog", "clearsessions",
+                               "pull", "stats", "enable", "disable" }) do
+            ck(sl:find('"' .. verb .. '"', 1, true) ~= nil,
+               ("#10 the 1.x verb %q still resolves"):format(verb))
+        end
+    end
+
+    -- #3: defaults are ADDITIVE against 1.x, and every seed loop is nil-guarded.
+    -- The 1.x default set, verbatim — a REMOVED default silently changes behaviour
+    -- for an existing user whose db has no override for it.
+    do
+        _G.DaseekiRaidMechanicsDB = {}
+        local saved = Addon.db
+        Addon:Init()
+        local s = Addon.db.settings
+        for _, k in ipairs({ "enabled", "locked", "soundEnabled", "barTexture", "barWidth",
+                             "barHeight", "autoDebug", "deathSound", "deathSoundKey",
+                             "debugOnly" }) do
+            ck(s[k] ~= nil, ("#3 the 1.x default %q still seeds"):format(k))
+        end
+        Addon.db = saved
+    end
+
+    -- #7: no version gate wipes user data. The audit's NW-5 finding was that
+    -- Raid-Mechanics core.lua:122-124 emptied db.mechanics on a DB_VERSION bump.
+    do
+        local core = readFile(P("core.lua")) or ""
+        ck(core:find("Addon.MIGRATIONS", 1, true) ~= nil,
+           "#7 NW-5: the destructive DB_VERSION gate is a MIGRATIONS chain")
+        ck(core:find("db.mechanics = {}", 1, true) == nil,
+           "…and nothing in core.lua empties db.mechanics")
+    end
+
+    -- #13/#14: cross-addon calls degrade with a message, never a Lua error, and the
+    -- wire hard-drops a version mismatch rather than mis-decoding it.
+    do
+        local opts = readFile(P("options.lua")) or ""
+        ck(opts:find("requires Daseeki Core", 1, true) ~= nil,
+           "#13 a too-old Daseeki Core produces a message, not an error")
+        ck(Sync.TRANSPORT ~= nil and Sync.SUB ~= nil,
+           "#14 the wire carries a transport version and per-sub protocol numbers")
+    end
+
+    -- #15: coordinated-reload requirements stated in the changelog.
+    do
+        local cl = readFile(P("CHANGELOG.md")) or ""
+        ck(cl:find("^# Changelog") ~= nil or cl:find("# Changelog", 1, true) == 1,
+           "the changelog is well-formed")
+        ck(cl:find("## 2.0.0", 1, true) ~= nil, "…and carries a public 2.0.0 block")
+        ck(cl:find("Internal build history", 1, true) ~= nil,
+           "…with the wave entries demoted to internal history")
+        ck(cl:lower():find("everyone in the raid should be on 2.0.0", 1, true) ~= nil,
+           "#15 the mixed-version expectation is stated for the user")
+        ck(cl:lower():find("your settings are kept", 1, true) ~= nil,
+           "…and so is the settings-continuity promise")
+    end
+
+    -- Packaging: the harness and dev trees never ship.
+    do
+        local pkg = readFile(P(".pkgmeta")) or ""
+        for _, ign in ipairs({ "harness", "dev", "README.md", "CHANGELOG.md", "DESCRIPTION.md" }) do
+            ck(pkg:find("- " .. ign, 1, true) ~= nil,
+               (".pkgmeta ignores %s"):format(ign))
+        end
+        ck(exists(P("DESCRIPTION.md")), "DESCRIPTION.md exists for the project page")
+        local desc = readFile(P("DESCRIPTION.md")) or ""
+        ck(desc:find("1592413", 1, true) ~= nil, "…and names the project id from the toc")
+        ck(desc:find("Last synced: never", 1, true) ~= nil,
+           "…and records that this addon has never been publicly released")
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE W5-DBFIX — the settings-migration machinery against a fixture of the
+-- OWNER'S ACTUAL SavedVariables shape.
+--
+-- ROLLOUT_CONTINUITY_AUDIT #8: "tested against a real WTF copy incl. empty-source
+-- and already-migrated cases." There are no public users, so the upgrade experience
+-- that matters is exactly one: Drew's own DB, which has been accumulating overrides,
+-- kill stats and debug sessions since 1.0.0. It must come through 2.0.0 untouched.
+----------------------------------------------------------------------
+gate("W5-DBFIX  the owner's SavedVariables shape survives the upgrade")
+do
+    local saved = Addon.db
+
+    -- Safe nested read. THE WHOLE SUBJECT of this gate is data going missing, so
+    -- every assertion below is reading a path that the defect under test DELETES —
+    -- and a raw `d.mechanics.foo.masterEnabled` would abort the run on exactly the
+    -- failure it exists to report, taking the remaining gates with it. `at` turns a
+    -- missing path into a failed assertion, which is the useful outcome. (Found by
+    -- mutation-testing the NW-5 regression: restoring the destructive DB_VERSION
+    -- wipe crashed this gate instead of reddening it.)
+    local function at(t, ...)
+        for _, k in ipairs({ ... }) do
+            if type(t) ~= "table" then return nil end
+            t = t[k]
+        end
+        return t
+    end
+
+    -- A faithful fixture of a v3 DB as 1.3.0 leaves it: settings, per-mechanic
+    -- overrides on 1.x keys (including a placement tuple and an anchor pseudo-key),
+    -- module config, kill statistics, and both debug-log tables.
+    local function ownerDB()
+        return {
+            dbVersion = 3,
+            settings = {
+                enabled = true, locked = true, soundEnabled = true,
+                barTexture = "Interface\\TargetingFrame\\UI-StatusBar",
+                barWidth = 240, barHeight = 18,
+                autoDebug = true, deathSound = true, deathSoundKey = "pk:DBM-Core/AirHorn.ogg",
+                debugOnly = false,
+                specialWarnings = true, countdownVoice = true,
+                voiceCountKey = "pk:DBM-Core/Alexander",
+                mirrorDBMPull = false,
+            },
+            mechanics = {
+                ["naxxramas:patchwerk:hateful"] = { masterEnabled = false },
+                ["naxxramas:loatheb:sporecd"]   = { enabled = true, sound = "raidwarning", scale = 1.2 },
+                ["naxxramas:thaddius:polarity"] = { masterEnabled = true, style = "text", fontSize = 40 },
+                ["aq40:skeram:earthshock"]      = { masterEnabled = false },
+                ["bwl:vaelastrasz:burningadrenaline"] = {
+                    pos = { point = "CENTER", relPoint = "CENTER", x = -120, y = 240 } },
+                ["#warn.special"] = { pos = { point = "TOP", relPoint = "TOP", x = 0, y = -260 } },
+            },
+            modules = {
+                fourhorsemen_rotation = { enabled = true, myGroup = 2 },
+                gothik_waves = { enabled = false },
+            },
+            stats = {
+                naxxramas = { patchwerk = { kills = 14, wipes = 3, bestTime = 172.4 },
+                              loatheb   = { kills = 6,  wipes = 11, bestTime = 301.2 } },
+                aq40      = { skeram    = { kills = 22, wipes = 1 } },
+            },
+            debugLive = { "[   12.4] CAST 28308 Hateful Strike" },
+            debugSessions = { { raidId = "naxxramas", raidName = "Naxxramas",
+                                savedAt = "2026-08-01 21:40", reason = "left raid",
+                                lines = { "[    0.0] ENGAGE naxxramas:patchwerk" } } },
+        }
+    end
+
+    -- CASE 1 — the already-migrated case. Nothing may change.
+    do
+        local db = ownerDB()
+        _G.DaseekiRaidMechanicsDB = db
+        Addon:Init()
+        local d = Addon.db
+        eq(d.dbVersion, 3, "the owner's v3 DB stays at v3 (no gratuitous bump)")
+        eq(d.settings.barWidth, 240, "…a non-default bar width is preserved")
+        eq(d.settings.deathSoundKey, "pk:DBM-Core/AirHorn.ogg", "…a bundled-pack sound key survives")
+        eq(d.settings.mirrorDBMPull, false, "…an explicitly-false setting is not re-defaulted to true")
+
+        eq(at(d, "mechanics", "naxxramas:patchwerk:hateful", "masterEnabled"), false,
+           "…a mechanic switched OFF in 1.x is still off")
+        eq(at(d, "mechanics", "naxxramas:loatheb:sporecd", "scale"), 1.2,
+           "…a per-mechanic scale survives")
+        eq(at(d, "mechanics", "naxxramas:thaddius:polarity", "fontSize"), 40,
+           "…a per-mechanic font size survives")
+        eq(at(d, "mechanics", "aq40:skeram:earthshock", "masterEnabled"), false,
+           "…and a row the REBUILD re-created keeps its 1.x override (same key)")
+        eq(at(d, "mechanics", "bwl:vaelastrasz:burningadrenaline", "pos", "y"), 240,
+           "…an alert placement survives")
+        eq(at(d, "mechanics", "#warn.special", "pos", "y"), -260,
+           "…and so does a HUD anchor placement")
+
+        eq(at(d, "modules", "fourhorsemen_rotation", "myGroup"), 2,
+           "…a special module's own config survives")
+        eq(at(d, "modules", "gothik_waves", "enabled"), false, "…including a module switched off")
+        eq(at(d, "stats", "naxxramas", "patchwerk", "kills"), 14, "…kill statistics are untouched")
+        near(at(d, "stats", "naxxramas", "loatheb", "bestTime"), 301.2, 0.001,
+           "…including best times")
+        eq(#(d.debugLive or {}), 1, "…the live debug log is untouched")
+        eq(#(d.debugSessions or {}), 1, "…and so are the saved debug sessions")
+
+        -- The 2.0 surfaces ADD their keys lazily, without disturbing anything.
+        Addon.Bars.Settings(); Addon.Warnings.Settings(); Tele.Ring(true)
+        eq(d.settings.barWidth, 240, "…and the new 2.0 setting tables do not clobber 1.x keys")
+        ck(type(d.settings.bars) == "table", "…db.settings.bars is added lazily")
+        ck(type(d.settings.warnings) == "table", "…db.settings.warnings is added lazily")
+        ck(type(d.engineLog) == "table", "…and the telemetry ring is ONE additive top-level key")
+        eq(d.dbVersion, 3, "…with no DB_VERSION bump for any of it")
+    end
+
+    -- CASE 2 — the empty-source case (a brand-new install).
+    do
+        _G.DaseekiRaidMechanicsDB = {}
+        Addon:Init()
+        eq(Addon.db.dbVersion, 3, "an empty DB is STAMPED at the current version")
+        ck(type(Addon.db.mechanics) == "table" and next(Addon.db.mechanics) == nil,
+           "…with no overrides invented")
+        eq(Addon.db.settings.enabled, true, "…and the shipped defaults seeded")
+    end
+
+    -- CASE 3 — an UNKNOWN (absent) version. Stamp, convert nothing, wipe nothing.
+    do
+        local db = ownerDB()
+        db.dbVersion = nil
+        _G.DaseekiRaidMechanicsDB = db
+        Addon:Init()
+        eq(Addon.db.dbVersion, 3, "an unversioned DB is stamped, not wiped")
+        eq(at(Addon.db, "mechanics", "naxxramas:patchwerk:hateful", "masterEnabled"), false,
+           "…and every override survives the stamping")
+        eq(at(Addon.db, "stats", "aq40", "skeram", "kills"), 22, "…as do the statistics")
+    end
+
+    -- CASE 4 — a NEWER DB than this build. Never downgrade, never touch.
+    do
+        local db = ownerDB()
+        db.dbVersion = 99
+        _G.DaseekiRaidMechanicsDB = db
+        Addon:Init()
+        eq(Addon.db.dbVersion, 99, "a DB from a NEWER build is left exactly as-is")
+        eq(at(Addon.db, "mechanics", "naxxramas:loatheb:sporecd", "scale"), 1.2,
+           "…and its overrides are not rewritten by this build")
+    end
+
+    -- CASE 5 — an older version with a MISSING migration step. Stop and report;
+    -- never empty db.mechanics to "recover".
+    do
+        local db = ownerDB()
+        db.dbVersion = 1
+        _G.DaseekiRaidMechanicsDB = db
+        local prev = Addon.MIGRATIONS
+        Addon.MIGRATIONS = {}
+        Addon:Init()
+        eq(Addon.db.dbVersion, 1, "a gap in the migration chain STOPS rather than guessing")
+        eq(at(Addon.db, "mechanics", "naxxramas:patchwerk:hateful", "masterEnabled"), false,
+           "…and leaves the user's data completely intact (NW-5's whole point)")
+        Addon.MIGRATIONS = prev
+    end
+
+    _G.DaseekiRaidMechanicsDB = {}
+    Addon:Init()
+    Addon.db = saved
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c, 4b, 4a)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -7392,7 +8310,13 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "BWLZG  §4/§5 encounter data: registration, keys, the options tree",
                      "BWLZG-DRIVE  §4/§5 per-encounter behaviour through the real engine",
                      "MCONYWB  §2/§3/§9 encounter data: registration, keys, the options tree",
-                     "MCONYWB-DRIVE  §2/§3/§9 per-encounter behaviour through the real engine" }) do
+                     "MCONYWB-DRIVE  §2/§3/§9 per-encounter behaviour through the real engine",
+                     "W5-SCAFFOLD  core_boot.lua is a composition root, not scaffolding",
+                     "W5-TREE  options projection: 8 raids, ship-off defaults, a flip reaches the row",
+                     "W5-BRIEF-G  determinism + role re-derivation (RM-1, RMS-1, RMS-2, RME-1, RML-1)",
+                     "W5-TELEM  timer-telemetry viewer: the ring is readable in-game",
+                     "W5-RELEASE  the assertable release-gate rows",
+                     "W5-DBFIX  the owner's SavedVariables shape survives the upgrade" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end
