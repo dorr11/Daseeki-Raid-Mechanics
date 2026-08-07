@@ -2063,15 +2063,17 @@ do  -- THE CHROMAGGUS CONTRACT: mid-fight recolour + rename on a RUNNING bar
 end
 do  -- §11.4 the pull timer, which wave 1 re-seated as a real timer with no consumer
     resetW2()
-    local secs = Addon:StartPullTimer(10, "harness")
-    eq(secs, 10, "StartPullTimer starts a real engine timer")
+    -- NOTE: what the pull timer does with an out-of-range duration is §11.4's rule
+    -- and NOT this surface's to assert — the sync wave owns StartPullTimer. All this
+    -- gate cares about is that a `pull`-category timer DRAWS, which is the wave-2 gap.
+    Addon:StartPullTimer(10, "harness")
     local prow
     for _, r in pairs(BM.rows) do if r.category == "pull" then prow = r end end
-    ck(prow ~= nil, "…which the bar surface now RENDERS (it was invisible in wave 1)")
+    ck(prow ~= nil, "a pull timer is RENDERED by the bar surface (it was invisible in wave 1)")
     eq(prow.class, "pull", "…in the pull colour class")
     eq(BM.AnchorOf(prow, CLOCK), "large", "…on the large anchor, where a countdown belongs")
-    eq(Addon:StartPullTimer(1), 3, "§11.4: a sub-3 s pull timer is clamped to 3 s")
-    Addon:CancelPullTimer()
+    ck(BM.DisplayText(prow) ~= "", "…with text")
+    Addon:CancelPullTimer("harness")
     local still
     for _, r in pairs(BM.rows) do if r.category == "pull" then still = r end end
     eq(still, nil, "cancelling the pull timer removes its bar")

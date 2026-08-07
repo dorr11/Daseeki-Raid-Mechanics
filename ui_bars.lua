@@ -882,6 +882,8 @@ function Bars.Demo(seconds)
                         text = "Meteor", color = 3, count = true })
     cnt:Start(seconds * 0.8, 3)
     made = made + 1
+    -- A NON-"manual" source on purpose: the pull timer is a broadcast surface, and a
+    -- placement pass must never put a countdown on forty other people's screens.
     Addon:StartPullTimer(10, "demo")
     made = made + 1
     return made
@@ -894,7 +896,7 @@ function Bars.StopDemo()
     for id, obj in pairs(t.objects) do
         if tostring(id):sub(1, 5) == "demo:" then n = n + obj:Stop() end
     end
-    Addon:CancelPullTimer()
+    Addon:CancelPullTimer("demo")
     return n
 end
 
