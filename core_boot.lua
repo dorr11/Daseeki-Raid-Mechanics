@@ -181,8 +181,12 @@ end
 --  PULL TIMER — re-seated on the new engine
 -- ══════════════════════════════════════════════════════════════════════════════
 -- ENGINE SPEC §11.4: refuses durations between 0 and 3 s exclusive; 0 cancels;
--- countdown depth defaults to 5. It is now a real engine timer of the `pull`
--- category, so W2 renders it with every other bar instead of owning a bespoke frame.
+-- countdown depth defaults to 5. It is a real engine timer of the `pull` category.
+--
+-- W2 MADE IT VISIBLE. Wave 1 re-seated it as a real timer with no consumer, so the
+-- bar existed in the model and drew nothing. ui_bars.lua now renders category
+-- "pull" like every other bar — in the always-large class (Model.ALWAYS_LARGE), in
+-- the pull colour, with the §4.4 spoken count riding the engine's own scheduler.
 local pullTimer
 
 local function ensurePullTimer()
@@ -284,6 +288,16 @@ function Addon:InitEngine()
     if Addon.engineFrame then return Addon.engineFrame end
 
     Life:Boot()
+
+    -- WAVE 2 SERVICES + PRESENTATION. Each one registers against the dispatch seam
+    -- and owns nothing the engine already decided. Era goes first because it
+    -- installs the role/class resolvers core_api's ship-off defaults call, and a
+    -- row evaluated before they exist would default differently.
+    if Addon.Era      then Addon.Era.Init()      end   -- svc_era.lua
+    if Addon.Scan     then Addon.Scan.Init()     end   -- svc_scan.lua
+    if Addon.Bars     then Addon.Bars.Init()     end   -- ui_bars.lua
+    if Addon.Warnings then Addon.Warnings.Init() end   -- ui_warnings.lua
+    if Addon.Callbacks and Addon.Callbacks.Init then Addon.Callbacks.Init() end  -- public_api.lua
 
     if type(_G.CreateFrame) ~= "function" then
         Addon.engineFrame = false            -- headless: the harness drives Life directly

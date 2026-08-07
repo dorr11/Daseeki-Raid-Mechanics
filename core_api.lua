@@ -131,23 +131,24 @@ function Addon:FireEngineEvent(event, ...)
     return fired
 end
 
--- ── Minimal alert dispatch seam (W1 scope: "drivable end-to-end headless") ─────
--- W2 replaces the fallbacks with the real HUD. Until then the engine still emits
--- a complete, assertable stream of warnings, and in-game it opportunistically
--- forwards to whatever alerts.lua already exposes.
+-- ── Alert dispatch seam ───────────────────────────────────────────────────────
+-- RETIRED IN W2. This carried a wave-1 shim: an opportunistic pcall forward into
+-- whatever alerts.lua happened to expose, so the engine had *some* visible output
+-- before a real warning surface existed. ui_warnings.lua is that surface now — it
+-- consumes WARN_ANNOUNCE / WARN_SPECIAL and renders the two tiers properly — so
+-- the fallback is gone and these are pure dispatch again.
+--
+-- alerts.lua's Addon:ShowWarning / Addon:ShowSpecialWarning are UNTOUCHED and still
+-- shipping: the five Naxx special modules call them directly with their own anchor
+-- keys (thaddius.lua, mod_gothik_waves.lua), and the design doc's verdict on the
+-- alert HUD is KEEP + EXTEND. W4d re-seats those callers onto engine rows.
 function Addon:EmitAnnounce(encId, row, text)
     Addon:FireEngineEvent("WARN_ANNOUNCE", encId, row, text)
-    if not Addon._suppressLegacyAlerts and type(Addon.ShowWarning) == "function" then
-        pcall(Addon.ShowWarning, Addon, text, row and row.color)
-    end
     return text
 end
 
 function Addon:EmitSpecial(encId, row, text)
     Addon:FireEngineEvent("WARN_SPECIAL", encId, row, text)
-    if not Addon._suppressLegacyAlerts and type(Addon.ShowSpecialWarning) == "function" then
-        pcall(Addon.ShowSpecialWarning, Addon, text, row and row.sound)
-    end
     return text
 end
 
@@ -499,9 +500,16 @@ function Addon:GetEncounters() return Addon.encounters end
 function API.OptionKey(encId, rowKey) return tostring(encId) .. ":" .. tostring(rowKey) end
 
 -- Ship-off defaults + role gate + dynamic class default (ENCOUNTERS SPEC §1.4).
--- The engine owns the DEFAULT decision; W2 supplies the live role/class resolvers.
-Addon.RoleResolver  = nil   -- function(gateString) -> boolean
-Addon.ClassResolver = nil   -- function() -> "WARLOCK" etc.
+-- The engine owns the DEFAULT decision; the resolvers answer "is this player a
+-- tank / can this player dispel a curse / what class is this" on a client with no
+-- specialization API.
+--
+-- W2 FILLED THESE. They were nil stubs in wave 1; svc_era.lua's Era.Init installs
+-- Era.ResolveRole and Era.Class over them (ENGINE SPEC §5.4 tank/healer derivation,
+-- §10.23 talent-tab spec). They remain overridable — the harness swaps in fixtures
+-- to drive role-gated rows deterministically.
+Addon.RoleResolver  = nil   -- function(gateString) -> boolean   (svc_era.lua)
+Addon.ClassResolver = nil   -- function() -> "WARLOCK" etc.      (svc_era.lua)
 
 function API.RowDefault(row)
     if row.default ~= nil then return row.default and true or false end

@@ -27,6 +27,63 @@ Addon.Theme = {
     subText   = { 0.60, 0.60, 0.66, 1.00 },
     accent    = { 0.35, 0.55, 0.95, 1.00 },
     warnText  = { 1.00, 0.90, 0.30, 1.00 },   -- caution/counter amber (was inline in alerts.lua)
+
+    -- ── 2.0 wave 2: timer-bar + warning-tier tokens ───────────────────────────
+    -- DREW_UI_STYLE standing rule: "Tokens only — any hardcoded colour/font is a
+    -- defect. New visual behaviour = new token." The bar surface and the two
+    -- warning tiers are new visual behaviour, so every colour they use is a token
+    -- declared here and resolved through Addon:BarColor / Addon:WarnColor.
+    barTrack    = { 0.06, 0.06, 0.08, 0.88 },   -- bar track behind the fill
+    barVariance = { 1.00, 1.00, 1.00, 0.22 },   -- §4.2 variance-window overlay
+    barSpark    = { 1.00, 1.00, 1.00, 0.70 },
+    barFlash    = { 1.00, 1.00, 1.00, 0.35 },   -- §4.7 flash under 7.75 s
+    barText     = { 0.95, 0.95, 0.98, 1.00 },
+    barCount    = { 1.00, 0.90, 0.30, 1.00 },
+}
+
+-- ENGINE SPEC §4.5 colour indices: 1 add, 2 AoE, 3 targeted, 4 interrupt, 5 role,
+-- 6 stage, 7 user — plus the three special categories (break / pull / berserk) that
+-- §4.5 lists beside the four simplified ones. §4.7: "colour interpolates linearly
+-- from a per-type START colour to a per-type END colour across the bar's life",
+-- so each class is a PAIR, not a colour.
+--
+-- `token` names the DaseekiUI theme token this class defers to when Daseeki-Core is
+-- present (so an interrupt bar is the suite's danger red, not a second opinion about
+-- what red means). Classes with no honest suite equivalent stay literal in every
+-- configuration — that is the same rule Addon:ThemeColor already follows.
+Addon.Theme.barClass = {
+    [1] = { label = "Adds",      from = { 0.20, 0.66, 0.45 }, to = { 0.11, 0.38, 0.26 } },
+    [2] = { label = "AoE",       from = { 0.96, 0.62, 0.20 }, to = { 0.58, 0.35, 0.10 }, token = "warn" },
+    [3] = { label = "Targeted",  from = { 0.72, 0.38, 0.88 }, to = { 0.42, 0.21, 0.54 } },
+    [4] = { label = "Interrupt", from = { 0.90, 0.28, 0.28 }, to = { 0.53, 0.15, 0.15 }, token = "danger" },
+    [5] = { label = "Role",      from = { 0.30, 0.58, 0.95 }, to = { 0.17, 0.33, 0.57 }, token = "accent" },
+    [6] = { label = "Stage",     from = { 0.25, 0.78, 0.85 }, to = { 0.13, 0.44, 0.50 } },
+    [7] = { label = "User",      from = { 0.73, 0.75, 0.81 }, to = { 0.41, 0.43, 0.49 }, token = "muted" },
+    pull    = { label = "Pull",    from = { 0.86, 0.26, 0.31 }, to = { 0.52, 0.13, 0.17 }, token = "brand" },
+    ["break"] = { label = "Break", from = { 0.40, 0.72, 0.42 }, to = { 0.22, 0.42, 0.24 } },
+    berserk = { label = "Berserk", from = { 1.00, 0.42, 0.10 }, to = { 0.60, 0.21, 0.05 } },
+}
+
+-- ENGINE SPEC §5.1: "Four user-configurable colour slots (1 turquoise / 2 yellow /
+-- 3 orange / 4 red) map to announce priority", and tier 3's "default colour a
+-- yellow-orange".
+Addon.Theme.warnTier = {
+    [1] = { 0.30, 0.85, 0.82 },   -- turquoise
+    [2] = { 1.00, 0.90, 0.30 },   -- yellow
+    [3] = { 1.00, 0.62, 0.20 },   -- orange
+    [4] = { 0.94, 0.30, 0.30 },   -- red
+}
+Addon.Theme.specialText = { 1.00, 0.72, 0.18 }   -- §5.1 tier 3 default yellow-orange
+
+-- Per special-warning SOUND TIER (§5.1): screen-flash colour. The flash duration,
+-- alpha and repeat count live with the tier defaults in ui_warnings.lua; only the
+-- COLOURS are tokens, because only the colours are a palette decision.
+Addon.Theme.flashTier = {
+    [1] = { 1.00, 0.85, 0.30 },   -- personal
+    [2] = { 0.35, 0.70, 1.00 },   -- everyone
+    [3] = { 1.00, 0.35, 0.25 },   -- very important
+    [4] = { 1.00, 0.20, 0.20 },   -- run away
+    [5] = { 0.80, 0.45, 1.00 },   -- your name is in the user's note
 }
 
 -- Theme-field name -> DaseekiUI token. Only the fields that MEAN the same thing are
@@ -54,6 +111,46 @@ function Addon:ThemeColor(key)
         return r, g, b, lit[4] or 1
     end
     return lit[1], lit[2], lit[3], lit[4] or 1
+end
+
+-- ── Bar / warning colour resolvers (wave 2) ───────────────────────────────────
+-- A colour CLASS resolved at a point in the bar's life. `t` is 0 at the start and 1
+-- at the end, so this is ENGINE SPEC §4.7's linear interpolation from the class's
+-- start colour to its end colour. A class that names a suite token takes the token
+-- for its START colour (so the suite theme is visible in the class that means the
+-- same thing) and keeps its own literal END colour, because the darkening ramp is
+-- this HUD's legibility decision, not the palette's.
+function Addon:BarColor(class, t)
+    local c = Addon.Theme.barClass[class] or Addon.Theme.barClass[7]
+    t = t or 0
+    if t < 0 then t = 0 elseif t > 1 then t = 1 end
+    local fr, fg, fb = c.from[1], c.from[2], c.from[3]
+    local UI = _G.DaseekiUI
+    if c.token and UI and UI.Color then
+        local r, g, b = UI.Color(c.token)
+        if r then fr, fg, fb = r, g, b end
+    end
+    local tr, tg, tb = c.to[1], c.to[2], c.to[3]
+    return fr + (tr - fr) * t, fg + (tg - fg) * t, fb + (tb - fb) * t
+end
+
+-- Desaturate toward the bar's own luminance by `k` (0 = untouched, 1 = grey).
+-- §4.7: "non-enlarged bars beyond the enlarge threshold are desaturated by a
+-- configurable factor."
+function Addon:Desaturate(r, g, b, k)
+    k = k or 0
+    local lum = 0.299 * r + 0.587 * g + 0.114 * b
+    return r + (lum - r) * k, g + (lum - g) * k, b + (lum - b) * k
+end
+
+function Addon:WarnColor(slot)
+    local c = Addon.Theme.warnTier[slot] or Addon.Theme.warnTier[2]
+    return c[1], c[2], c[3]
+end
+
+function Addon:FlashColor(tier)
+    local c = Addon.Theme.flashTier[tier] or Addon.Theme.flashTier[1]
+    return c[1], c[2], c[3]
 end
 
 -- Apply a shared DaseekiUI font object (the user's picked face, at the picked scale)
@@ -88,6 +185,79 @@ function Addon:ReFaceKeepingSize(fs)
     if not size then return false end
     fs:SetFont(path, size, flags or "")
     return true
+end
+
+-- ── HUD anchors (wave 2) ──────────────────────────────────────────────────────
+-- The bar lists and the two warning tiers each hang off ONE anchor frame. The
+-- anchor is always present and always positioned (everything else points at it);
+-- unlocking simply DRESSES it — dark backdrop, border, and a LABEL saying which
+-- surface it is.
+--
+-- DREW_UI_STYLE principle 6, "every control is labeled": four unlabelled boxes on
+-- screen is exactly the defect that reads as unfinished. Standing rule "every frame
+-- sets BOTH dimensions at creation" applies here too. Positions ride the SAME saved
+-- machinery alerts.lua already uses (db.mechanics[key].pos via SetMechanicPos), so
+-- no new schema and no new migration.
+Addon._hudAnchors = {}
+
+function Addon:HudAnchor(key, label, defaultPos, w, h)
+    local a = Addon._hudAnchors[key]
+    if a then return a end
+    if type(_G.CreateFrame) ~= "function" then return nil end
+    a = _G.CreateFrame("Frame", nil, _G.UIParent, "BackdropTemplate")
+    a:SetSize(w or 220, h or 22)                       -- BOTH dimensions at creation
+    local pos = Addon:GetAnchorPos(key, defaultPos)
+    a:SetPoint(pos.point or "CENTER", _G.UIParent, pos.relPoint or "CENTER",
+               pos.x or 0, pos.y or 0)
+    a.label = a:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    a.label:SetPoint("CENTER")                         -- principle 3: centred in its panel
+    a.label:SetJustifyH("CENTER")
+    Addon:TrySetFont(a.label, "microLabel")
+    Addon:StyleFont(a.label, "subText")
+    a.label:SetText(label or key)
+    a:SetMovable(true)
+    a:SetScript("OnMouseDown", function(s) s:StartMoving() end)
+    a:SetScript("OnMouseUp", function(s)
+        s:StopMovingOrSizing()
+        local p, _, rp, x, y = s:GetPoint()
+        Addon:SetMechanicPos(key, p, rp, x, y)
+    end)
+    Addon._hudAnchors[key] = a
+    Addon:SetAnchorDressed(a, false)
+    return a
+end
+
+function Addon:SetAnchorDressed(a, on)
+    if not a then return false end
+    if on then
+        Addon:ApplyDarkBackdrop(a)
+        a:EnableMouse(true)
+        a:SetFrameStrata("FULLSCREEN_DIALOG")
+        a.label:Show()
+        a:Show()
+    else
+        if a.SetBackdrop then a:SetBackdrop(nil) end
+        a:EnableMouse(false)                            -- never eat a click while locked
+        a:SetFrameStrata("BACKGROUND")
+        a.label:Hide()
+    end
+    return true
+end
+
+function Addon:ShowHudAnchors()
+    local n = 0
+    for _, a in pairs(Addon._hudAnchors) do
+        if Addon:SetAnchorDressed(a, true) then n = n + 1 end
+    end
+    return n
+end
+
+function Addon:HideHudAnchors()
+    local n = 0
+    for _, a in pairs(Addon._hudAnchors) do
+        if Addon:SetAnchorDressed(a, false) then n = n + 1 end
+    end
+    return n
 end
 
 -- Flat dark backdrop + 1px border on a BackdropTemplate frame.

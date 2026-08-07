@@ -26,6 +26,7 @@ SlashCmdList["DASEEKIRM"] = function(msg)
 
     elseif msg == "lock" then
         if Addon.LockAll then Addon:LockAll() end
+        Addon:HideHudAnchors()
         p("Frames " .. W("danger", "locked") .. ".")
 
     elseif msg == "debug" then
@@ -71,6 +72,33 @@ SlashCmdList["DASEEKIRM"] = function(msg)
             Addon:StartPullTimer(tonumber(arg) or 10, "manual")
         end
 
+    -- ENGINE SPEC §11.7 demo mode, and the DREW_UI_STYLE rule that every visual
+    -- system we build ships a debug affordance: "/drm demo" renders the whole
+    -- wave-2 surface out of combat — one bar of every colour class, a variance bar,
+    -- a count bar, a pull countdown, and one line of every warning tier — so a
+    -- placement pass never needs a live boss.
+    elseif msg == "demo" then
+        if Addon.Bars then Addon.Bars.EnsureAnchors() end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        Addon:ShowHudAnchors()
+        local bars = Addon.Bars and Addon.Bars.Demo() or 0
+        local warns = Addon.Warnings and Addon.Warnings.Demo() or 0
+        p(("Demo: %d bars, %d warnings; the four HUD anchors are labelled and draggable. Use %s to clear.")
+            :format(bars, warns, W("text", "/drm demo off")))
+
+    elseif msg == "demo off" or msg == "demooff" then
+        local n = Addon.Bars and Addon.Bars.StopDemo() or 0
+        if Addon.Warnings then Addon.Warnings.Reset() end
+        Addon:HideHudAnchors()
+        p(("Demo cleared (%d bars stopped)."):format(n))
+
+    -- Just the anchors, no demo content: for nudging a placement mid-session.
+    elseif msg == "anchors" then
+        if Addon.Bars then Addon.Bars.EnsureAnchors() end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        p(("HUD anchors %s (%d shown). %s to put them away."):format(
+            W("ok", "unlocked"), Addon:ShowHudAnchors(), W("text", "/drm lock")))
+
     elseif msg == "stats" then
         local DS = _G.DaseekiSuite
         local text = Addon:BuildStatsText()
@@ -92,6 +120,6 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         p("Alerts " .. W("danger", "disabled") .. ".")
 
     else
-        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | stats | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
+        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | demo | demo off | anchors | stats | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
     end
 end

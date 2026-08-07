@@ -23,6 +23,17 @@ core_api.lua
 core_lifecycle.lua
 core_boot.lua
 
+# ── 2.0 presentation + engine services (wave 2) ────────────────────────────────
+# Services first, then presentation, then the public contract. svc_era installs the
+# role/class resolvers core_api's ship-off defaults call, so it precedes anything
+# that can evaluate a row. Every file here hangs off the wave-1 dispatch seam and
+# is loaded AFTER it.
+svc_era.lua
+svc_scan.lua
+ui_bars.lua
+ui_warnings.lua
+public_api.lua
+
 alerts.lua
 dbm_bridge.lua
 modules.lua
