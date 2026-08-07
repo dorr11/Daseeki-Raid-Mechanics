@@ -3,6 +3,9 @@ license-output: LICENSE
 ignore:
   - README.md
   - CHANGELOG.md
+  - DESCRIPTION.md
   - .github
+  - harness
+  - dev
 
 manual-changelog: CHANGELOG.md

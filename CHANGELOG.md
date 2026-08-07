@@ -1,6 +1,126 @@
 # Changelog
 
-## Unreleased — 2.0.0 rebuild, wave 4a (Molten Core + Onyxia + world bosses — internal)
+## 2.0.0
+
+**Raid Mechanics has been rebuilt from the ground up, and it now covers every raid in
+Classic Era — all eight zones, all 65 boss fights.**
+
+The old version knew three raids and watched for a fight starting in exactly one way.
+This one knows Molten Core, Onyxia's Lair, Blackwing Lair, Zul'Gurub, both Ahn'Qiraj
+raids, Naxxramas and all six world bosses, and it finds the pull five different ways so
+a fight that starts oddly still arms your timers.
+
+### What's new
+
+- **Every raid, every boss.** 65 encounters with their timers, warnings, phase changes
+  and enrages. Molten Core through Naxxramas, plus Azuregos, Lord Kazzak and the four
+  Dragons of Nightmare out in the world.
+- **Timer bars.** Countdown bars for every tracked ability, in two lists — a normal
+  stack and a larger one for the things that matter — with spell icons, colour by school,
+  and bars that recolour or rename themselves mid-fight when the fight demands it
+  (Chromaggus changes his breath every pull; the bar changes with him).
+- **Honest uncertainty.** Some abilities genuinely do not have a fixed cooldown. Instead
+  of inventing a number, those bars show the real WINDOW as a shaded band — "somewhere
+  between 26 and 29 seconds" — and the countdown voice speaks at the earliest end of it.
+  Where even a window would be dishonest, there is deliberately no bar at all.
+- **Warnings in tiers.** Ordinary announcements stack quietly; the things that kill you
+  get big centred text with a screen flash and a sound. Both are separately placeable and
+  separately silenceable.
+- **It knows what you are.** Tank-only, healer-only, "you can dispel this" and
+  class-specific alerts ship switched on for the people they are for and off for
+  everyone else — worked out from your talents, your stance or form, and your raid
+  assignment, and re-worked out when you respec or get promoted mid-raid.
+- **Raid sync.** Pull timers and break timers are shared with everyone else running
+  Raid Mechanics, and a kill or a wipe is confirmed by several people before it counts,
+  so one person's disconnect does not end the fight for the raid.
+- **Reload recovery.** Reload or disconnect mid-fight and your bars come back — the raid
+  tells your client what is still running, most-urgent first.
+- **DBM pull timers still work.** If someone in your raid pulls with DBM, you get the
+  countdown. Raid Mechanics listens to DBM but never transmits on DBM's channel.
+- **Self-auditing timers.** When an ability comes back sooner than the addon expected,
+  that observation is written down instead of being announced to your raid. `/drm
+  telemetry` shows which timers have been wrong and by how much — after a few raid
+  nights it is a list of exactly what needs correcting.
+- **The five Naxxramas specials are intact.** The Four Horsemen rotation caller and mark
+  tracker, the Gothik wave counter, the Loatheb healer rotation, the Razuvious understudy
+  tracker and the Thaddius polarity watcher all came across with their own config panels.
+- **Sound packs, made pickable.** The DBM and NovaWorldBuffs sound packs ship inside the
+  addon, so they work whether or not you have those addons installed, and anything
+  registered with LibSharedMedia is picked up too. Pick a default pack and the sound
+  picker opens filtered to it, instead of dropping you into a thousand-entry list.
+- **`/drm demo`** draws the whole display out of combat — one bar of every kind, one
+  line of every warning tier, and labelled draggable anchors — so you can place
+  everything without needing a boss.
+
+### If you already use Raid Mechanics
+
+**Your settings are kept.** Every mechanic toggle is stored under the same key it used
+before, so a mechanic you switched off is still switched off, a sound you chose is still
+chosen, and your alert placements are where you left them. Your kill and wipe statistics
+and your saved debug logs are untouched. The settings file is upgraded in place — nothing
+is ever wiped to make room for a new version.
+
+Three things to know:
+
+- **Timer values changed** where the rebuild's reference data disagreed with the old
+  numbers. Every disagreement was checked against real combat logs first and the more
+  reliable source won; the per-wave notes below record each one.
+- **Some alerts you never had now exist**, and a few of them ship switched ON because
+  they are load-bearing (a poison cloud when Kri dies; the Twin Emperors' heal). The
+  chatty ones — cleaves, thrashes, knockdowns — ship switched OFF, as before.
+- **Everyone in the raid should be on 2.0.0** for pull-timer sharing and kill
+  confirmation to work between you. Mixed versions degrade quietly rather than erroring,
+  and Raid Mechanics will never disable itself for being out of date.
+
+**Going back to 1.3.0 is not supported.** Your settings file is not damaged by the
+attempt — 2.0.0 stamps a version on it, and any older build that reads a file stamped
+newer than itself leaves it completely alone rather than converting or clearing it — but
+1.3.0 has no idea what the 2.0 settings mean, so it would run on its own defaults for
+everything the rebuild added. If you want to go back, keep a copy of your
+`DaseekiRaidMechanicsDB` saved-variables file first.
+
+### Also in 2.0.0
+
+- New options pages for the timer bars (size, spacing, growth direction, sort order per
+  list), the warning tiers, sound packs and the timer telemetry.
+- `/drm telemetry`, `/drm telemetry raw` and `/drm telemetry clear`.
+- Requires Daseeki Core 2.0.0 or newer for the options window; everything else works
+  standalone.
+
+## Internal build history — the 2.0.0 rebuild, wave by wave
+
+These entries are the engineering record of how 2.0.0 was built. They were
+never shipped as releases; everything they describe is folded into the 2.0.0
+block above. Kept because each wave documents why a value is what it is.
+
+### 2.0.0 rebuild, wave 5 (polish, options, scaffold retirement, release prep — internal)
+- **The scaffolding is gone.** `core_boot.lua` existed through waves 1-4 as the place
+  homeless things lived after the old engine was demolished; it is now purely the
+  composition root, with nothing in it labelled transitional. The raid/boss/npc readers
+  and the 1.x `RegisterRaid` refusal moved into `core_api.lua` beside the projection
+  that fills them; the combat-log capture, auto-debug policy, Debug-Only indicator and
+  kill-statistics text moved into a new `core_diag.lua`.
+- **Five determinism findings from the suite async audit (Brief G) fixed.** A Main Tank
+  promotion mid-raid now re-derives the role instead of leaving a session latch frozen
+  until `/reload`, and re-resolves the role-gated alert defaults with it. The
+  timer-restore whispers a reloading raider receives are sorted most-urgent-first —
+  they pass through a rate bucket that TRUNCATES, so the old `pairs()` walk decided
+  which timers arrived at all, differently every attempt. State-variable restores are
+  sorted (the contract the code's own comment already claimed). Multi-creature boss
+  health reads walk the encounter's declared creature order. And a sweep that matches
+  several bosses at once picks its winner by rule — the mob you are targeting, else the
+  lowest creature id — instead of by table-iteration accident.
+- **The options surface consumes the whole projected tree**: eight raids in progression
+  order, every boss, every row as a toggle honouring its ship-off default, with the five
+  specials' own config panels intact.
+- **New options pages** for the timer bars, the warning tiers, sound packs and the timer
+  telemetry, plus a pack filter in the sound picker.
+- **§7.7 (Era world-buff yell broadcasting) was assessed and SKIPPED**, deliberately.
+  See RAID_MECHANICS_REBUILD_DESIGN.md for the reasoning: it needs a guild channel
+  scope, a BattleNet transport and six invented yell patterns that this addon has no
+  precedent for, and it duplicates a surface Daseeki Nexus already owns.
+
+### 2.0.0 rebuild, wave 4a (Molten Core + Onyxia + world bosses — internal)
 - **The last three zones are in, and that finishes every raid.** Molten Core's ten
   bosses plus a zone-wide trash module, Onyxia, and all six world bosses — Azuregos,
   Lord Kazzak and the four Dragons of Nightmare. With this wave the addon covers all
@@ -41,7 +161,7 @@
   that is genuinely all the reference has for them. Nothing has been invented to fill a
   gap.
 
-## Unreleased — 2.0.0 rebuild, Ahn'Qiraj data arbitrations (internal)
+### 2.0.0 rebuild, Ahn'Qiraj data arbitrations (internal)
 - **Two Temple bars are back that the rebuild had no numbers for.** Battleguard
   Sartura's Whirlwind now has a cooldown bar again: the reference data says nobody ever
   timed it, but our own logs did — 26 to 29 seconds — so the bar shows that range rather
@@ -66,7 +186,7 @@
   ticks, and Fankriss's ignores every other boss that shares the Mortal Wound spell — so
   none of them can be restarted by the wrong thing.
 
-## Unreleased — 2.0.0 rebuild, Naxxramas data arbitrations (internal)
+### 2.0.0 rebuild, Naxxramas data arbitrations (internal)
 - **Three Naxx alerts now fire on either spell id.** When the rebuild was cross-checked
   against our own Anniversary combat logs, three mechanics turned out to use a different
   spell id here than the reference data says. Rather than pick a side, all three now
@@ -87,7 +207,7 @@
   them on and it works. Two of the restored alerts (Gothik's Shadow Bolt and Thaddius's
   Ball Lightning) fire several times a second in the real fight, so they are throttled
   rather than repeated once per cast.
-## Unreleased — 2.0.0 rebuild, wave 4b (Blackwing Lair + Zul'Gurub — internal)
+### 2.0.0 rebuild, wave 4b (Blackwing Lair + Zul'Gurub — internal)
 - **Blackwing Lair and Zul'Gurub are in.** All eight BWL bosses plus a zone-wide trash
   module, and all ten Zul'Gurub bosses. Zul'Gurub had never shipped at all; Blackwing
   Lair had a handful of bars per boss and now carries the full set — every timer, every
@@ -152,7 +272,7 @@
   lacks entirely was carried over switched off, and everything is listed in the wave
   report.
 
-## Unreleased — 2.0.0 rebuild, wave 4c (Ruins + Temple of Ahn'Qiraj — internal)
+### 2.0.0 rebuild, wave 4c (Ruins + Temple of Ahn'Qiraj — internal)
 - **Both Ahn'Qiraj raids are in.** All six Ruins bosses and all nine Temple bosses now
   run on the new engine, plus a zone-wide trash module for each instance. The Ruins had
   never shipped at all; the Temple had a handful of bars per boss and now carries the
@@ -199,7 +319,7 @@
   then deleted; where the two disagreed the spec won, and the differences are listed in
   the wave report.
 
-## Unreleased — 2.0.0 rebuild, wave 4d (Naxxramas + the Naxx specials — internal)
+### 2.0.0 rebuild, wave 4d (Naxxramas + the Naxx specials — internal)
 - **Naxxramas is back, rebuilt.** All fifteen bosses and the zone-wide trash alerts now
   run on the new engine, rewritten from the behavioural spec rather than carried over:
   every timer, every warning, the audiences they default on for, the phase rules and
@@ -244,7 +364,7 @@
   `data_naxxramas.lua` was diffed against the spec first and then deleted; where the two
   disagreed the spec won, and the differences are listed in the wave report.
 
-## Unreleased — 2.0.0 rebuild, wave 3 (raid sync, recovery, interop — internal)
+### 2.0.0 rebuild, wave 3 (raid sync, recovery, interop — internal)
 - Raid Mechanics now talks to other people running it. Pull timers, break timers and
   "the fight has started / the fight is over" all travel across the raid on Daseeki's
   own channel, so one person starting a pull countdown starts everyone's.
@@ -277,7 +397,7 @@
   of silently stretched to 3, a pull is refused mid-fight and in battlegrounds, and
   engaging a boss cancels a running one). `/drm pull` is unchanged.
 
-## Unreleased — 2.0.0 rebuild, wave 1 (engine core, internal)
+### 2.0.0 rebuild, wave 1 (engine core, internal)
 - Raid Mechanics has a new engine underneath it. The old one could only watch for a
   boss the moment you personally entered combat with it, kept its timings on the
   game's own tick, and had no idea when a pull had actually gone wrong. The new one
@@ -314,7 +434,7 @@
   while it is regenerated in the new format. This build is an internal engine milestone,
   not a raid-night build.
 
-## Unreleased — 2.0.0 rebuild, wave 2 (timer bars, warnings, Era services)
+### 2.0.0 rebuild, wave 2 (timer bars, warnings, Era services)
 - Raid Mechanics has timer bars again, and this time they are part of the same
   styled HUD as the rest of the addon rather than a separate look. Bars carry the
   ability icon, its name, a running count where one applies, and the time left, on
@@ -361,7 +481,7 @@
   bar layout rule, both warning tiers, all three target scanners, the range ladder,
   the boss-health fallback and every interrupt/dispel gate.
 
-## Unreleased (internal)
+### Suite theming pass (internal)
 - The alert HUD now matches the rest of the Daseeki suite. Timer bars, the centre
   warnings, the Gothik / Four Horsemen / Loatheb / Mini-Boss widgets and the sound
   picker all had their own fixed dark palette and the game's stock font, so they were

@@ -1128,9 +1128,28 @@ function Sync.OnRequestTimers(sender, channel)
         -- Order matters (§9.1): CI, then VI per state variable, then TR per live bar.
         Sync.Whisper("CI", sender, rt.id, now - rt.pullTime); sent = sent + 1
         Sync.Whisper("VI", sender, rt.id, "__stage", tostring(rt.stage)); sent = sent + 1
-        for k, v in pairs(rt.states) do
-            Sync.Whisper("VI", sender, rt.id, k, tostring(v)); sent = sent + 1
+        -- AUDIT RMS-2 (Brief G, lesson Class 8). The comment two lines above already
+        -- CLAIMS an order contract — "CI, then VI per state variable, then TR per
+        -- live bar" — but only the inter-group order was enforced; the per-variable
+        -- walk was pairs(). A state whose meaning depends on a prior state could be
+        -- applied out of sequence on the joining client. Sorting the keys is what
+        -- the comment was always asserting.
+        local stateKeys = {}
+        for k in pairs(rt.states) do stateKeys[#stateKeys + 1] = k end
+        table.sort(stateKeys)
+        for _, k in ipairs(stateKeys) do
+            Sync.Whisper("VI", sender, rt.id, k, tostring(rt.states[k])); sent = sent + 1
         end
+        -- AUDIT RMS-1 (Brief G, lesson Class 8). Every whisper below enters
+        -- Sync.Enqueue behind a 10-deep bucket refilling at 5/s. On a bar-heavy pull
+        -- that bucket TRUNCATES — so the pairs() walk did not merely reorder the
+        -- restore, it decided WHICH TIMERS A JOINING RAIDER GETS AT ALL, differently
+        -- every attempt. Sorted MOST-URGENT-FIRST: deterministic, and the right
+        -- answer besides — a bar with 4 s left is worth more to someone who just
+        -- reloaded mid-pull than one with 90 s left, and if anything is going to be
+        -- dropped by the bucket it should be the far-off one. `barId` breaks ties so
+        -- two bars expiring on the same frame still order identically on every client.
+        local restore = {}
         for barId, bar in pairs(Tim().bars) do
             if bar.encId == rt.id then
                 local t = Tim().objects[bar.timerId]
@@ -1138,15 +1157,22 @@ function Sync.OnRequestTimers(sender, channel)
                 if t and t.kind ~= "learning" and (bar.total or 0) > 0 then
                     local left = Tim().Remaining(bar)
                     if left and left > 0 then
-                        local parts = Sync.Split(barId)
-                        local args = {}
-                        for j = 2, #parts do args[#args + 1] = parts[j] end
-                        Sync.Whisper("TR", sender, rt.id, bar.key, left, bar.total,
-                                     Sync.PackArgs(args), bar.paused and 1 or 0)
-                        sent = sent + 1
+                        restore[#restore + 1] = { id = barId, bar = bar, left = left }
                     end
                 end
             end
+        end
+        table.sort(restore, function(a, b)
+            if a.left ~= b.left then return a.left < b.left end
+            return a.id < b.id
+        end)
+        for _, r in ipairs(restore) do
+            local parts = Sync.Split(r.id)
+            local args = {}
+            for j = 2, #parts do args[#args + 1] = parts[j] end
+            Sync.Whisper("TR", sender, rt.id, r.bar.key, r.left, r.bar.total,
+                         Sync.PackArgs(args), r.bar.paused and 1 or 0)
+            sent = sent + 1
         end
     end
     return sent, "combat"
