@@ -619,7 +619,12 @@ function Life:BuildCreatureMap(delay)
     return map
 end
 
-function Life:Sweep(delay, onlyEncId)
+-- W4a: the sweep now carries WHY it was scheduled. Outdoors, a boss yell does not
+-- engage directly (§2.1(d)) — it schedules a delay-0 sweep — so without this the
+-- resulting engagement would report trigger "sweep" and the fact that a YELL pulled
+-- the fight would be lost. Lord Kazzak's berserk bar is conditional on exactly that
+-- fact (§9.2), and §2.3 step 10's startedByMessage hook wants the same answer.
+function Life:Sweep(delay, onlyEncId, trigger)
     if Life.pendingSweeps > 0 then Life.pendingSweeps = Life.pendingSweeps - 1 end
     local map = Life:BuildCreatureMap(delay)
     local started
@@ -636,7 +641,7 @@ function Life:Sweep(delay, onlyEncId)
                     skip = true
                 end
                 if not skip then
-                    started = started or Life:StartCombat(enc, delay, "sweep")
+                    started = started or Life:StartCombat(enc, delay, trigger or "sweep")
                 end
             end
         end
@@ -699,30 +704,57 @@ function Life:PullCountdownMatches(enc, kind, text)
     return hit and pc or nil
 end
 
+-- The shared arming rule, lifted out of OnChat so the chat source and W4a's death
+-- source cannot drift apart: only inside the instance, only when nothing is already
+-- engaged, and only once per throttle window (the RP repeats on every attempt).
+function Life:ArmPullCountdown(enc, pc)
+    if not (pc and Life:InInstance()) then return false end
+    if Life:AnyEngaged() then return false end
+    if type(Addon.StartPullTimer) ~= "function" then return false end
+    local last = Life.pullCountdownAt and Life.pullCountdownAt[enc.id]
+    if last and (S():Now() - last) <= (pc.throttle or pc.seconds) then return false end
+    Life.pullCountdownAt = Life.pullCountdownAt or {}
+    Life.pullCountdownAt[enc.id] = S():Now()
+    pcall(Addon.StartPullTimer, Addon, pc.seconds, pc.source or "encounter", enc.name)
+    return true
+end
+
+-- W4a extension 29. Some RP windows are measured from a MOB DYING rather than from a
+-- line of chat — Ragnaros's raid stands still for 73 seconds after Majordomo dies,
+-- and the spec names no yell for it. Same surface (§11.4's pull timer), same guards,
+-- one more admissible event.
+function Life:PullCountdownFromDeath(creatureId)
+    if creatureId == nil then return 0 end
+    if Life:AnyEngaged() then return 0 end
+    local armed = 0
+    for _, enc in ipairs(Addon.encounters) do
+        local pc = enc.detect and enc.detect.pullCountdown
+        local want = pc and pc.creatureDeath
+        if want then
+            local hit = false
+            if type(want) == "table" then
+                for _, cid in ipairs(want) do if cid == creatureId then hit = true break end end
+            else
+                hit = (want == creatureId)
+            end
+            if hit and Life:ArmPullCountdown(enc, pc) then armed = armed + 1 end
+        end
+    end
+    return armed
+end
+
 function Life:OnChat(event, text)
     local kind = CHAT_KIND[event] or event
     text = text or ""
     local acted = 0
     for _, enc in ipairs(Addon.encounters) do
         local pc = Life:PullCountdownMatches(enc, kind, text)
-        -- Only inside the instance, only when nothing is already engaged, and only once
-        -- per lockout window — the RP line repeats on every attempt and the pull timer
-        -- refuses to restart itself mid-fight anyway.
-        if pc and Life:InInstance() and not Life:AnyEngaged()
-           and type(Addon.StartPullTimer) == "function" then
-            local last = Life.pullCountdownAt and Life.pullCountdownAt[enc.id]
-            if not last or (S():Now() - last) > (pc.throttle or pc.seconds) then
-                Life.pullCountdownAt = Life.pullCountdownAt or {}
-                Life.pullCountdownAt[enc.id] = S():Now()
-                pcall(Addon.StartPullTimer, Addon, pc.seconds, pc.source or "encounter", enc.name)
-                acted = acted + 1
-            end
-        end
+        if pc and Life:ArmPullCountdown(enc, pc) then acted = acted + 1 end
         if Life:ChatMatches(enc, kind, text) then
             if Life:InInstance() then
                 if Life:StartCombat(enc, 0, "chat") then acted = acted + 1 end
             else
-                S():Schedule(0, sweepTask, Life, 0, enc.id)
+                S():Schedule(0, sweepTask, Life, 0, enc.id, "chat")
                 acted = acted + 1
             end
         end
@@ -847,6 +879,10 @@ end
 --  §2.5 KILL DETECTION — four independent paths
 -- ══════════════════════════════════════════════════════════════════════════════
 function Life:OnUnitDied(creatureId)
+    -- W4a extension 29: a creature death may be the START of a pull countdown, not
+    -- only the end of a fight. Checked FIRST and only while nothing is engaged, on
+    -- the same guards the chat path uses (§2.1(d)).
+    Life:PullCountdownFromDeath(creatureId)
     local ended = 0
     for i = #Life.engaged, 1, -1 do
         local rt = Life.engaged[i]
@@ -1024,7 +1060,7 @@ function Life:RecordStats(rt, report)
 end
 
 -- Bind the scheduler shims now that both methods exist.
-function sweepTask(delay, encId) return Life:Sweep(delay, encId) end
+function sweepTask(delay, encId, trigger) return Life:Sweep(delay, encId, trigger) end
 function wipeTask(rt) return Life:WipeCheck(rt) end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1043,6 +1079,13 @@ Life.EVENTS = {
     -- nameplate appears while still in phase 1") and Razuvious's understudy discovery
     -- were declarable but dead. Nameplates are also the only Era route to either.
     "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED",
+    -- W4a DEFECT FIX B. `unitCast` (§1.6's "unit-cast channel") has been in the
+    -- trigger vocabulary since wave 1 and NOTHING EVER REGISTERED THE EVENT, so every
+    -- row written against it was dead on arrival: Maexxna's spiderlings, Sapphiron's
+    -- air phase, Viscidus, Venoxis, Arlokk — and now Ragnaros's submerge visual and
+    -- Ysondre's Lightning Wave. It is the only witness for casts Era omits from the
+    -- combat log entirely, which is exactly why those encounters reach for it.
+    "UNIT_SPELLCAST_SUCCEEDED",
     "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_DISABLED",
 }
 
@@ -1114,6 +1157,15 @@ function Life:Deliver(ev)
         acted = acted + Life.engaged[i]:Route(ev)
     end
     for _, rt in pairs(Life.zoneArmed) do acted = acted + rt:Route(ev) end
+    -- W4a DEFECT FIX A. §2.5's death-based kill path was reachable only from a
+    -- corroborated `K` sync and from the harness — the live combat-log path routed
+    -- UNIT_DIED to encounter rows and stopped. Razorgore, which refuses Blizzard's
+    -- ENCOUNTER_END outright, therefore had NO working kill detection in game. Routed
+    -- AFTER the rows so a row that reacts to the death (a census counter, an add
+    -- tracker) still sees it before the runtime can be torn down.
+    if ev.on == "UNIT_DIED" and (ev.destId or ev.creatureId) then
+        Life:OnUnitDied(ev.destId or ev.creatureId)
+    end
     if ev.on and ev.on:sub(1, 6) ~= "SPELL_" and ev.on ~= "UNIT_DIED" then return acted end
     Addon:FireCombatHooks(ev.on, ev.sourceGUID, ev.sourceId, ev.destGUID, ev.destId,
                           ev.spellId, ev.spellName)
@@ -1155,6 +1207,19 @@ function Life:OnEvent(event, ...)
         Life:ArmZones()                     -- W4d: zoning in arms the trash module
         Addon:FireEngineEvent("ENGINE_LOGIN", isLogin and true or false, isReload and true or false)
         return true
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        -- W4a DEFECT FIX B. A unit event with no unit filter fires for every caster in
+        -- the raid, so this is gated hard: nothing listening, nothing parsed; and a
+        -- unit with no creature id is a player, which this channel exists to ignore.
+        if #Life.engaged == 0 and next(Life.zoneArmed) == nil then return nil end
+        local unit, _, spellId = ...
+        if type(unit) ~= "string" then return nil, "no_unit" end
+        local cid = Life:CreatureIdOfUnit(unit)
+        if not cid then return nil, "not_a_creature" end
+        return Life:Deliver({ on = "unitCast", unit = unit, spellId = spellId,
+                              creatureId = cid, sourceId = cid,
+                              sourceGUID = Life.env.UnitGUID(unit),
+                              sourceName = Life.env.UnitName and Life.env.UnitName(unit) })
     elseif event == "NAME_PLATE_UNIT_ADDED" then
         -- Hot event: skip the GUID parse entirely when nothing is listening.
         if #Life.engaged == 0 and next(Life.zoneArmed) == nil then return nil end

@@ -133,7 +133,12 @@ Sync.RECOVERY_REPLY_THROTTLE = 1            -- §7.3 one reply per requester per
 Sync.VERSION_DEBOUNCE     = 3     -- §7.4 group version reply debounce
 Sync.NAG_SENDERS          = 2     -- §7.4 update nag after 2 distinct newer senders
 Sync.PULL_MIN             = 3     -- §11.4 refuses durations between 0 and 3 s exclusive
-Sync.PULL_MAX             = 60    -- ours: a sane ceiling, the spec states none
+-- Ours: a sane ceiling, the spec states none. RAISED FROM 60 IN W4a, because the
+-- ceiling was demonstrably too low for real content: Molten Core's Ragnaros RP is a
+-- 73 s stand-still window (ENCOUNTERS SPEC §2.10) declared through
+-- `detect.pullCountdown`, and clamping it to 60 would do exactly what this function's
+-- own refusal comment objects to — turn a declared duration into a quiet lie.
+Sync.PULL_MAX             = 180
 Sync.PULL_COUNTDOWN_DEPTH = 5     -- §12 pull-timer countdown depth
 Sync.BREAK_ANNOUNCE_AT    = { 600, 300, 120, 60 }   -- §11.4 10, 5, 2, 1 minutes…
                                                     -- …plus zero, which the bar's own expiry carries

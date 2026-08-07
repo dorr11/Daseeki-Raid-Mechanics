@@ -161,6 +161,9 @@ local ALL_LUA = {
     -- and this wave consumed it; all three are asserted DELETED in GATE RETIRE.
     -- W4c/W4b encounter data
     "enc_aq20.lua", "enc_aq40.lua", "enc_bwl.lua", "enc_zg.lua",
+    -- W4a: the last three zones. MC / Onyxia / the world bosses never had a 1.x data
+    -- file, so this wave adds encounter data and retires nothing.
+    "enc_moltencore.lua", "enc_onyxia.lua", "enc_worldbosses.lua",
 }
 
 gate("0  toc parse")
@@ -205,6 +208,9 @@ local CHANGE_SURFACE = {
     ["enc_naxxramas.lua"] = true,
     ["enc_aq20.lua"] = true, ["enc_aq40.lua"] = true,
     ["enc_bwl.lua"] = true, ["enc_zg.lua"] = true,
+    -- wave 4a authored these three, same clean-room terms.
+    ["enc_moltencore.lua"] = true, ["enc_onyxia.lua"] = true,
+    ["enc_worldbosses.lua"] = true,
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
     ["core_boot.lua"] = true, [TOC_FILE] = true,
@@ -276,8 +282,16 @@ endgate()
 -- every disagreement, one log-verified mechanic the spec lacks entirely was carried
 -- over default-off, and everything else is in the wave report. Zul'Gurub never had a
 -- 1.x data file, so there is nothing to retire on that side.
+-- W4a: NOTHING NEW IS RETIRED, and that is the finding. Molten Core, Onyxia's Lair
+-- and the world bosses never had a 1.x data file — data_naxxramas / data_aq40 /
+-- data_bwl were the only three that ever existed — so this wave had nothing to diff
+-- against, nothing to restore, and nothing to park. With W4 closed, the parked list is
+-- permanently empty and the RegisterRaid refusal shim (core_boot.lua) has no legacy
+-- caller class left anywhere in the addon; it stays as a guard for third-party callers.
 local RETIRED_PATHS   = { "engine.lua", "encounters.lua", "data_naxxramas.lua",
-                          "data_aq40.lua", "data_bwl.lua" }
+                          "data_aq40.lua", "data_bwl.lua",
+                          -- asserted absent so a future wave cannot invent one
+                          "data_moltencore.lua", "data_onyxia.lua", "data_worldbosses.lua" }
 local PARKED_OUT_OF_TOC = {}
 
 gate("RETIRE  demolition holds")
@@ -476,6 +490,14 @@ local BWL_CHUNK = loadfile(P("enc_bwl.lua"))
 if not BWL_CHUNK then realprint("  FAIL  loadfile enc_bwl.lua"); os.exit(2) end
 local ZG_CHUNK = loadfile(P("enc_zg.lua"))
 if not ZG_CHUNK then realprint("  FAIL  loadfile enc_zg.lua"); os.exit(2) end
+-- WAVE 4a: Molten Core, Onyxia's Lair and the six world bosses — the wave that closes
+-- W4. Same re-runnable-chunk treatment as every other zone.
+local MC_CHUNK = loadfile(P("enc_moltencore.lua"))
+if not MC_CHUNK then realprint("  FAIL  loadfile enc_moltencore.lua"); os.exit(2) end
+local ONY_CHUNK = loadfile(P("enc_onyxia.lua"))
+if not ONY_CHUNK then realprint("  FAIL  loadfile enc_onyxia.lua"); os.exit(2) end
+local WB_CHUNK = loadfile(P("enc_worldbosses.lua"))
+if not WB_CHUNK then realprint("  FAIL  loadfile enc_worldbosses.lua"); os.exit(2) end
 
 _G.DaseekiRaidMechanicsDB = {}
 Addon:Init()
@@ -6653,8 +6675,693 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- WAVE 4a — MOLTEN CORE + ONYXIA'S LAIR + THE WORLD BOSSES
+--
+-- The wave that closes W4. Every assertion below names the
+-- DBM_ERA_ENCOUNTERS_BEHAVIOR_SPEC.md §2 / §3 / §9 row it proves, and every one runs
+-- the SHIPPING data through the SHIPPING engine on the injected clock and world.
+----------------------------------------------------------------------
+local function loadW4A()
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    local ok1, e1 = pcall(MC_CHUNK,  ADDON_NAME, Addon)
+    local ok2, e2 = pcall(ONY_CHUNK, ADDON_NAME, Addon)
+    local ok3, e3 = pcall(WB_CHUNK,  ADDON_NAME, Addon)
+    return ok1 and ok2 and ok3,
+           (not ok1 and e1) or (not ok2 and e2) or (not ok3 and e3) or nil
+end
+
+-- Outdoor engage helper. The engine spec is explicit (§2.1(d)) that OUTDOORS a boss
+-- yell does not engage — it schedules a delay-0 target sweep — so this drives the
+-- real path rather than short-circuiting it, and it sets difficulty 0 so every
+-- world-boss rule the engine derives is actually in force.
+local function engageWorld(encId, cid, yell)
+    resetLife()
+    W.inInstance, W.instanceType, W.instanceID = false, "none", 0
+    W.difficultyID, W.difficultyName, W.maxPlayers = 0, "World Boss", 40
+    W.group = { "player" }
+    setUnit("target", { cid = cid, combat = true, hp = 100, hpmax = 100 })
+    setUnit("playertarget", { cid = cid, combat = true, hp = 100, hpmax = 100 })
+    Addon:ClearEventLog()
+    Life:OnChat("CHAT_MSG_MONSTER_YELL", yell)
+    advance(0.2)                     -- let the scheduled delay-0 sweep run
+    return Life:GetRuntime(encId)
+end
+
+gate("MCONYWB  §2/§3/§9 encounter data: registration, keys, the options tree")
+do
+    local okc, err = loadW4A()
+    ck(okc, "enc_moltencore.lua + enc_onyxia.lua + enc_worldbosses.lua EXECUTE against " ..
+            "the shipping grammar" .. (okc and "" or (" -> " .. tostring(err))))
+
+    local EXPECTED = {
+        -- §2 Molten Core (zone 409)
+        { id = "mc:lucifron",  cid = 12118, eid = 663, raid = "mc", boss = "lucifron" },
+        { id = "mc:magmadar",  cid = 11982, eid = 664, raid = "mc", boss = "magmadar" },
+        { id = "mc:gehennas",  cid = 12259, eid = 665, raid = "mc", boss = "gehennas" },
+        { id = "mc:garr",      cid = 12057, eid = 666, raid = "mc", boss = "garr" },
+        { id = "mc:geddon",    cid = 12056, eid = 668, raid = "mc", boss = "geddon" },
+        { id = "mc:shazzrah",  cid = 12264, eid = 667, raid = "mc", boss = "shazzrah" },
+        { id = "mc:sulfuron",  cid = 12098, eid = 669, raid = "mc", boss = "sulfuron" },
+        { id = "mc:golemagg",  cid = 11988, eid = 670, raid = "mc", boss = "golemagg" },
+        { id = "mc:majordomo", cid = 12018, eid = 671, raid = "mc", boss = "majordomo" },
+        { id = "mc:ragnaros",  cid = 11502, eid = 672, raid = "mc", boss = "ragnaros" },
+        -- §3 Onyxia's Lair (zone 249)
+        { id = "onyxia:onyxia", cid = 10184, eid = 1084, raid = "onyxia", boss = "onyxia" },
+    }
+    for _, e in ipairs(EXPECTED) do
+        local enc = Addon:GetEncounter(e.id)
+        ck(enc ~= nil, e.id .. " is registered")
+        if enc then
+            local errs = API.Validate(enc)
+            eq(#errs, 0, "…with zero validation errors" ..
+               (#errs > 0 and (": " .. table.concat(errs, "; ")) or ""))
+            ck(Addon.encByCreature[e.cid] ~= nil, "…indexed by creature " .. e.cid)
+            ck(Addon.encByEncounterId[e.eid] ~= nil, "…and by encounter id " .. e.eid)
+            ck(enc.legacy and enc.legacy.raidId == e.raid and enc.legacy.bossId == e.boss,
+               "…carrying the legacy seam " .. e.raid .. ":" .. e.boss)
+            local firstRow = enc.timers[1] or enc.warnings[1]
+            if firstRow then
+                eq(API.OptionKey(enc.id, firstRow.key),
+                   Addon:MechKey(e.raid, e.boss, firstRow.key),
+                   "…and OptionKey == MechKey for its rows")
+            end
+        end
+    end
+
+    -- §9: six world bosses, NO encounter ids (Blizzard declares none outdoors).
+    local WORLD = {
+        { id = "world:azuregos", cid = 6109,  boss = "azuregos" },
+        { id = "world:kazzak",   cid = 12397, boss = "kazzak" },
+        { id = "world:ysondre",  cid = 14887, boss = "ysondre" },
+        { id = "world:lethon",   cid = 14888, boss = "lethon" },
+        { id = "world:emeriss",  cid = 14889, boss = "emeriss" },
+        { id = "world:taerar",   cid = 14890, boss = "taerar" },
+    }
+    for _, e in ipairs(WORLD) do
+        local enc = Addon:GetEncounter(e.id)
+        ck(enc ~= nil, e.id .. " is registered")
+        if enc then
+            eq(#API.Validate(enc), 0, "…with zero validation errors")
+            ck(Addon.encByCreature[e.cid] ~= nil, "…indexed by creature " .. e.cid)
+            eq(#enc.encounterIds, 0, "…and declares NO encounter id (there is none outdoors)")
+            eq(enc.combat.wipeWindow, 15,
+               "…declaring the 15 s world-boss wipe window (§9 / ENGINE SPEC §10.10)")
+        end
+    end
+    eq(#Addon.encounters, #EXPECTED + #WORLD + 1,
+       "…18 registrations in all (10 MC + Onyxia + 6 world bosses + one trash module)")
+
+    do  -- §2.11 the zone-wide MC trash module
+        local trash = Addon:GetEncounter("mc:trash")
+        ck(trash ~= nil and trash.detect.mode == "zone", "mc:trash registers as a ZONE module")
+        ck(trash and Addon.encByZone[409] ~= nil, "…indexed against instance 409")
+        eq(#trash.timers, 11, "§2.11 declares eleven per-mob cooldown bars")
+        local np = 0
+        for _, row in ipairs(trash.timers) do if row.nameplate then np = np + 1 end end
+        eq(np, 11, "…and EVERY one of them is per-mob-GUID nameplate-attached")
+        eq(#trash.warnings, 13, "…alongside thirteen announces")
+        local unthrottled = {}
+        for _, row in ipairs(trash.warnings) do
+            if not (row.trigger and row.trigger.antispam == 3) then
+                unthrottled[#unthrottled + 1] = row.key
+            end
+        end
+        eq(#unthrottled, 0, "…each carrying the spec's 3 s anti-spam key" ..
+           (#unthrottled > 0 and (" (missing: " .. table.concat(unthrottled, ", ") .. ")") or ""))
+        eq(trash.rowsByKey.surge.pull, nil,
+           "§2.11 Lava Surger has NO engage value in the spec, so it declares none")
+        eq(trash.rowsByKey.knockdown.duration, 7.2,
+           "…and Knockdown's open-ended '7.2+' ships as a flat 7.2, not an invented window")
+    end
+
+    do  -- ship-off defaults carried from the spec verbatim
+        local OFF = {
+            { "mc:lucifron", "dominatemind" },    -- §2.1 "Off by default"
+            { "mc:gehennas", "rainoffirewarn" },  -- §2.3 "off by default"
+            { "mc:gehennas", "fistofragnaros" },  -- §2.3 "off by default"
+            { "mc:garr",     "immolate" },        -- §2.4 "off by default"
+            { "mc:sulfuron", "shadowwordpain" },  -- §2.7 three of four ship off
+            { "mc:sulfuron", "handofragnaros" },
+            { "mc:sulfuron", "immolate" },
+            { "mc:trash",    "smashwarn" },       -- §2.11
+            { "mc:trash",    "massivetremorwarn" },
+            { "mc:trash",    "lavabreathwarn" },
+            { "onyxia:onyxia", "fireballon" },    -- §3.1 "off by default"
+            { "onyxia:onyxia", "knockaway" },     -- §3.1 "off by default"
+            { "world:ysondre", "noxiousbreathcd" },  -- §9.3 "shipped disabled as iffy"
+            { "world:taerar",  "noxiousbreathcd" },
+        }
+        for _, p in ipairs(OFF) do
+            local enc = Addon:GetEncounter(p[1])
+            local row = enc and enc.rowsByKey[p[2]]
+            ck(row and row.default == false, p[1] .. ":" .. p[2] .. " SHIPS OFF (spec default)")
+        end
+        eq(Addon:GetEncounter("mc:lucifron").rowsByKey.mindcontrolicons.default, true,
+           "§2.1 the mind-control raid icons ship ON")
+        eq(Addon:GetEncounter("mc:geddon").rowsByKey.livingbombicons.default, false,
+           "§2.5 the Living Bomb raid icons ship OFF")
+        eq(Addon:GetEncounter("onyxia:onyxia").rowsByKey.fireballicon.default, true,
+           "§3.1 the Fireball raid icon ships ON")
+    end
+
+    do  -- §2.8 GOLEMAGG: one announce, and NOTHING else invented
+        local g = Addon:GetEncounter("mc:golemagg")
+        eq(#g.timers, 0, "GOLEMAGG declares zero timers (the spec gives none)")
+        eq(#g.warnings, 1, "…and exactly ONE announce — the thinnest raid boss in the set")
+        eq(g.warnings[1].key, "earthquake", "…which is the Earthquake call")
+        eq(#g.phases, 0, "…with no phase logic invented for it")
+    end
+
+    do  -- §9.1 AZUREGOS: no timers is a DECISION, and it is asserted as one
+        local a = Addon:GetEncounter("world:azuregos")
+        eq(#a.timers, 0,
+           "AZUREGOS ships ZERO timers — 'a bar at the minimum is more misleading than helpful'")
+        eq(#a.warnings, 3, "…and the three reactive alerts §9.1 does list")
+        local k = Addon:GetEncounter("world:kazzak")
+        eq(#k.timers, 1, "KAZZAK ships exactly one timer…")
+        eq(k.timers[1].key, "berserk", "…the 180 s berserk…")
+        eq(k.rowsByKey.berserk.start.condition, "pullTimeable",
+           "…and it is CONDITIONAL on the pull being reliable enough to time")
+        ck(k.rowsByKey.markyou.yell == nil,
+           "…while the Mark carries NO raid yell (a deliberate omission, §9.2)")
+    end
+
+    do  -- §9.3-9.6 the four dragons: one mod, four registrations
+        local fogPull = { ysondre = 18.4, lethon = 18.4, emeriss = 18.4, taerar = 21.5 }
+        local fogCd   = { ysondre = 16.0, lethon = 16.8, emeriss = 15.8, taerar = 21.9 }
+        for id, pull in pairs(fogPull) do
+            local d = Addon:GetEncounter("world:" .. id)
+            near(d.rowsByKey.sleepingfog.pull, pull, 0.001,
+                 "DRAGONS: " .. id .. " opens its Sleeping Fog bar at " .. pull)
+            near(d.rowsByKey.sleepingfog.duration, fogCd[id], 0.001,
+                 "…and recurs on " .. fogCd[id])
+            eq(d.rowsByKey.sleepingfogdodge.triggers[1].antispam, 600,
+               "…with the dodge special throttled to once per pull")
+            ck(d.rowsByKey.noxiousbreath.triggers[1].condition == "destIsBossTarget",
+               "…and Noxious Breath filtered to the dragon's CURRENT TANK, not to a role")
+        end
+        ck(Addon:GetEncounter("world:ysondre").rowsByKey.lightningwave ~= nil,
+           "…Lightning Wave exists on Ysondre alone…")
+        for _, id in ipairs({ "lethon", "emeriss", "taerar" }) do
+            ck(Addon:GetEncounter("world:" .. id).rowsByKey.lightningwave == nil,
+               "…and on " .. id .. " it does not")
+        end
+        -- the disabled scaffolding the spec records is NOT shipped
+        for _, id in ipairs({ "ysondre", "lethon", "emeriss", "taerar" }) do
+            local d = Addon:GetEncounter("world:" .. id)
+            for _, k in ipairs({ "bellowingroar", "shadowboltwhirl", "volatileinfection",
+                                 "shades" }) do
+                ck(d.rowsByKey[k] == nil,
+                   id .. " does not ship '" .. k .. "' (no confirmed Era spell id exists)")
+            end
+        end
+    end
+
+    do  -- §2.9 MAJORDOMO: three creature ids, one boss, and no death ever ends it
+        local m = Addon:GetEncounter("mc:majordomo")
+        eq(#m.creatureIds, 3, "MAJORDOMO registers all three creature ids (boss + two adds)")
+        eq(m.combat.severalCreatureIdsOneBoss, true,
+           "…and REFUSES the death-based kill path — he submits, he does not die")
+        ck(m.rowsByKey.nextshield ~= nil,
+           "…while 'next shield' is ONE bar for two mutually-exclusive abilities")
+        eq(#m.rowsByKey.nextshield.restarts, 2, "…restarted by either of them")
+    end
+
+    do  -- the options projection: three more raids in the tree options.lua reads
+        API.PublishOptionsTree()
+        local rm, ro, rw = Addon:GetRaid("mc"), Addon:GetRaid("onyxia"), Addon:GetRaid("world")
+        ck(rm and ro and rw, "all three W4a zones PROJECT into the options tree")
+        eq(rm and #rm.bosses, 11, "…Molten Core with eleven entries (10 bosses + trash)")
+        eq(ro and #ro.bosses, 1, "…Onyxia's Lair with one")
+        eq(rw and #rw.bosses, 6, "…and World Bosses with six")
+        ck((rm.order or 999) < (ro.order or 999) and (ro.order or 999) < (rw.order or 999),
+           "…ordered Molten Core, then Onyxia, then the world bosses last")
+        ck(Addon:GetBossByNpcID(11502) ~= nil, "…while the npc index resolves Ragnaros")
+        ck(Addon:GetBossByNpcID(14890) ~= nil, "…and Taerar")
+    end
+end
+endgate()
+
+gate("MCONYWB-DRIVE  §2/§3/§9 per-encounter behaviour through the real engine")
+do
+    loadW4A()
+    Addon:SetEventRecording(true)
+    Addon._suppressLegacyAlerts = true
+    Addon.RoleResolver  = function() return true end
+    Addon.ClassResolver = function() return "WARLOCK" end
+
+    -- ── §2.1 Lucifron: two evidence paths for one mind control ────────────────
+    do
+        local rt = engage("mc:lucifron", 12118)
+        ck(rt ~= nil, "LUCIFRON: engages off the combat sweep")
+        local mn, mx = barWindow(rt, "impendingdoom")
+        near(mn, 5.7, 0.01, "…Impending Doom's PULL window opens at 5.7…")
+        near(mx, 11.8, 0.01, "…and closes at 11.8")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 19702, sourceId = 12118 })
+        local rmn, rmx = barWindow(rt, "impendingdoom")
+        near(rmn, 21, 0.01, "…then the recurring window is 21…")
+        near(rmx, 27, 0.01, "…to 27")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 20604, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Mind control on Bob"),
+           "…a mind-control victim is named to the raid")
+        -- the 1.5 s anti-spam is what stops the scan path and the aura path double-announcing
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 20604, destName = "Bob" })
+        eq(warnCount("WARN_ANNOUNCE", "Mind control on Bob"), 1,
+           "…and the two evidence paths (cast-start scan, aura) announce ONCE, not twice")
+        eq(rt.timers.dominatemind, nil,
+           "…while the 15 s duration bar stays silent, because it SHIPS OFF")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 20604, destIsPlayer = true,
+                       destName = "Drew" })
+        ck(sawWarn("WARN_SPECIAL", "MIND CONTROL on YOU"), "…and YOU get the personal call")
+    end
+
+    -- ── §2.3 Gehennas: the GTFO block matches by NAME as well as by ID ────────
+    do
+        local rt = engage("mc:gehennas", 12259)
+        near(bar(rt, "rainoffire") and bar(rt, "rainoffire").total or -1, -1, 0.01,
+             "GEHENNAS: Rain of Fire has no pull bar (it is cast-driven)")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 19717, sourceId = 12259 })
+        near(bar(rt, "rainoffire").total, 4.8, 0.01, "…and cycles on a FIXED 4.8 s once cast")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellId = 19717, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the fire"), "…standing in it is called by ID…")
+        advance(3)
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellId = 999999,
+                       spellName = "Rain of Fire", destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the fire"),
+           "…and by NAME, because the Era log is inconsistent about the periodic id")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellId = 19717, destIsPlayer = true })
+        ck(not sawWarn("WARN_SPECIAL", "Move out of the fire"),
+           "…throttled to one call per 2.5 s either way")
+    end
+
+    -- ── §2.5 Baron Geddon: the bomb, its icons and the bar that outlives the raid
+    do
+        local rt = engage("mc:geddon", 12056)
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 20475, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Living Bomb on Bob"), "GEDDON: the bomb names its victim")
+        near((rt.timers.livingbombtarget:Get("Bob") or {}).total, 8, 0.01,
+             "…with an 8 s bar of their own")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 20475, destIsPlayer = true,
+                       destName = "Drew" })
+        ck(sawWarn("WARN_SPECIAL", "LIVING BOMB"), "…and YOU get told to run out")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 19695, sourceId = 12056 })
+        ck(sawWarn("WARN_SPECIAL", "INFERNO"), "…Inferno tells melee to leave…")
+        near(bar(rt, "infernoactive").total, 8, 0.01, "…and runs an 8 s active bar")
+        -- §2.5 the ground-effect block is SUPPRESSED FOR TANKS, and since §1.4 has no
+        -- `-Tank` gate that is written as the positive union of the other two classes.
+        eq(Addon:GetEncounter("mc:geddon").rowsByKey.gtfo.role, "Dps|Healer",
+           "…the Inferno ground-effect call is gated to everyone EXCEPT tanks")
+        Addon:ClearEventLog()
+        Addon.RoleResolver = function(g) return g ~= "Dps|Healer" end   -- i.e. "I am a tank"
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellId = 19698, destIsPlayer = true })
+        ck(not sawWarn("WARN_SPECIAL", "Move out of the Inferno"),
+           "…so a TANK standing in it is not told to move")
+        Addon.RoleResolver = function() return true end
+        Addon:ClearEventLog()
+        advance(3)
+        -- and the aura id is a second, independent arm (Era splits damage from aura)
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 364838, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the Inferno"),
+           "…while everyone else is, off EITHER of the two Era ids")
+        -- Armageddon's bar deliberately survives the encounter end
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 20478, sourceId = 12056 })
+        ck(sawWarn("WARN_SPECIAL", "ARMAGEDDON"), "…Armageddon is a special warning…")
+        eq(Addon:GetEncounter("mc:geddon").rowsByKey.armageddon.keep, true,
+           "…and its cast bar is flagged to persist past combat end (it resolves after the wipe)")
+    end
+
+    -- ── §2.9 Majordomo: one shared bar for two shields ────────────────────────
+    do
+        local rt = engage("mc:majordomo", 12018)
+        local mn, mx = barWindow(rt, "nextshield")
+        near(mn, 25.6, 0.01, "MAJORDOMO: the shared shield bar opens at 25.6…")
+        near(mx, 30.7, 0.01, "…and closes at 30.7")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 20619, sourceId = 12018 })
+        near(bar(rt, "nextshield").total, 30.7, 0.01,
+             "…a Magic Reflection restarts it on the flat 30.7 s cadence")
+        ck(sawWarn("WARN_SPECIAL", "MAGIC REFLECTION"), "…and tells casters to stop")
+        near(bar(rt, "magicreflection").total, 10, 0.01, "…with a 10 s active bar")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 21075, sourceId = 12018 })
+        near(bar(rt, "nextshield").total, 30.7, 0.01,
+             "…and a Damage Shield restarts the SAME bar (the raid only needs to know one is coming)")
+        ck(sawWarn("WARN_SPECIAL", "DAMAGE SHIELD"), "…melee are told to stop attacking…")
+        ck(not sawWarn("WARN_ANNOUNCE", "Damage Shield"),
+           "…and the plain announce steps aside while that call is enabled")
+        -- the adds die constantly and none of it may end the fight
+        Life:Deliver(Life:NormalizeCLEU("UNIT_DIED", nil, nil, 0, 0,
+                                        "Creature-0-0-0-0-11663-1", "Flamewaker Healer", 0, 0))
+        ck(rt.engaged, "…and a dead add does NOT end the encounter")
+    end
+
+    -- ── §2.10 RAGNAROS — the full submerge cycle, both ways out ───────────────
+    do
+        local rt = engage("mc:ragnaros", 11502)
+        ck(rt ~= nil, "RAGNAROS: engages off the combat sweep")
+        local wn, wx = barWindow(rt, "wrath")
+        near(wn, 25.9, 0.01, "…Wrath's PULL window opens at 25.9…")
+        near(wx, 33.8, 0.01, "…and closes at 33.8")
+        near(bar(rt, "submerge").total, 180, 0.01, "…with the 180 s submerge clock running")
+        eq(rt:GetCount("sons"), 8, "…and eight Sons of Flame on the counter")
+
+        -- SUBMERGE, path 1: the yell
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+                    "COME FORTH, MY SERVANTS! DEFEND YOUR MASTER!")
+        eq(rt.stage, 2, "…the servants yell IS the submerge (stage 2)")
+        eq(rt:GetState("ragphase"), "submerged", "…and the machine agrees")
+        ck(sawWarn("WARN_ANNOUNCE", "Ragnaros submerges"), "…announced to the raid")
+        eq(bar(rt, "wrath"), nil, "…the Wrath bar stops…")
+        eq(bar(rt, "submerge"), nil, "…so does the submerge bar…")
+        near(bar(rt, "emerge").total, 90, 0.01, "…and a 90 s emerge bar takes over")
+
+        -- THE SONS RACE: seven deaths change nothing, the eighth emerges him NOW
+        Addon:ClearEventLog()
+        for i = 1, 7 do
+            Life:Deliver({ on = "UNIT_DIED", creatureId = 12143, destId = 12143,
+                           destGUID = "Creature-0-0-0-0-12143-" .. i })
+        end
+        eq(rt:GetCount("sons"), 1, "…seven Sons down, one to go")
+        eq(rt.stage, 2, "…and he is still submerged")
+        -- a duplicate death cannot double-count
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 12143, destId = 12143,
+                       destGUID = "Creature-0-0-0-0-12143-7" })
+        eq(rt:GetCount("sons"), 1, "…a corpse that logs twice is de-duplicated by GUID")
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 12143, destId = 12143,
+                       destGUID = "Creature-0-0-0-0-12143-8" })
+        eq(rt:GetCount("sons"), 0, "…the eighth Son dies…")
+        eq(rt.stage, 1, "…and Ragnaros emerges IMMEDIATELY (W4a extension 28)")
+        ck(sawWarn("WARN_ANNOUNCE", "Ragnaros emerges"), "…announced")
+        local pn, px = barWindow(rt, "wrath")
+        near(pn, 25.5, 0.01, "…the POST-EMERGE Wrath window is 25.5…")
+        near(px, 31.9, 0.01, "…to 31.9, which is not the same as the ordinary one")
+        near(bar(rt, "submerge").total, 180, 0.01, "…and the 180 s submerge clock restarts")
+        -- the 90 s schedule that lost the race must be inert
+        Addon:ClearEventLog()
+        advance(91)
+        eq(rt.stage, 1, "…and the 90 s scheduled emerge that LOST the race is a no-op")
+        eq(warnCount("WARN_ANNOUNCE", "Ragnaros emerges"), 0, "…announcing nothing a second time")
+
+        -- SUBMERGE, path 2: the unit-cast visual, and the schedule winning this time
+        Addon:ClearEventLog()
+        Life:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "target", nil, 20567)
+        eq(rt.stage, 2, "…the submerge VISUAL on the unit-cast channel is the second witness")
+        eq(rt:GetCount("sons"), 8, "…and the Sons counter is reset for the new cycle")
+        advance(90.1)
+        eq(rt.stage, 1, "…with nobody killing the adds, the 90 s schedule emerges him")
+        ck(sawWarn("WARN_ANNOUNCE", "Ragnaros emerges"), "…and says so")
+    end
+
+    -- ── §2.10 the RP pull countdown, driven by Majordomo dying ────────────────
+    do
+        resetLife()
+        W.instanceID = 409
+        Addon:CancelPullTimer("test")
+        Addon:ClearEventLog()
+        Life:Deliver(Life:NormalizeCLEU("UNIT_DIED", nil, nil, 0, 0,
+                                        "Creature-0-0-0-0-12018-1", "Majordomo Executus", 0, 0))
+        local pulled
+        for _, e in ipairs(Addon:GetEventLog()) do if e.event == "ENGINE_PULL" then pulled = e end end
+        ck(pulled ~= nil and math.abs((tonumber(pulled[1]) or 0) - 73) < 0.01,
+           "RAGNAROS RP: Majordomo dying starts a 73 s PULL countdown (W4a extension 29)")
+        ck(not Life:AnyEngaged(), "…and engages nothing by itself")
+        Addon:CancelPullTimer("test")
+    end
+
+    -- ── §2.11 the trash module: engage bars, per-mob identity, per-mob teardown
+    do
+        resetLife()
+        W.instanceID = 409
+        eq(Life:ArmZones(409), 1, "TRASH: entering Molten Core ARMS the trash module")
+        ck(Life:IsZoneArmed("mc:trash"), "…without engaging anything")
+        local rt = Life.zoneArmed["mc:trash"]
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SWING_DAMAGE", creatureId = 11658, sourceId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-1" })
+        local b = rt.timers.knockaway:Get("Creature-0-0-0-0-11658-1")
+        ck(b ~= nil, "…a Molten Giant swinging starts its ENGAGE bar…")
+        near(b.min, 5.3, 0.01, "…opening at the spec's 5.3…")
+        near(b.max, 10.5, 0.01, "…and closing at 10.5")
+        -- a second mob is a second bar, and the first mob's swings do not re-arm it
+        Life:Deliver({ on = "SWING_DAMAGE", creatureId = 11658, sourceId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-2" })
+        Life:Deliver({ on = "SWING_DAMAGE", creatureId = 11658, sourceId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-1" })
+        local n = 0
+        for _ in pairs(rt.timers.knockaway.live) do n = n + 1 end
+        eq(n, 2, "…two giants are TWO bars, and a mob that keeps swinging does not re-arm")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 18945, sourceId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-1" })
+        ck(sawWarn("WARN_ANNOUNCE", "Knock Away"), "…the ability itself announces…")
+        local r = rt.timers.knockaway:Get("Creature-0-0-0-0-11658-1")
+        near(r.min, 10.7, 0.01, "…and restarts THAT mob's bar on the recurring 10.7…")
+        near(r.max, 14.8, 0.01, "…to 14.8 window")
+        -- one warning per pack, not one per mob
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 18945, sourceId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-2" })
+        eq(warnCount("WARN_ANNOUNCE", "Knock Away"), 0,
+           "…while the 3 s anti-spam makes a pack of giants ONE warning")
+        -- and a death takes only its own bar
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 11658, destId = 11658,
+                       sourceGUID = "Creature-0-0-0-0-11658-1",
+                       destGUID = "Creature-0-0-0-0-11658-1" })
+        ck(rt.timers.knockaway:Get("Creature-0-0-0-0-11658-1") == nil,
+           "…a dead giant's bar is cancelled…")
+        ck(rt.timers.knockaway:Get("Creature-0-0-0-0-11658-2") ~= nil,
+           "…and its neighbour's is untouched")
+        Life:DisarmZones()
+    end
+
+    -- ── §3.1 ONYXIA: three phases, two half-stages, eight breath ids ──────────
+    do
+        resetLife()
+        W.instanceID = 249
+        setUnit("target", { cid = 10184, combat = true, hp = 100, hpmax = 100 })
+        setUnit("playertarget", { cid = 10184, combat = true, hp = 100, hpmax = 100 })
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+                    "How fortuitous. Usually, I must leave my lair in order to feed.")
+        local rt = Life:GetRuntime("onyxia:onyxia")
+        ck(rt ~= nil, "ONYXIA: engages on her greeting yell (combat-by-yell, §1.1)")
+        local fn, fx = barWindow(rt, "flamebreath")
+        near(fn, 11.3, 0.01, "…Flame Breath opens at 11.3…")
+        near(fx, 28.5, 0.01, "…and closes at 28.5")
+        ck(bar(rt, "wingbuffet") ~= nil, "…Wing Buffet runs alongside it…")
+        ck(bar(rt, "bellowingroar") ~= nil, "…and so does the fear clock")
+
+        -- the 70 % pre-warning is a HALF-stage that announces only the pre-warning
+        Addon:ClearEventLog()
+        Life:EvaluateHealthTriggers(rt, 69)
+        eq(rt.stage, 1.5, "…70 % moves the register to the FRACTIONAL stage 1.5…")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…which announces the pre-warning…")
+        ck(not sawWarn("WARN_ANNOUNCE", "Phase 2 — Onyxia takes off"),
+           "…and NOT a phase change (a half-stage never announces one)")
+
+        -- P1 -> P2 on the yell, and both ground bars stop
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+                    "This meaningless exertion bores me. I'll incinerate you all from above!")
+        eq(rt.stage, 2, "…the take-off yell IS phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 — Onyxia takes off"), "…announced")
+        eq(bar(rt, "flamebreath"), nil, "…the Flame Breath bar stops (she is airborne)…")
+        eq(bar(rt, "wingbuffet"), nil, "…and so does Wing Buffet")
+
+        -- DEEP BREATH: eight ids, one alert, 8 s anti-spam
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 18584, sourceId = 10184 })
+        ck(sawWarn("WARN_SPECIAL", "DEEP BREATH"), "…a breath from ONE perch calls it…")
+        near(bar(rt, "deepbreathcast").total, 5, 0.01, "…with a 5 s cast bar")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 18617, sourceId = 10184 })
+        eq(warnCount("WARN_SPECIAL", "DEEP BREATH"), 1,
+           "…and a second breath id inside 8 s does NOT double-announce")
+        advance(8.1)
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 17086, sourceId = 10184 })
+        ck(sawWarn("WARN_SPECIAL", "DEEP BREATH"), "…a third, after the window, does")
+
+        -- the 45 %-in-phase-2 half stage, then P3
+        Addon:ClearEventLog()
+        Life:EvaluateHealthTriggers(rt, 44)
+        eq(rt.stage, 2.5, "…45 % IN PHASE 2 moves the register to 2.5…")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 3 soon"), "…and pre-warns phase 3")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "It seems you'll need another lesson, mortals!")
+        eq(rt.stage, 3, "…and the landing yell is phase 3")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 3 — Onyxia lands"), "…announced")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 18431, sourceId = 10184 })
+        ck(sawWarn("WARN_SPECIAL", "FEAR incoming"), "…Bellowing Roar is a fear call")
+    end
+
+    -- ── §9 THE WORLD BOSSES: the outdoor path, and the 15 s wipe window ───────
+    do
+        local rt = engageWorld("world:azuregos", 6109,
+                               "This place is under my protection. The mysteries of the arcane " ..
+                               "shall remain inviolate.")
+        ck(rt ~= nil, "AZUREGOS: an OUTDOOR yell engages through the delay-0 target sweep")
+        eq(rt.difficulty.worldBoss, true, "…with the world-boss difficulty snapshot taken")
+        eq(Life:WipeWindow(rt), 15, "…and a 15 s wipe confirmation window, not 5")
+        -- dying at a world boss is not a wipe
+        setUnit("player", { guid = W.playerGUID, player = true, combat = false, dead = true })
+        eq(Life:ClassifyWipe(rt), Life.VERDICT.NOT_WIPE_WORLDBOSS_DEATH,
+           "…and being dead at a world boss is explicitly NOT a wipe")
+        setUnit("player", { guid = W.playerGUID, player = true, combat = true, dead = false })
+        eq(next(rt.timers), nil, "…while AZUREGOS runs no bars at all, by design")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 21099, sourceId = 6109 })
+        ck(sawWarn("WARN_ANNOUNCE", "Frost Breath"), "…Frost Breath announces…")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 21147, sourceId = 6109 })
+        ck(sawWarn("WARN_SPECIAL", "TELEPORT"), "…Arcane Vacuum warns you are about to move…")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 22067, sourceId = 6109 })
+        ck(sawWarn("WARN_SPECIAL", "STILL DANGEROUS"), "…and Reflection warns the casters")
+    end
+
+    do  -- §9.2 Kazzak's conditional berserk, both ways round
+        local rt = engageWorld("world:kazzak", 12397, "For the Legion! For Kil'Jaeden!")
+        ck(rt ~= nil, "KAZZAK: engages on his pull yell")
+        eq(rt.trigger, "chat",
+           "…and the engagement REMEMBERS that a yell caused it, through the outdoor sweep")
+        near(bar(rt, "berserk") and bar(rt, "berserk").total or -1, 180, 0.01,
+             "…so the 180 s berserk bar starts")
+        eq(Life:WipeWindow(rt), 15, "…on a 15 s world-boss wipe window")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 21056, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Mark of Kazzak on Bob"), "…the Mark names its victim…")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 21056, destIsPlayer = true,
+                       destName = "Drew" })
+        ck(sawWarn("WARN_SPECIAL", "MARK OF KAZZAK on YOU"), "…and calls it on you")
+
+        -- …and now a RANDOM OUTDOOR AGGRO pull, which the spec refuses to time
+        resetLife()
+        W.inInstance, W.instanceType, W.instanceID = false, "none", 0
+        W.difficultyID, W.maxPlayers = 0, 40
+        W.group = { "player" }
+        setUnit("target", { cid = 12397, combat = true, hp = 100, hpmax = 100 })
+        setUnit("playertarget", { cid = 12397, combat = true, hp = 100, hpmax = 100 })
+        local rt2 = Life:Sweep(0.5) and Life:GetRuntime("world:kazzak")
+        ck(rt2 ~= nil, "…a random outdoor aggro pull still ENGAGES the mod…")
+        eq(bar(rt2, "berserk"), nil,
+           "…but starts NO berserk bar, because that pull cannot be timed (§9.2)")
+    end
+
+    do  -- §9.3-9.6 the dragons: one fog call per pull, and the tank filter
+        local rt = engageWorld("world:ysondre", 14887,
+                               "The strands of LIFE have been severed! The Dreamers must be avenged!")
+        ck(rt ~= nil, "YSONDRE: engages on her own pull yell")
+        near(bar(rt, "sleepingfog").total, 18.4, 0.01, "…with the fog bar opening at 18.4")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 24814, sourceId = 14887 })
+        ck(sawWarn("WARN_SPECIAL", "SLEEPING FOG"), "…the first fog says move…")
+        near(bar(rt, "sleepingfog").total, 16.0, 0.01, "…and the bar recurs on 16.0")
+        Addon:ClearEventLog()
+        advance(20)
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 24813, sourceId = 14887 })
+        ck(not sawWarn("WARN_SPECIAL", "SLEEPING FOG"),
+           "…and every later fog is SILENT — 600 s means once per pull, deliberately")
+        near(bar(rt, "sleepingfog").total, 16.0, 0.01,
+             "…while the cooldown bar keeps running underneath it")
+        -- Lightning Wave arrives on the unit-cast channel, not the combat log
+        Addon:ClearEventLog()
+        Life:OnEvent("UNIT_SPELLCAST_SUCCEEDED", "target", nil, 24819)
+        ck(sawWarn("WARN_ANNOUNCE", "Lightning Wave"),
+           "…Lightning Wave is heard on the UNIT-CAST channel (W4a defect fix B)")
+        near(bar(rt, "lightningwave").total, 13.4, 0.01, "…on a 13.4 s clock")
+
+        -- Noxious Breath is filtered to the dragon's CURRENT tank
+        Addon:ClearEventLog()
+        setUnit("targettarget", { player = true, name = "Bob", guid = "Player-1-BBBB" })
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 24818, destName = "Bob",
+                       amount = 3, sourceId = 14887,
+                       sourceGUID = "Creature-0-0-0-0-14887-0001" })
+        ck(sawWarn("WARN_ANNOUNCE", "Noxious Breath Bob (3)"),
+           "…and Noxious Breath on the dragon's CURRENT TANK announces with its stack")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 24818, destName = "Carl",
+                       amount = 2, sourceId = 14887,
+                       sourceGUID = "Creature-0-0-0-0-14887-0001" })
+        ck(not sawWarn("WARN_ANNOUNCE", "Noxious Breath Carl"),
+           "…while the same debuff on somebody who is NOT tanking says nothing")
+
+        -- the three fog-only dragons
+        for _, d in ipairs({ { "lethon", 14888, "I can sense the SHADOW on your hearts", 18.4 },
+                             { "emeriss", 14889, "Hope is a DISEASE of the soul", 18.4 },
+                             { "taerar", 14890, "Peace is but a fleeting dream", 21.5 } }) do
+            local r = engageWorld("world:" .. d[1], d[2], d[3])
+            ck(r ~= nil, d[1] .. " engages on its own pull yell")
+            near(bar(r, "sleepingfog").total, d[4], 0.01, "…with its own fog pull value")
+            eq(bar(r, "lightningwave"), nil, "…and no Lightning Wave (Ysondre only)")
+        end
+    end
+
+    -- ── W4 CLOSES: all eight zones in one registry, counted against §10 ───────
+    -- The spec's coverage table declares 65 encounters (59 raid bosses + 6 world
+    -- bosses) plus 5 zone-wide trash modules. This loads EVERY zone file the addon
+    -- ships and proves the registry matches that table exactly — which is the one
+    -- assertion no single wave could make before this one.
+    do
+        Addon.encounters, Addon.encountersById = {}, {}
+        Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+        Addon.zones, Addon.zonesById = {}, {}
+        for _, chunk in ipairs({ NAXX_CHUNK, AQ20_CHUNK, AQ40_CHUNK, BWL_CHUNK, ZG_CHUNK,
+                                 MC_CHUNK, ONY_CHUNK, WB_CHUNK }) do
+            local okc, e = pcall(chunk, ADDON_NAME, Addon)
+            ck(okc, "W4 CLOSE: every zone file co-exists in one registry" ..
+                    (okc and "" or (" -> " .. tostring(e))))
+        end
+        local bosses, trash, badKeys = 0, 0, {}
+        for _, enc in ipairs(Addon.encounters) do
+            if enc.detect.mode == "zone" then trash = trash + 1 else bosses = bosses + 1 end
+            local errs = API.Validate(enc)
+            if #errs > 0 then badKeys[#badKeys + 1] = enc.id .. " (" .. errs[1] .. ")" end
+        end
+        eq(#badKeys, 0, "…and every one of them validates" ..
+           (#badKeys > 0 and (": " .. table.concat(badKeys, "; ")) or ""))
+        eq(bosses, 65, "…65 encounters, exactly the spec's coverage table (59 raid + 6 world)")
+        eq(trash, 5, "…and 5 zone-wide trash modules (MC, BWL, AQ20, AQ40, Naxx)")
+        API.PublishOptionsTree()
+        eq(#Addon.raids, 8, "…projecting into eight raids in the options tree")
+        local order = {}
+        for _, r in ipairs(Addon.raids) do order[#order + 1] = r.id end
+        eq(table.concat(order, ","), "mc,onyxia,bwl,zg,aq20,aq40,naxxramas,world",
+           "…in progression order, with the world bosses last")
+        -- No two encounters may claim the same option-key namespace.
+        local seenLegacy = {}
+        local dupes = {}
+        for _, enc in ipairs(Addon.encounters) do
+            local k = enc.legacy.raidId .. ":" .. enc.legacy.bossId
+            if seenLegacy[k] then dupes[#dupes + 1] = k end
+            seenLegacy[k] = true
+        end
+        eq(#dupes, 0, "…with no two encounters sharing a SavedVariables namespace" ..
+           (#dupes > 0 and (": " .. table.concat(dupes, ", ")) or ""))
+    end
+
+    Addon._suppressLegacyAlerts = nil
+    Addon:SetEventRecording(false)
+    resetLife()
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c, 4b)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c, 4b, 4a)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -6681,7 +7388,9 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "AQ  §6/§7 encounter data: registration, keys, the options tree",
                      "AQ-DRIVE  §6/§7 per-encounter behaviour through the real engine",
                      "BWLZG  §4/§5 encounter data: registration, keys, the options tree",
-                     "BWLZG-DRIVE  §4/§5 per-encounter behaviour through the real engine" }) do
+                     "BWLZG-DRIVE  §4/§5 per-encounter behaviour through the real engine",
+                     "MCONYWB  §2/§3/§9 encounter data: registration, keys, the options tree",
+                     "MCONYWB-DRIVE  §2/§3/§9 per-encounter behaviour through the real engine" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

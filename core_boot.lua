@@ -241,12 +241,20 @@ function Addon:GetBoss(raidId, bossId)
 end
 function Addon:GetBossByNpcID(npcID) return Addon.npcIndex[npcID] end
 
--- HARD STOP, not a silent no-op. The 1.x data files (data_naxxramas / data_bwl /
--- data_aq40) are PARKED ON DISK but OUT OF THE .toc: W4 regenerates them in the new
--- declarative grammar. If one of them is ever re-added to the load list by accident,
--- the old flat mechanic model would half-populate the options tree beside the new
--- encounter registry and be extremely confusing. So this refuses, loudly and
--- traceably, instead of accepting.
+-- HARD STOP, not a silent no-op.
+--
+-- W4a UPDATE — THE LAST LEGACY CALLER CLASS IS GONE. This shim was written while the
+-- three 1.x data files (data_naxxramas / data_bwl / data_aq40) were parked on disk but
+-- out of the .toc, to stop one of them half-populating the options tree beside the new
+-- encounter registry if it were ever re-added by accident. All three are now DELETED
+-- (W4d/W4c/W4b consumed them in turn), Molten Core, Onyxia and the world bosses never
+-- had one at all, and with W4a the whole tree is projected from the registry. So there
+-- is no caller left anywhere in the addon.
+--
+-- It STAYS, and stays refusing, for two reasons that outlive the files: a third-party
+-- or hand-written plugin may still call it, and `Addon:RegisterRaid` existing as a
+-- silent no-op would be worse than it not existing at all. A refusal that writes to
+-- the telemetry ring is the traceable answer.
 function Addon:RegisterRaid(def)
     if Addon.Telemetry then
         Addon.Telemetry.Write("api.validate", {

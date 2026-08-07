@@ -59,6 +59,9 @@ enc_aq20.lua
 enc_aq40.lua
 enc_bwl.lua
 enc_zg.lua
+enc_moltencore.lua
+enc_onyxia.lua
+enc_worldbosses.lua
 
 soundpicker.lua
 options.lua
@@ -70,6 +73,14 @@ slash.lua
 #
 # NOTHING IS PARKED ANY MORE. W4b was the last wave with a 1.x data file left on
 # disk, and it consumed it.
+#
+# W4a CLOSES WAVE 4. Molten Core, Onyxia's Lair and the world bosses NEVER had 1.x
+# data files — data_naxxramas / data_aq40 / data_bwl were the only three that ever
+# existed — so there was nothing to diff, nothing to restore and nothing to retire on
+# this side. With W4a in, no parked data file remains anywhere in the addon and the
+# `Addon:RegisterRaid` refusal shim in core_boot.lua has outlived its last legacy
+# caller class: every raid in the options tree is now PROJECTED from the encounter
+# registry (core_api.lua §E).
 #
 # data_naxxramas.lua  DELETED in W4d — enc_naxxramas.lua replaces it. Its values
 #   were diffed against the spec first; every disagreement is in the wave report and
