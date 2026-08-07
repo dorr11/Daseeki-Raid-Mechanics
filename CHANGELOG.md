@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 1 (engine core, internal)
+- Raid Mechanics has a new engine underneath it. The old one could only watch for a
+  boss the moment you personally entered combat with it, kept its timings on the
+  game's own tick, and had no idea when a pull had actually gone wrong. The new one
+  watches for a pull five different ways (the game's encounter event, three staggered
+  sweeps of what everyone in the raid is targeting, boss yells and emotes, and a
+  guarded boss-health check), so a fight starts on time whether you pulled it, someone
+  else did, or you ran in late.
+- Wipes are now recognised properly. The engine checks every three seconds and then
+  waits to be sure before calling it, so feigning, vanishing, a spirit release, a boss
+  briefly phasing out or a long roleplay pause no longer end your timers early — and a
+  real wipe still closes the fight cleanly. World bosses get a longer grace period, and
+  a fight that needs even longer can say so.
+- Re-pulling is protected: after a kill the fight will not restart for two minutes,
+  after a wipe for twenty seconds, and zoning out and back in clears both immediately.
+  No more double-started timers when the raid resets and pulls again.
+- Every timer now runs on one shared clock built for the job. Bars no longer drift over
+  a long fight, a laggy frame delays a warning instead of quietly desynchronising
+  everything after it, and outside combat the engine does no work at all.
+- Timer bars understand ability windows. A cast that lands somewhere between 40 and 60
+  seconds now shows the whole window rather than pretending to be exact — the bar runs
+  to the latest time with the window shaded, while the countdown voice, the sorting and
+  the "this is about to happen" enlargement all use the EARLIEST time, so you are never
+  told to relax during the part of the window where it can actually happen.
+- New: the engine now checks its own timer data. Every time a bar restarts, it measures
+  the one it replaced, and anything that fired outside its declared window is written to
+  a small, capped record inside your saved settings — never to chat. After a few raid
+  nights that record says, with numbers, exactly which of our timings are wrong. Nobody
+  gets nagged and nothing is sent anywhere.
+- Internal, no user-visible change yet: encounters are now described as data rather than
+  code, so the remaining zones can be added quickly and consistently. The Naxxramas
+  widgets you already use (Four Horsemen, Gothik, Loatheb, Razuvious, Thaddius) are
+  untouched and will re-seat on the new engine unchanged.
+- Encounter data for Naxxramas, Blackwing Lair and Ahn'Qiraj is temporarily not loaded
+  while it is regenerated in the new format. This build is an internal engine milestone,
+  not a raid-night build.
+
 ## Unreleased (internal)
 - The alert HUD now matches the rest of the Daseeki suite. Timer bars, the centre
   warnings, the Gothik / Four Horsemen / Loatheb / Mini-Boss widgets and the sound

@@ -5,18 +5,25 @@
 ## X-Curse-Project-ID: 1592413
 ## SavedVariables: DaseekiRaidMechanicsDB
 ## OptionalDeps: Daseeki-Core, DBM-Core
-## Version: 1.3.0
+## Version: 2.0.0
 
 core.lua
 theme.lua
 media.lua
 soundpacks.lua
-encounters.lua
-data_naxxramas.lua
-data_bwl.lua
-data_aq40.lua
+
+# ── 2.0 engine core (wave 1) ───────────────────────────────────────────────────
+# Load order is a dependency chain: heap -> telemetry -> scheduler -> timers ->
+# encounter API -> lifecycle -> boot. Nothing below reaches upward at load time.
+core_heap.lua
+core_telemetry.lua
+core_sched.lua
+core_timers.lua
+core_api.lua
+core_lifecycle.lua
+core_boot.lua
+
 alerts.lua
-engine.lua
 dbm_bridge.lua
 modules.lua
 mod_loatheb_healers.lua
@@ -28,3 +35,15 @@ thaddius.lua
 soundpicker.lua
 options.lua
 slash.lua
+
+# ── RETIRED in 2.0 (do not re-add) ─────────────────────────────────────────────
+# engine.lua      DELETED — replaced by core_sched/core_timers/core_lifecycle/core_api.
+# encounters.lua  DELETED — replaced by the declarative registry in core_api.lua.
+#
+# ── PARKED, still on disk, deliberately NOT loaded ─────────────────────────────
+# data_naxxramas.lua / data_bwl.lua / data_aq40.lua
+#   The 1.x flat mechanic model. W4 regenerates all eight zones in the new
+#   declarative grammar; these stay on disk until then purely as cross-check input
+#   for the spell IDs already verified against Drew's combat logs. Re-adding one to
+#   the load list is refused at runtime by Addon:RegisterRaid (core_boot.lua) and
+#   is a harness failure (GATE RETIRE).
