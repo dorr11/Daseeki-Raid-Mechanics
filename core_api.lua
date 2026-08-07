@@ -145,6 +145,40 @@
          the mapping from yell to class is data, so the predicate reads `tr.class`
          instead of one warning row per class per arm.
 
+    W4A GRAMMAR EXTENSIONS (Molten Core + Onyxia + the world bosses — the wave that
+    closes W4). TWO, and both come out of Ragnaros. The grammar was mature enough that
+    seven zones' worth of encounters needed nothing else; these two are recorded here
+    because a reader should be able to see exactly what the last zone cost.
+
+     28. COUNTER ROUTING.  `on = "counter"` finally FIRES. "A counter threshold" has
+         been in the published trigger vocabulary since wave 1 and nothing ever routed
+         one — the same dead-vocabulary situation W4d extension 6 found for `stage`
+         and `state`. Every counter change on a DECLARED counter row is now routed as
+         `{ on = "counter", key =, fromKey-matchable, value =, delta = }`, so
+         "when the eighth Son of Flame dies, emerge NOW" is a rule rather than an
+         accident of row-indexing order. Internal bookkeeping counters (`__warn:`,
+         `__occ:`) are deliberately NOT routed: they are engine plumbing, not data.
+     29. PULL COUNTDOWN FROM A DEATH.  `detect.pullCountdown` may name
+         `creatureDeath = <creature id>` instead of a chat line. W4b extension 25
+         established the surface ("an event that precedes the pull by a known interval
+         starts the engine's own pull timer"); this only widens the admissible events,
+         because Ragnaros's RP window is measured from MAJORDOMO DYING and there is no
+         chat line for it in the spec.
+
+    W4A DEFECT FIXES (not extensions — two published paths that nothing ever drove).
+    Both predate this wave and both affect encounters shipped in W4d/W4c/W4b:
+
+      A. UNIT_DIED never reached `Life:OnUnitDied`. The combat-log path routed the
+         event to encounter rows and stopped there, so DEATH-BASED KILL DETECTION was
+         reachable only through a corroborated sync or the harness. Razorgore
+         (`noEncounterEndKill`) had no working kill path in-game at all. Wired in
+         `Life:Deliver`.
+      B. `unitCast` was never PRODUCED. UNIT_SPELLCAST_SUCCEEDED was not in the
+         lifecycle's event set, so every `on = "unitCast"` row ever written was dead:
+         Maexxna's spiderlings, Sapphiron's air phase, Viscidus, Venoxis, Arlokk — and
+         now Ragnaros's submerge visual and Ysondre's Lightning Wave. Registered and
+         normalised, gated so it costs nothing while nothing is engaged.
+
     THE ESCAPE HATCH IS THE CONTRACT WITH W4d. The five shipped Naxx specials
     (mod_loatheb_healers, mod_fourhorsemen_rotation, mod_fourhorsemen_tracker,
     mod_gothik_waves, mod_razuvious_understudy, thaddius) are NOT touched by this
@@ -458,6 +492,43 @@ API.Conditions.playerClassIs = function(rt, ev, tr)
     local f = Addon.ClassResolver
     if type(f) ~= "function" then return false end   -- unanswerable: do not claim it is you
     return f() == want
+end
+
+-- ── W4a: two more predicates (still not new shapes) ───────────────────────────
+
+-- "…and the player this event is ABOUT is the boss's current tank." The mirror of
+-- `playerIsBossTarget`, which answers the same question about YOU. The Dragons of
+-- Nightmare filter their Noxious Breath stack announce to the dragon's current tank
+-- rather than to a role, so the subject of the test is the event's destination.
+API.Conditions.destIsBossTarget = function(rt, ev, tr)
+    local name = ev and (ev.destName or ev.targetName)
+    if not name then return false end
+    local unit
+    local Scan = Addon.Scan
+    if Scan and Scan.ResolveUnit then
+        local cid = (tr and tr.creatureId) or (ev and ev.sourceId) or (rt.def.creatureIds or {})[1]
+        unit = Scan.ResolveUnit(cid, ev and ev.sourceGUID)
+    end
+    if not unit then return false end
+    local f = Addon.Lifecycle and Addon.Lifecycle.env and Addon.Lifecycle.env.UnitName
+    if type(f) ~= "function" then f = _G.UnitName end
+    if type(f) ~= "function" then return false end
+    return f(unit .. "target") == name
+end
+
+-- "…and this pull is reliable enough to put a clock on it." Lord Kazzak's berserk bar
+-- is the spec's one conditional timer: it starts only when the pull was yell-detected
+-- or the fight is inside an instance, because a random outdoor aggro pull can happen
+-- minutes before anybody notices and a berserk bar seeded from it is a lie. It is one
+-- rule with an OR in it — the OR is the rule, not two rules — so it is one predicate.
+API.Conditions.pullTimeable = function(rt)
+    if rt and rt.trigger == "chat" then return true end
+    local L = Addon.Lifecycle
+    if L and type(L.InInstance) == "function" then
+        local okc, inside = pcall(L.InInstance, L)
+        if okc and inside then return true end
+    end
+    return false
 end
 
 -- "…and the mob that gained it is on a nameplate." The Twin Emperors' Explode Bug
@@ -959,8 +1030,16 @@ function API.Validate(def)
             if type(pc.seconds) ~= "number" or pc.seconds <= 0 then
                 errs[#errs + 1] = pw .. ": needs a positive `seconds`"
             end
-            if not (pc.yell or pc.yellFind or pc.emote or pc.emoteFind or pc.say or pc.sayFind) then
-                errs[#errs + 1] = pw .. ": needs a chat line to start from"
+            -- W4a extension 29: a creature DEATH is a legal source too. Ragnaros's RP
+            -- window is measured from Majordomo dying and the spec gives no chat line
+            -- for it, so "a chat line" is no longer the whole admissible set.
+            if pc.creatureDeath ~= nil and type(pc.creatureDeath) ~= "number"
+               and type(pc.creatureDeath) ~= "table" then
+                errs[#errs + 1] = pw .. ": `creatureDeath` must be a creature id (or a list)"
+            end
+            if not (pc.yell or pc.yellFind or pc.emote or pc.emoteFind or pc.say
+                    or pc.sayFind or pc.creatureDeath) then
+                errs[#errs + 1] = pw .. ": needs a chat line or a creature death to start from"
             end
         end
     end
@@ -1285,6 +1364,19 @@ local function rateStamp(rt, key, row)
     ring.cap = cap
 end
 
+-- W4a extension 28. A counter change is an EVENT. `on = "counter"` has been in the
+-- published vocabulary since wave 1 and nothing ever routed one, so "when this count
+-- reaches N" could be declared and could never fire — the same hole W4d extension 6
+-- closed for `stage` and `state`.
+--
+-- Only DECLARED counter rows are routed. `__warn:` and `__occ:` are engine
+-- bookkeeping under the same table, and routing them would put a synthetic event on
+-- every counting warning and every timer occurrence for no reader.
+local function routeCounter(rt, key, value, delta)
+    if not (rt.def.rowsByKey and rt.def.rowsByKey[key]) then return 0 end
+    return rt:RouteSynthetic({ on = "counter", key = key, value = value, delta = delta })
+end
+
 function Runtime:Count(key, delta)
     local v = (self.counters[key] or 0) + (delta or 1)
     self.counters[key] = v
@@ -1293,6 +1385,7 @@ function Runtime:Count(key, delta)
         rateStamp(self, key, self.def.rowsByKey and self.def.rowsByKey[key])
     end
     Addon:FireEngineEvent("COUNTER", self.id, key, v, delta or 1)
+    routeCounter(self, key, v, delta or 1)
     return v
 end
 
@@ -1303,6 +1396,7 @@ function Runtime:ResetCount(key, to)
     self.counters[key] = to or (row and row.from) or 0
     self.rateLog[key] = nil
     Addon:FireEngineEvent("COUNTER", self.id, key, self.counters[key], 0)
+    routeCounter(self, key, self.counters[key], 0)
     return self.counters[key]
 end
 

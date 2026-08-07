@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 4a (Molten Core + Onyxia + world bosses — internal)
+- **The last three zones are in, and that finishes every raid.** Molten Core's ten
+  bosses plus a zone-wide trash module, Onyxia, and all six world bosses — Azuregos,
+  Lord Kazzak and the four Dragons of Nightmare. With this wave the addon covers all
+  **65 encounters** across eight zones, which is every fight in the reference set.
+- **Ragnaros has his whole submerge cycle.** The submerge is spotted two ways — his
+  "COME FORTH, MY SERVANTS" yell and the submerge animation itself — and either one
+  stops his Wrath bar and starts the 90-second emerge clock. The eight Sons of Flame are
+  counted as they die (a corpse can't be counted twice), and killing the last one brings
+  him back up **immediately** rather than waiting out the clock. His post-emerge Wrath
+  timing is genuinely different from his opening timing, and the bar now says so.
+- **The Ragnaros walk-in has a countdown.** Majordomo dying starts a 73-second bar so
+  the raid knows exactly when Ragnaros becomes attackable, instead of standing there
+  guessing.
+- **Onyxia's Deep Breath is called every time.** This client fires a different Deep
+  Breath spell depending on which perch she flew to, so the alert listens for all eight
+  of them and still only shouts once. Her three phases come off her own yells, and you
+  get "phase 2 soon" at 70% and "phase 3 soon" at 45% — the pre-warning only, without a
+  false phase-change announce in front of it.
+- **Molten Core trash gets eleven per-mob bars.** A Molten Giant's Knock Away, a
+  Firelord's Lava Spawn, a Flameguard's Cone of Fire and eight more, each one attached
+  to *that* mob's nameplate — so two giants are two bars, and a giant dying takes only
+  its own bar with it. A pack of six identical mobs still produces one warning, not six.
+- **World bosses behave like world bosses.** Dying at one is not a wipe, the addon waits
+  15 seconds before calling one, and an open-world pull starts everybody's timers
+  together. Kazzak's berserk bar only starts when the pull was actually heard — a random
+  outdoor aggro pull can happen minutes before anyone notices, and a bar seeded from
+  that moment would be worse than none. Azuregos deliberately has **no** bars at all:
+  every one of his abilities was measured and every window was too wide to show
+  honestly.
+- **Three long-standing bugs fixed along the way.** Deaths in the combat log were never
+  reaching kill detection, which meant Razorgore (the one fight that has to work this
+  out for itself) could never register a kill. A whole class of boss cast — the ones
+  this client leaves out of the combat log entirely — was never being listened for, so
+  Maexxna's spiderlings, Sapphiron's air phase, Viscidus, Venoxis and Arlokk were all
+  quietly missing a trigger. And the pull countdown was capped at 60 seconds, which is
+  shorter than Ragnaros's own walk-in.
+- Golemagg still has exactly one alert and Onyxia still has no whelp timer, because
+  that is genuinely all the reference has for them. Nothing has been invented to fill a
+  gap.
+
 ## Unreleased — 2.0.0 rebuild, Ahn'Qiraj data arbitrations (internal)
 - **Two Temple bars are back that the rebuild had no numbers for.** Battleguard
   Sartura's Whirlwind now has a cooldown bar again: the reference data says nobody ever
