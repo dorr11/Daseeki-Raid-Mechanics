@@ -516,7 +516,12 @@ function Life:EvaluateHealthTriggers(rt, pct)
         local tr = entry.trigger
         -- Phase rows have no option key of their own, so they are addressed by
         -- their index in the phases list.
-        local key = (entry.consumer.row.key or ("phase#" .. tostring(entry.consumer.act))) .. ":health"
+        -- W4c: the once-per-engagement key is per THRESHOLD, not per row. Skeram's
+        -- three split pre-warnings are one row with three health windows, and keying
+        -- the "already fired" set on the row alone would spend the row on the first
+        -- window and go silent for the other two.
+        local key = (entry.consumer.row.key or ("phase#" .. tostring(entry.consumer.act)))
+                    .. ":health:" .. tostring(tr.pct) .. ":" .. tostring(tr.pctMin or "")
         local hev = { on = "health", pct = pct }
         -- W4d: run the health threshold through the SAME matcher every other trigger
         -- uses, so a health rule can be scoped ("phase 3 at <= 48 % WHILE IN PHASE 2" —
@@ -1038,7 +1043,16 @@ function Life:NormalizeCLEU(subevent, sourceGUID, sourceName, sourceFlags, sourc
             end
         else
             ev.school = a3
+            -- W4c: the miss sub-events put the miss TYPE where damage puts its amount.
+            -- The Anubisath reflect buffs are not reliably visible on Era, so
+            -- "REFLECT/DEFLECT + this school" is the only evidence a reflect happened.
+            if subevent == "SPELL_MISSED" or subevent == "SPELL_PERIODIC_MISSED"
+               or subevent == "RANGE_MISSED" then
+                ev.missType = a4
+            end
         end
+    elseif subevent == "SWING_MISSED" then
+        ev.missType = a1
     end
     local pg = Life.env.UnitGUID("player")
     ev.destIsPlayer   = (pg ~= nil and destGUID == pg)

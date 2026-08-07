@@ -57,6 +57,44 @@
      11. (core_lifecycle) the nameplate path, combat-log pet flags and zone-armed
          trash modules; (core_sched) `gaps.repeatFrom`; (svc_scan) `reportLoss`.
 
+    W4C GRAMMAR EXTENSIONS (Ruins + Temple of Ahn'Qiraj wave). Seven more, same
+    discipline: every one is a PRIMITIVE, not a boss-shaped hole.
+
+     12. ROSTERS.  `rosters = { … }` — a live membership SET with a per-member stack
+         count, driven by ordinary triggers (`add` / `remove` / `clear`). "Who
+         currently carries debuff X, and at what stack" was code in every mod that
+         needed it; here it is data. C'Thun's stomach list is the design case; the
+         four Vanilla tank-swap fights (Kurinnaxx, Buru, Fankriss, Huhuran) use the
+         same primitive to answer "is anyone ELSE at 5 stacks while I am clean".
+         Membership changes are published (`ROSTER`) and re-enter as an ordinary
+         `on = "roster"` trigger.
+     13. ROSTER-RELAYED SCAN.  `scans[].type = "roster"` (serviced in svc_scan) —
+         sample a creature you cannot see yourself THROUGH the targets of a roster's
+         members, hold each GUID's health, and report it as an ordinary `on = "probe"`
+         trigger. C'Thun's Flesh Tentacles are only visible to players inside the
+         stomach; the general fact is "an ally's target is a unit token you do not
+         otherwise have".
+     14. RATE COUNTERS.  `rate = { window =, fallback = }` on a counter row. Wave 1's
+         header promised rate counters and the field was inert; Viscidus (frost hits
+         per second while thawed, melee hits per second while frozen) is what it was
+         promised FOR, so it now computes. `rt:Rate(key)`.
+     15. CONDITION LISTS.  `condition` / `conditionNot` accept a LIST of named
+         predicates, all of which must pass. "Someone else is at 5 stacks AND you are
+         clean AND you are alive" is three facts, not one, and inventing a fused
+         predicate per boss is exactly the shape this registry exists to avoid.
+         Five new general predicates ship with it (see API.Conditions).
+     16. MISS TYPES.  `missType` on a trigger, normalised by core_lifecycle for the
+         four *_MISSED sub-events. The Anubisath reflect buffs are not reliably
+         visible on Era, so REFLECT / DEFLECT plus the spell school is the only
+         evidence there is.
+     17. PER-SOURCE ANTI-SPAM.  `antispamBy = "<event field>"` widens an anti-spam
+         key with a value off the event, so "one alert per MOB per second" stops
+         being "one alert per second across a whole pull of Anubisaths".
+     18. STATE DWELL TIME.  `minStateAge` on a state transition — fire only once the
+         machine has been in its current state for N seconds. Viscidus's failed
+         shatter is inferred from him swinging at someone MORE THAN 5 s after he
+         froze, and "more than 5 s after" is a property of the machine, not the swing.
+
     THE ESCAPE HATCH IS THE CONTRACT WITH W4d. The five shipped Naxx specials
     (mod_loatheb_healers, mod_fourhorsemen_rotation, mod_fourhorsemen_tracker,
     mod_gothik_waves, mod_razuvious_understudy, thaddius) are NOT touched by this
@@ -233,6 +271,7 @@ API.TRIGGER_EVENTS = {
     SPELL_PERIODIC_MISSED = true, SPELL_HEAL = true, SPELL_SUMMON = true,
     SPELL_INTERRUPT = true, SPELL_DISPEL = true, SWING_DAMAGE = true,
     RANGE_DAMAGE = true, UNIT_DIED = true, UNIT_DESTROYED = true,
+    RANGE_MISSED = true, SWING_MISSED = true,   -- W4c: the reflect evidence path
     -- synthetic / non-CLEU
     pull = true, yell = true, say = true, emote = true, bossEmote = true,
     unitCast = true,        -- UNIT_SPELLCAST_SUCCEEDED channel (Gothik, Sapphiron, Ysondre)
@@ -246,6 +285,15 @@ API.TRIGGER_EVENTS = {
     state = true,           -- an emote state machine transition
     counter = true,         -- a counter threshold
     aura = true,            -- a unit-aura sweep result (Chromaggus/Thaddius icon reads)
+    roster = true,          -- W4c: a roster membership change (C'Thun's stomach list)
+    probe = true,           -- W4c: a roster-relayed unit sample (C'Thun's Flesh Tentacles)
+}
+
+-- W4c extension 16. The four *_MISSED sub-events carry a miss TYPE that nothing
+-- else does. Uppercase, matched verbatim ("REFLECT", "DEFLECT", "IMMUNE", …).
+API.MISS_TYPES = {
+    ABSORB = true, BLOCK = true, DEFLECT = true, DODGE = true, EVADE = true,
+    IMMUNE = true, MISS = true, PARRY = true, REFLECT = true, RESIST = true,
 }
 
 -- Role gates (ENCOUNTERS SPEC §1.4). Compound gates use `|` as OR. The engine
@@ -257,7 +305,9 @@ API.ROLE_GATES = {
     RemoveMagic = true, RemoveCurse = true, RemovePoison = true, RemoveEnrage = true,
 }
 
-API.SCAN_TYPES  = { poll = true, event = true, repeated = true }
+-- W4c extension 13 adds the fourth shape: `roster`, which samples through OTHER
+-- PLAYERS' targets rather than through the boss's.
+API.SCAN_TYPES  = { poll = true, event = true, repeated = true, roster = true }
 API.COUNTER_SCOPES = { global = true, self = true, boss = true, census = true, target = true }
 API.WARN_TIERS  = { announce = true, special = true }
 
@@ -283,6 +333,110 @@ API.Conditions.playerIsBossTarget = function(rt, ev, tr)
     if type(f) ~= "function" then return false end
     return f("player", unit .. "target") and true or false
 end
+
+-- ── W4c: the taunt-branch predicates (extension 15) ───────────────────────────
+-- The spec's three-way stack branch — "on you" / "you should taunt" / "plain
+-- announce" — appears verbatim on Kurinnaxx, Buru, Fankriss and Huhuran. Its middle
+-- arm is THREE separate facts: someone else is at N stacks (an ordinary trigger
+-- filter), you do not carry the debuff, and you are alive. Each is its own predicate.
+
+-- "…and you are alive" (not dead, not a ghost). Also the suppressor on C'Thun's
+-- Dark Glare special, which the spec says is skipped while you are a ghost.
+API.Conditions.playerAlive = function()
+    local L = Addon.Lifecycle
+    local f = (L and L.env and L.env.UnitIsDeadOrGhost) or _G.UnitIsDeadOrGhost
+    if type(f) ~= "function" then return true end     -- unanswerable: do not suppress
+    return not f("player")
+end
+
+-- "…and YOU do not have the debuff." Answered from the encounter's own roster
+-- rather than from an aura scan: the engine has already watched every application
+-- and removal go past in the combat log, so the membership set is both cheaper and
+-- more Era-reliable than re-reading the player's debuff bar.
+API.Conditions.playerNotInRoster = function(rt, ev, tr)
+    local key = tr and (tr.roster or tr.rosterKey)
+    if not key then return false end
+    local r = rt.rosters and rt.rosters[key]
+    if not r then return true end
+    return r[API.PlayerName()] == nil
+end
+
+-- "…and this event is about YOU", where "about you" is either the destination name
+-- or your name appearing inside the text. Buru's pursuit has no spell id at all on
+-- Era — the emote naming you is the entire mechanic — and a boss-target scan
+-- reports a NAME, not a unit flag, so both shapes need the same answer.
+API.Conditions.namesPlayer = function(rt, ev)
+    if not ev then return false end
+    if ev.destIsPlayer then return true end
+    local me = API.PlayerName()
+    if not me then return false end
+    if ev.destName == me or ev.targetName == me then return true end
+    if type(ev.text) == "string" and ev.text:find(me, 1, true) then return true end
+    return false
+end
+
+-- "…and the mob is close enough to matter." Sartura's whirlwind special is gated on
+-- a can-you-actually-be-hit check; the Era answer is the range ladder, clamped.
+API.Conditions.playerNearSource = function(rt, ev, tr)
+    local Era = Addon.Era
+    if not Era or type(Era.CheckRange) ~= "function" then return true end
+    local unit
+    local Scan = Addon.Scan
+    if Scan and Scan.ResolveUnit then
+        unit = Scan.ResolveUnit((tr and tr.creatureId) or (ev and ev.sourceId),
+                                ev and ev.sourceGUID)
+    end
+    if not unit then return true end       -- cannot see it: do not swallow the alert
+    return Era.CheckRange(unit, (tr and tr.range) or 10) and true or false
+end
+
+-- "…and the mob that gained it is on a nameplate." The Twin Emperors' Explode Bug
+-- only warns for a bug that is actually near you, and walking the nameplate units is
+-- the only proximity answer Era gives for a mob you are not targeting.
+API.Conditions.sourceOnNameplate = function(rt, ev)
+    local guid = ev and (ev.sourceGUID or ev.destGUID)
+    if not guid then return false end
+    local L = Addon.Lifecycle
+    if not L or type(L.env.ForEachNameplate) ~= "function" then return false end
+    return L.env.ForEachNameplate(function(u)
+        return L.env.UnitGUID(u) == guid
+    end) and true or false
+end
+
+-- The player's own name, cached per session. Every predicate above needs it and
+-- UnitName("player") is not free inside a combat-log hot path.
+-- Read through the LIFECYCLE'S injected world first and only then off the global, so
+-- the predicates above answer the same world every other engine decision answers
+-- (and so the harness can drive them).
+function API.PlayerName()
+    if API._playerName then return API._playerName end
+    local n
+    local L = Addon.Lifecycle
+    if L and type(L.env) == "table" and type(L.env.UnitName) == "function" then
+        n = L.env.UnitName("player")
+    end
+    if n == nil and type(_G.UnitName) == "function" then n = _G.UnitName("player") end
+    API._playerName = n
+    return n
+end
+function API.ForgetPlayerName() API._playerName = nil end
+
+-- Run a trigger's `condition` / `conditionNot` field, which may be one name or a
+-- LIST of names (extension 15). An unknown name has already been refused by
+-- validation, so a missing predicate here means the row was hand-built in a test.
+local function conditionsPass(rt, ev, tr, field, wantTrue)
+    local spec = tr[field]
+    if spec == nil then return true end
+    local list = type(spec) == "table" and spec or { spec }
+    for _, name in ipairs(list) do
+        local f = API.Conditions[name]
+        local got = f and f(rt, ev, tr) and true or false
+        if wantTrue and not got then return false end
+        if (not wantTrue) and got then return false end
+    end
+    return true
+end
+API.ConditionsPass = conditionsPass
 
 -- ── Registry ──────────────────────────────────────────────────────────────────
 Addon.encounters        = {}    -- ordered array
@@ -319,11 +473,48 @@ local function validateTrigger(errs, where, tr)
     if tr.delay ~= nil and (type(tr.delay) ~= "number" or tr.delay < 0) then
         errs[#errs + 1] = where .. ": `delay` must be a non-negative number"
     end
-    if tr.condition ~= nil and API.Conditions[tr.condition] == nil then
-        errs[#errs + 1] = where .. ": unknown condition '" .. tostring(tr.condition) .. "'"
+    -- W4c extension 15: one name or a list of them, every entry registered.
+    for _, field in ipairs({ "condition", "conditionNot" }) do
+        local spec = tr[field]
+        if spec ~= nil then
+            local list = type(spec) == "table" and spec or { spec }
+            if type(spec) == "table" and #spec == 0 then
+                errs[#errs + 1] = where .. ": `" .. field .. "` list is empty"
+            end
+            for _, name in ipairs(list) do
+                if API.Conditions[name] == nil then
+                    errs[#errs + 1] = where .. ": unknown condition '" .. tostring(name) .. "'"
+                end
+            end
+        end
     end
-    if tr.conditionNot ~= nil and API.Conditions[tr.conditionNot] == nil then
-        errs[#errs + 1] = where .. ": unknown condition '" .. tostring(tr.conditionNot) .. "'"
+    -- W4c extension 16: miss types are a closed set; a typo here is silent forever.
+    if tr.missType ~= nil then
+        local list = type(tr.missType) == "table" and tr.missType or { tr.missType }
+        for _, m in ipairs(list) do
+            if not API.MISS_TYPES[m] then
+                errs[#errs + 1] = where .. ": unknown miss type '" .. tostring(m) .. "'"
+            end
+        end
+    end
+    -- W4c extension 17: the widening field must name an event field, and widening a
+    -- key with no window to throttle is a data mistake worth catching.
+    if tr.antispamBy ~= nil then
+        if type(tr.antispamBy) ~= "string" then
+            errs[#errs + 1] = where .. ": `antispamBy` must name an event field"
+        elseif tr.antispam == nil then
+            errs[#errs + 1] = where .. ": `antispamBy` without an `antispam` window"
+        end
+    end
+    if tr.dest ~= nil and tr.dest ~= "player" and tr.dest ~= "other" then
+        errs[#errs + 1] = where .. ": `dest` must be 'player' or 'other'"
+    end
+    if tr.source ~= nil and tr.source ~= "player" and tr.source ~= "pet"
+       and tr.source ~= "other" then
+        errs[#errs + 1] = where .. ": `source` must be 'player', 'pet' or 'other'"
+    end
+    if tr.minStateAge ~= nil and (type(tr.minStateAge) ~= "number" or tr.minStateAge < 0) then
+        errs[#errs + 1] = where .. ": `minStateAge` must be a non-negative number"
     end
     if tr.index ~= nil and type(tr.index) ~= "number" and type(tr.index) ~= "table" then
         errs[#errs + 1] = where .. ": `index` must be a number or a table"
@@ -459,6 +650,17 @@ function API.Validate(def)
         if row.delay ~= nil and (type(row.delay) ~= "number" or row.delay < 0) then
             errs[#errs + 1] = where .. ": `delay` must be a non-negative number"
         end
+        if row.stacks and row.count then
+            errs[#errs + 1] = where .. ": a row fills `%d` from `stacks` OR `count`, not both"
+        end
+    end
+
+    -- W4c: icon rows are addressable rows too (every one of them is a checkbox), and
+    -- until now they were the only section whose triggers nothing validated.
+    for i, row in ipairs(def.icons or {}) do
+        local where = ("%s.icons[%s]"):format(tostring(def.id), tostring(row.key or i))
+        rowKey("icon", row, i)
+        if row.on then validateTrigger(errs, where .. ".on", row.on) end
     end
 
     -- W4d extension 5: schedule rows are user-addressable rows like any other, so
@@ -493,7 +695,18 @@ function API.Validate(def)
         if not API.SCAN_TYPES[row.type or "poll"] then
             errs[#errs + 1] = where .. ": unknown scan type '" .. tostring(row.type) .. "'"
         end
+        -- W4c extension 13: a roster-relayed scan is meaningless without the roster
+        -- whose members' targets it borrows, and without the creature it is hunting.
+        if row.type == "roster" then
+            if type(row.roster) ~= "string" then
+                errs[#errs + 1] = where .. ": a roster scan must name the `roster` it relays through"
+            end
+            if row.creatureId == nil then
+                errs[#errs + 1] = where .. ": a roster scan must name the `creatureId` it is looking for"
+            end
+        end
         if row.on then validateTrigger(errs, where .. ".on", row.on) end
+        if row.stop then validateTrigger(errs, where .. ".stop", row.stop) end
     end
 
     for i, row in ipairs(def.counters or {}) do
@@ -504,6 +717,44 @@ function API.Validate(def)
         end
         if row.inc then validateTrigger(errs, where .. ".inc", row.inc) end
         if row.dec then validateTrigger(errs, where .. ".dec", row.dec) end
+        for j, tr in ipairs(row.incs or {}) do validateTrigger(errs, where .. ".incs[" .. j .. "]", tr) end
+        if row.reset then validateTrigger(errs, where .. ".reset", row.reset) end
+        for j, tr in ipairs(row.resets or {}) do validateTrigger(errs, where .. ".resets[" .. j .. "]", tr) end
+        -- W4c extension 14: the rate window. `fallback` is the WIDER sample set the
+        -- rate falls back to when the narrow window has not filled yet, so a fallback
+        -- smaller than the window would silently never be used.
+        if row.rate ~= nil then
+            if type(row.rate) ~= "table" then
+                errs[#errs + 1] = where .. ": `rate` must be { window =, fallback = }"
+            else
+                local w, f = row.rate.window, row.rate.fallback
+                if type(w) ~= "number" or w < 2 then
+                    errs[#errs + 1] = where .. ": rate.window must be a number >= 2"
+                end
+                if f ~= nil and (type(f) ~= "number" or (type(w) == "number" and f < w)) then
+                    errs[#errs + 1] = where .. ": rate.fallback must be >= rate.window"
+                end
+            end
+        end
+    end
+
+    -- W4c extension 12: rosters. A membership set is a user-addressable row like any
+    -- other (it is what an info frame hangs off), so it takes part in key uniqueness.
+    for i, row in ipairs(def.rosters or {}) do
+        local where = ("%s.rosters[%s]"):format(tostring(def.id), tostring(row.key or i))
+        rowKey("roster", row, i)
+        if not row.add and not row.adds then
+            errs[#errs + 1] = where .. ": a roster needs an `add` trigger (nothing can join it)"
+        end
+        if row.add then validateTrigger(errs, where .. ".add", row.add) end
+        for j, tr in ipairs(row.adds or {}) do validateTrigger(errs, where .. ".adds[" .. j .. "]", tr) end
+        if row.remove then validateTrigger(errs, where .. ".remove", row.remove) end
+        for j, tr in ipairs(row.removes or {}) do validateTrigger(errs, where .. ".removes[" .. j .. "]", tr) end
+        if row.clear then validateTrigger(errs, where .. ".clear", row.clear) end
+        for j, tr in ipairs(row.clears or {}) do validateTrigger(errs, where .. ".clears[" .. j .. "]", tr) end
+        if row.hold ~= nil and (type(row.hold) ~= "number" or row.hold < 0) then
+            errs[#errs + 1] = where .. ": `hold` must be a non-negative number of seconds"
+        end
     end
 
     for i, row in ipairs(def.phases or {}) do
@@ -579,6 +830,7 @@ local function compile(enc)
     for _, row in ipairs(enc.scans or {}) do
         enc.rowsByKey[row.key] = row
         if row.on then indexTrigger(enc, row.on, { kind = "scan", row = row }) end
+        if row.stop then indexTrigger(enc, row.stop, { kind = "scanstop", row = row }) end
     end
     for _, row in ipairs(enc.counters or {}) do
         enc.rowsByKey[row.key] = row
@@ -586,6 +838,20 @@ local function compile(enc)
         if row.inc then indexTrigger(enc, row.inc, { kind = "counter", row = row, act = "inc" }) end
         if row.dec then indexTrigger(enc, row.dec, { kind = "counter", row = row, act = "dec" }) end
         if row.reset then indexTrigger(enc, row.reset, { kind = "counter", row = row, act = "reset" }) end
+        for _, tr in ipairs(row.incs   or {}) do indexTrigger(enc, tr, { kind = "counter", row = row, act = "inc" }) end
+        for _, tr in ipairs(row.resets or {}) do indexTrigger(enc, tr, { kind = "counter", row = row, act = "reset" }) end
+    end
+    -- W4c extension 12: rosters index exactly like counters — three acts, ordinary
+    -- triggers, and the row key is the option key its display hangs from.
+    for _, row in ipairs(enc.rosters or {}) do
+        enc.rowsByKey[row.key] = row
+        indexCancels(enc, row)
+        if row.add    then indexTrigger(enc, row.add,    { kind = "roster", row = row, act = "add" }) end
+        if row.remove then indexTrigger(enc, row.remove, { kind = "roster", row = row, act = "remove" }) end
+        if row.clear  then indexTrigger(enc, row.clear,  { kind = "roster", row = row, act = "clear" }) end
+        for _, tr in ipairs(row.adds    or {}) do indexTrigger(enc, tr, { kind = "roster", row = row, act = "add" }) end
+        for _, tr in ipairs(row.removes or {}) do indexTrigger(enc, tr, { kind = "roster", row = row, act = "remove" }) end
+        for _, tr in ipairs(row.clears  or {}) do indexTrigger(enc, tr, { kind = "roster", row = row, act = "clear" }) end
     end
     -- A phase row IS its own trigger, except that its `stage` field is the stage to
     -- MOVE TO, never a stage filter. Copy the row into a synthetic trigger with
@@ -635,6 +901,7 @@ function Addon:RegisterEncounter(def)
     def.states  = def.states  or {}
     def.icons   = def.icons   or {}
     def.schedule = def.schedule or {}
+    def.rosters = def.rosters or {}
     def.creatureIds   = listify(def.creatureId) or {}
     def.encounterIds  = listify(def.encounterId) or {}
     def.zones         = listify(def.zone) or {}
@@ -721,12 +988,20 @@ function API.NewRuntime(def, ctx)
     rt.timers    = {}
     rt.healthFired = {}
     rt.dedupe    = {}       -- W4d: per-trigger "fire once per distinct value" sets
+    rt.rosters   = {}       -- W4c: rosterKey -> { [name] = { name=, stacks=, at= } }
+    rt.rosterN   = {}       -- W4c: rosterKey -> live member count
+    rt.rateLog   = {}       -- W4c: counterKey -> ring of increment timestamps
+    rt.stateAt   = {}       -- W4c: stateKey -> when it entered its current value
     rt.engaged   = true
     rt.pullTime  = (ctx and ctx.pullTime) or (Addon.Sched and Addon.Sched:Now()) or 0
     rt.difficulty = ctx and ctx.difficulty
     rt.trigger   = ctx and ctx.trigger
-    for _, row in ipairs(def.states) do rt.states[row.key] = row.initial or "initial" end
+    for _, row in ipairs(def.states) do
+        rt.states[row.key] = row.initial or "initial"
+        rt.stateAt[row.key] = rt.pullTime
+    end
     for _, row in ipairs(def.counters) do rt.counters[row.key] = row.from or 0 end
+    for _, row in ipairs(def.rosters or {}) do rt.rosters[row.key] = {}; rt.rosterN[row.key] = 0 end
     return rt
 end
 
@@ -804,10 +1079,25 @@ local function mirrorCount(rt, key, value)
     Addon._mechCount[API.OptionKey(rt.id, key)] = value
 end
 
+-- W4c extension 14: the rate ring. Every increment of a rate-bearing counter stamps
+-- the clock into a bounded ring; `Rate` reads hits-per-second off it.
+local function rateStamp(rt, key, row)
+    if not (row and row.rate) then return end
+    local cap = row.rate.fallback or row.rate.window
+    local ring = rt.rateLog[key]
+    if not ring then ring = { n = 0 }; rt.rateLog[key] = ring end
+    ring.n = ring.n + 1
+    ring[((ring.n - 1) % cap) + 1] = rt:Now()
+    ring.cap = cap
+end
+
 function Runtime:Count(key, delta)
     local v = (self.counters[key] or 0) + (delta or 1)
     self.counters[key] = v
     mirrorCount(self, key, v)
+    if (delta or 1) > 0 then
+        rateStamp(self, key, self.def.rowsByKey and self.def.rowsByKey[key])
+    end
     Addon:FireEngineEvent("COUNTER", self.id, key, v, delta or 1)
     return v
 end
@@ -817,8 +1107,81 @@ function Runtime:GetCount(key) return self.counters[key] or 0 end
 function Runtime:ResetCount(key, to)
     local row = self.def.rowsByKey and self.def.rowsByKey[key]
     self.counters[key] = to or (row and row.from) or 0
+    self.rateLog[key] = nil
     Addon:FireEngineEvent("COUNTER", self.id, key, self.counters[key], 0)
     return self.counters[key]
+end
+
+-- Hits per second over the last `window` increments, widening to `fallback`
+-- increments while the narrow window has not filled yet. Returns nil — never zero —
+-- when there is not enough evidence to answer (LESSON CLASS 5: a truthy zero here
+-- would render "0.0 frost hits/sec" over a raid that is in fact hitting hard).
+function Runtime:Rate(key)
+    local row = self.def.rowsByKey and self.def.rowsByKey[key]
+    if not (row and row.rate) then return nil end
+    local ring = self.rateLog[key]
+    if not ring or ring.n < 2 then return nil end
+    local cap    = ring.cap or row.rate.window
+    local have   = ring.n < cap and ring.n or cap
+    local window = row.rate.window
+    local use    = have >= window and window or have
+    -- Walk back `use` stamps from the newest, oldest first.
+    local newest = ((ring.n - 1) % cap) + 1
+    local oldestIdx = ((newest - use) % cap) + 1
+    local t1, t0 = ring[newest], ring[oldestIdx]
+    if not (t1 and t0) or t1 <= t0 then return nil end
+    return (use - 1) / (t1 - t0)
+end
+
+-- ── W4c extension 12: rosters ─────────────────────────────────────────────────
+-- A membership set with a stack count per member. Add is idempotent on the NAME and
+-- updates the stack, which is what makes an APPLIED / APPLIED_DOSE pair a single
+-- "Bob is at 6" rather than two entries.
+function Runtime:RosterAdd(key, name, stacks)
+    if not name then return false end
+    local r = self.rosters[key]
+    if not r then r = {}; self.rosters[key] = r; self.rosterN[key] = 0 end
+    local e = r[name]
+    if not e then
+        e = { name = name, at = self:Now() }
+        r[name] = e
+        self.rosterN[key] = (self.rosterN[key] or 0) + 1
+    end
+    e.stacks = stacks or e.stacks or 1
+    e.seen = self:Now()
+    Addon:FireEngineEvent("ROSTER", self.id, key, "add", name, e.stacks, self.rosterN[key])
+    self:RouteSynthetic({ on = "roster", key = key, added = true, destName = name,
+                          amount = e.stacks, count = self.rosterN[key] })
+    return true
+end
+
+function Runtime:RosterRemove(key, name)
+    local r = self.rosters[key]
+    if not (r and name and r[name]) then return false end
+    local stacks = r[name].stacks
+    r[name] = nil
+    self.rosterN[key] = math.max(0, (self.rosterN[key] or 1) - 1)
+    Addon:FireEngineEvent("ROSTER", self.id, key, "remove", name, stacks, self.rosterN[key])
+    self:RouteSynthetic({ on = "roster", key = key, added = false, destName = name,
+                          amount = stacks, count = self.rosterN[key] })
+    return true
+end
+
+function Runtime:RosterClear(key)
+    local r = self.rosters[key]
+    if not r then return false end
+    for name in pairs(r) do r[name] = nil end
+    self.rosterN[key] = 0
+    Addon:FireEngineEvent("ROSTER", self.id, key, "clear", nil, nil, 0)
+    self:RouteSynthetic({ on = "roster", key = key, cleared = true, count = 0 })
+    return true
+end
+
+function Runtime:GetRoster(key) return self.rosters[key] end
+function Runtime:RosterCount(key) return self.rosterN[key] or 0 end
+function Runtime:RosterHas(key, name)
+    local r = self.rosters[key]
+    return (r and name and r[name]) and true or false
 end
 
 -- ── State machines ────────────────────────────────────────────────────────────
@@ -826,6 +1189,9 @@ function Runtime:SetState(key, to)
     local from = self.states[key]
     if from == to then return false end
     self.states[key] = to
+    -- W4c extension 18: dwell time. "Viscidus swung at someone MORE THAN 5 s after he
+    -- froze" is a question about the machine, so the machine records when it arrived.
+    self.stateAt[key] = self:Now()
     Addon:FireEngineEvent("STATE", self.id, key, from, to)
     -- W4d extension 6, the other half: a state transition is an event. This is what
     -- makes "when BOTH adds are dead" (Thaddius) a declared rule instead of code.
@@ -957,8 +1323,14 @@ local function triggerMatches(rt, tr, ev)
         end
     end
     if tr.dest == "player" and not ev.destIsPlayer then return false end
+    -- W4c: the other arm of the same question. "Another player is at 5 stacks" is a
+    -- different rule from "you are", and both ship on the same four bosses.
+    if tr.dest == "other" and ev.destIsPlayer then return false end
     if tr.source == "player" and not ev.sourceIsPlayer then return false end
+    if tr.source == "other" and ev.sourceIsPlayer then return false end
     if tr.source == "pet" and not ev.sourceIsPet then return false end
+    -- W4c extension 16.
+    if tr.missType ~= nil and not inList(tr.missType, ev.missType) then return false end
     if tr.school ~= nil then
         local s = ev.school or 0
         if s % (tr.school * 2) < tr.school then return false end   -- bitmask test, Lua-5.1 safe
@@ -967,6 +1339,11 @@ local function triggerMatches(rt, tr, ev)
     if tr.stage ~= nil and rt.stage ~= tr.stage then return false end
     if tr.state ~= nil and rt.states[tr.stateKey or tr.key] ~= tr.state then return false end
     if tr.pct ~= nil and (ev.pct == nil or ev.pct > tr.pct) then return false end
+    -- W4c: the LOWER edge of a health WINDOW. Skeram's split pre-warnings are windows
+    -- (81-77, 56-52, 31-27), not thresholds — the spec's own words — so a threshold
+    -- that stays armed all the way to 1 % would announce "split soon" during the
+    -- execute. `pct` is the ceiling; `pctMin` is the floor.
+    if tr.pctMin ~= nil and (ev.pct == nil or ev.pct < tr.pctMin) then return false end
     if tr.text ~= nil then
         local want, got = tr.text, ev.text or ""
         if type(want) == "table" then
@@ -1015,14 +1392,18 @@ local function triggerMatches(rt, tr, ev)
         end
     end
     if tr.counter ~= nil and not counterMatches(rt, tr.counter) then return false end
-    if tr.condition ~= nil then
-        local f = API.Conditions[tr.condition]
-        if not f or not f(rt, ev, tr) then return false end
+    -- W4c extension 12: "…and this player is (not) already in the set".
+    if tr.inRoster ~= nil and not rt:RosterHas(tr.inRoster, ev.destName) then return false end
+    if tr.notInRoster ~= nil and rt:RosterHas(tr.notInRoster, ev.destName) then return false end
+    -- W4c extension 18: how long the machine has been where it is.
+    if tr.minStateAge ~= nil then
+        local k = tr.stateKey or tr.fromKey or tr.key
+        local at = k and rt.stateAt[k]
+        if not at or (rt:Now() - at) < tr.minStateAge then return false end
     end
-    if tr.conditionNot ~= nil then
-        local f = API.Conditions[tr.conditionNot]
-        if f and f(rt, ev, tr) then return false end
-    end
+    -- W4c extension 15: one predicate or a list, all of which must agree.
+    if not conditionsPass(rt, ev, tr, "condition", true) then return false end
+    if not conditionsPass(rt, ev, tr, "conditionNot", false) then return false end
     -- `dedupe` is LAST because it is the only filter with a side effect: it records
     -- the value it just admitted. ("<horseman> died, de-duplicated by GUID".)
     if tr.dedupe ~= nil then
@@ -1082,8 +1463,12 @@ function Runtime:Act(entry, ev, deferred)
     end
 
     if not deferred then
-        if tr.antispam and not self:AntiSpam(row.key .. ":" .. tostring(tr.on), tr.antispam) then
-            return false
+        -- W4c extension 17: `antispamBy` widens the throttle key with a value off the
+        -- event, so a per-mob window is per-mob and not per-encounter.
+        if tr.antispam then
+            local akey = tostring(row.key) .. ":" .. tostring(tr.on)
+            if tr.antispamBy then akey = akey .. ":" .. tostring(ev and ev[tr.antispamBy]) end
+            if not self:AntiSpam(akey, tr.antispam) then return false end
         end
         if row.antispam and not self:AntiSpam(row.key, row.antispam) then return false end
 
@@ -1126,6 +1511,14 @@ function Runtime:Act(entry, ev, deferred)
     if c.kind == "warning" then
         if row.key and not Addon.API.IsRowEnabled(self.id, row) then return false end
         local text = row.text or row.key
+        -- W4c: STACK interpolation, the sibling of W4d's target interpolation. The
+        -- spec writes these alerts as "<name> (N)" where N is the debuff's stack, not
+        -- the number of times the alert has fired — so `stacks = true` fills `%d` from
+        -- the event and `count = true` (which fills it from the fire count) stays
+        -- exactly what it was. A row declares one or the other, never both.
+        if row.stacks and ev and ev.amount and text:find("%%d") then
+            text = (text:gsub("%%d", tostring(ev.amount)))
+        end
         if row.count then text = fmtCount(text, self:Count("__warn:" .. row.key)) end
         -- W4d extension 7: the event's target fills a `%s` in the text and rides along
         -- to the batchers, which is what makes "Void Zone on <name>" data.
@@ -1177,14 +1570,32 @@ function Runtime:Act(entry, ev, deferred)
                     if t then t:Start(r and API.ResolveDuration(r, 1, self.stage)) end
                 end
                 if a.resetCounter then self:ResetCount(a.resetCounter) end
+                if a.resetCounters then
+                    for _, k in ipairs(a.resetCounters) do self:ResetCount(k) end
+                end
+                if a.clearRoster then self:RosterClear(a.clearRoster) end
                 if a.stage then self:SetStage(a.stage) end
             end
         end
         return changed
     end
 
+    -- W4c extension 12. Rosters act on the same three verbs everywhere; the STACK
+    -- comes off the event, so an APPLIED_DOSE simply overwrites the member's count.
+    if c.kind == "roster" then
+        if c.act == "clear"  then return self:RosterClear(row.key) end
+        local name = ev and (ev.destName or ev.targetName)
+        if c.act == "remove" then return self:RosterRemove(row.key, name) end
+        return self:RosterAdd(row.key, name, ev and ev.amount)
+    end
+
     if c.kind == "scan" then
         Addon:FireEngineEvent("SCAN_REQUEST", self.id, row, ev)
+        return true
+    end
+
+    if c.kind == "scanstop" then
+        Addon:FireEngineEvent("SCAN_STOP", self.id, row, ev)
         return true
     end
 
@@ -1397,6 +1808,11 @@ function API.PublishOptionsTree()
             for _, row in ipairs(enc.warnings) do boss.mechanics[#boss.mechanics + 1] = projectRow(row, "warning") end
             for _, row in ipairs(enc.schedule) do
                 if row.key then boss.mechanics[#boss.mechanics + 1] = projectRow(row, "schedule") end
+            end
+            -- W4c: a roster IS a user-facing surface (it is what an info frame draws),
+            -- so it gets a checkbox like every other row.
+            for _, row in ipairs(enc.rosters or {}) do
+                boss.mechanics[#boss.mechanics + 1] = projectRow(row, "roster")
             end
             raid.bosses[#raid.bosses + 1] = boss
             for _, cid in ipairs(enc.creatureIds) do npc[cid] = boss end

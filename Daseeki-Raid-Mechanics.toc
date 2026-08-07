@@ -55,6 +55,8 @@ thaddius.lua
 # special modules so the `legacy = { raidId, bossId }` seam in each definition sits
 # next to the modules it attaches to; the registry itself only needs core_api.
 enc_naxxramas.lua
+enc_aq20.lua
+enc_aq40.lua
 
 soundpicker.lua
 options.lua
@@ -65,13 +67,15 @@ slash.lua
 # encounters.lua  DELETED — replaced by the declarative registry in core_api.lua.
 #
 # ── PARKED, still on disk, deliberately NOT loaded ─────────────────────────────
-# data_bwl.lua / data_aq40.lua
+# data_bwl.lua
 #   The 1.x flat mechanic model. W4 regenerates all eight zones in the new
-#   declarative grammar; these stay on disk until then purely as cross-check input
-#   for the spell IDs already verified against Drew's combat logs. Re-adding one to
+#   declarative grammar; this stays on disk until W4b purely as cross-check input
+#   for the spell IDs already verified against Drew's combat logs. Re-adding it to
 #   the load list is refused at runtime by Addon:RegisterRaid (core_boot.lua) and
 #   is a harness failure (GATE RETIRE).
 #
 # data_naxxramas.lua  DELETED in W4d — enc_naxxramas.lua replaces it. Its values
 #   were diffed against the spec first; every disagreement is in the wave report and
 #   the CHANGELOG, and the spec won each one.
+# data_aq40.lua       DELETED in W4c — enc_aq40.lua replaces it, on the same terms.
+#   AQ20 had no 1.x predecessor at all; enc_aq20.lua is new ground.

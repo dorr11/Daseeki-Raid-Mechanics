@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased — 2.0.0 rebuild, wave 4c (Ruins + Temple of Ahn'Qiraj — internal)
+- **Both Ahn'Qiraj raids are in.** All six Ruins bosses and all nine Temple bosses now
+  run on the new engine, plus a zone-wide trash module for each instance. The Ruins had
+  never shipped at all; the Temple had a handful of bars per boss and now carries the
+  full set — every timer, every warning, the audience each one defaults on for, the
+  phase rules and the Era-specific detection each fight needs.
+- **C'Thun is complete.** Both phases, all four tentacle spawn timers, and the fact that
+  each of them counts differently in phase 1, at the moment phase 2 begins, and again
+  after a Weakened. The eye's death flips the phase, stops Dark Glare and the Claw
+  Tentacles for good, and re-seeds the rest; the Weakened emote re-seeds them again and
+  calls the burn. Eye Beam runs the boss-target scan, marks the victim with a raid icon,
+  and shouts at you personally when it is you.
+- The C'Thun **stomach list** is built: everyone the stomach has eaten, with their acid
+  stacks, and — the part nothing else can do — each Flesh Tentacle's health, read
+  through the eyes of the players who were swallowed, because the tentacles cannot be
+  seen from outside the stomach at all. A dead tentacle is held on the list for half a
+  minute rather than silently vanishing, and a Weakened clears the whole thing.
+- **Viscidus's freeze and shatter cycle is tracked properly**, including the part that
+  has no event behind it. All five emotes advance the ladder, the poison-volley bar
+  stops the moment he freezes, and a FAILED shatter is caught by noticing that a frozen
+  boss has started swinging at people again. Frost hits and melee hits are counted with
+  live per-second rates, and every way out of a freeze zeroes them.
+- Ouro's submerge cycle behaves: submerging stops the Blast, Sweep and Submerge bars,
+  thirty seconds later all three come back from their pull values, and once he berserks
+  he never submerges again — so that bar stops for good and the Blast cooldown restarts
+  from zero.
+- The Twin Emperors' teleport bar counts you in for the swap, and "run away from the
+  bug" only fires for a bug that is actually near you.
+- The Vanilla tank-swap fights (Kurinnaxx, Buru, Fankriss, Huhuran) get the full
+  three-way call: your own stacks, the taunt call when somebody ELSE is stacked and you
+  are clean, and the plain tank announce. The taunt call goes quiet the instant you are
+  carrying the debuff yourself.
+- Anubisath trash alerts are armed for the whole instance in both zones — plague, the
+  explode countdown per mob, cause insanity, thunderclap, and the two "stop casting,
+  it's reflecting" alarms, which are detected from what bounced off it rather than from
+  a buff you cannot see.
+- The Ahn'Qiraj options sections are real: every bar and every warning is its own toggle
+  under its boss. **Temple settings carry over** — where the old data and the new spec
+  agree on a mechanic, the setting is stored under the same key it always was, so
+  anything you had switched off in AQ40 stays off.
+- Internal: the encounter grammar gained seven more general primitives — membership
+  rosters with stack counts, a scan that reads a unit through other players' targets,
+  rate counters, condition lists, combat-log miss types, per-source anti-spam windows,
+  and state dwell time. The old `data_aq40.lua` was diffed against the spec first and
+  then deleted; where the two disagreed the spec won, and the differences are listed in
+  the wave report.
+
 ## Unreleased — 2.0.0 rebuild, wave 4d (Naxxramas + the Naxx specials — internal)
 - **Naxxramas is back, rebuilt.** All fifteen bosses and the zone-wide trash alerts now
   run on the new engine, rewritten from the behavioural spec rather than carried over:

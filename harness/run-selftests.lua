@@ -55,6 +55,15 @@
 --                        / CC gates incl. the 0.1 s cache expiry, role derivation
 --   PUB      §4.5/§11.8  the 18-field public broadcast contract, field for field
 --
+-- 2.0 WAVE 4 — ENCOUNTER DATA. One registration gate and one DRIVEN gate per zone
+-- wave: the shipping data, through the shipping engine, on the injected clock.
+--
+--   NAXX/-DRIVE   §8       Naxxramas (wave 4d)
+--   AQ/-DRIVE     §6/§7    Ruins + Temple of Ahn'Qiraj (wave 4c), incl. C'Thun's three
+--                          timer value sets and its roster-relayed stomach probe,
+--                          Viscidus's freeze/shatter machine and hit rates, Ouro's
+--                          submerge cycle, and the reflect miss-type path
+--
 -- Usage:  lua5.1 run-selftests.lua [RM_DIR]   (exit 0 = ALL PASS)
 -- =====================================================================
 
@@ -134,6 +143,8 @@ local ALL_LUA = {
     "soundpicker.lua", "options.lua", "slash.lua",
     -- parked but must still COMPILE, so a stale syntax error can never surprise W4
     "data_naxxramas.lua", "data_bwl.lua", "data_aq40.lua",
+    -- W4c encounter data
+    "enc_aq20.lua", "enc_aq40.lua",
 }
 
 gate("0  toc parse")
@@ -174,8 +185,9 @@ local FORBIDDEN = {
     "bigwigs", "elvui", "bartender4", "dominos",
 }
 local CHANGE_SURFACE = {
-    -- wave 4d authored this one; it is clean-room from the encounters spec alone.
+    -- wave 4d / 4c authored these; all three are clean-room from the encounters spec.
     ["enc_naxxramas.lua"] = true,
+    ["enc_aq20.lua"] = true, ["enc_aq40.lua"] = true,
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
     ["core_boot.lua"] = true, [TOC_FILE] = true,
@@ -239,8 +251,12 @@ endgate()
 -- W4d: data_naxxramas.lua joins the DELETED list — enc_naxxramas.lua replaced it,
 -- its values were diffed against the spec first, and a file that is both parked and
 -- superseded is just a second source of truth waiting to be edited by mistake.
-local RETIRED_PATHS   = { "engine.lua", "encounters.lua", "data_naxxramas.lua" }
-local PARKED_OUT_OF_TOC = { "data_bwl.lua", "data_aq40.lua" }
+-- W4c: data_aq40.lua joins the DELETED list on the same terms — enc_aq40.lua replaced
+-- it, its values were diffed against the spec first, and the spec won. AQ20 never had
+-- a 1.x data file, so there is nothing to retire on that side.
+local RETIRED_PATHS   = { "engine.lua", "encounters.lua", "data_naxxramas.lua",
+                          "data_aq40.lua" }
+local PARKED_OUT_OF_TOC = { "data_bwl.lua" }
 
 gate("RETIRE  demolition holds")
 for _, rel in ipairs(RETIRED_PATHS) do
@@ -262,6 +278,8 @@ for _, rel in ipairs({ "svc_era.lua", "svc_scan.lua", "ui_bars.lua",
     ck(TOC_SET[rel], rel .. " IS in the load list (the wave-2 surfaces actually ship)")
 end
 ck(TOC_SET["enc_naxxramas.lua"], "enc_naxxramas.lua IS in the load list (wave 4d ships the data)")
+ck(TOC_SET["enc_aq20.lua"], "enc_aq20.lua IS in the load list (wave 4c ships AQ20)")
+ck(TOC_SET["enc_aq40.lua"], "enc_aq40.lua IS in the load list (wave 4c ships AQ40)")
 do  -- wave 2 stacks ON the wave-1 seam, and the toc must express that too
     local pos = {}
     for i, rel in ipairs(TOC_LUA) do pos[rel] = i end
@@ -424,6 +442,11 @@ local NAXX_CHUNK = loadfile(P("enc_naxxramas.lua"))
 if not NAXX_CHUNK then
     realprint("  FAIL  loadfile enc_naxxramas.lua"); os.exit(2)
 end
+-- WAVE 4c: the same treatment for the two Ahn'Qiraj zones.
+local AQ20_CHUNK = loadfile(P("enc_aq20.lua"))
+if not AQ20_CHUNK then realprint("  FAIL  loadfile enc_aq20.lua"); os.exit(2) end
+local AQ40_CHUNK = loadfile(P("enc_aq40.lua"))
+if not AQ40_CHUNK then realprint("  FAIL  loadfile enc_aq40.lua"); os.exit(2) end
 
 _G.DaseekiRaidMechanicsDB = {}
 Addon:Init()
@@ -4537,8 +4560,731 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- WAVE 4c — RUINS + TEMPLE OF AHN'QIRAJ ENCOUNTER DATA
+--
+-- Every assertion below names the DBM_ERA_ENCOUNTERS_BEHAVIOR_SPEC.md §6 / §7 row it
+-- proves, and every one runs the SHIPPING data through the SHIPPING engine on the
+-- injected clock and the injected world.
+----------------------------------------------------------------------
+local function loadAQ()
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    local ok1, e1 = pcall(AQ20_CHUNK, ADDON_NAME, Addon)
+    local ok2, e2 = pcall(AQ40_CHUNK, ADDON_NAME, Addon)
+    return ok1 and ok2, (not ok1 and e1) or (not ok2 and e2) or nil
+end
+
+gate("AQ  §6/§7 encounter data: registration, keys, the options tree")
+do
+    local okc, err = loadAQ()
+    ck(okc, "enc_aq20.lua + enc_aq40.lua EXECUTE against the shipping grammar" ..
+            (okc and "" or (" -> " .. tostring(err))))
+
+    local EXPECTED = {
+        -- §6 Ruins of Ahn'Qiraj (zone 509)
+        { id = "aq20:kurinnaxx", cid = 15348, eid = 718, raid = "aq20", boss = "kurinnaxx" },
+        { id = "aq20:rajaxx",    cid = 15341, eid = 719, raid = "aq20", boss = "rajaxx" },
+        { id = "aq20:moam",      cid = 15340, eid = 720, raid = "aq20", boss = "moam" },
+        { id = "aq20:buru",      cid = 15370, eid = 721, raid = "aq20", boss = "buru" },
+        { id = "aq20:ayamiss",   cid = 15369, eid = 722, raid = "aq20", boss = "ayamiss" },
+        { id = "aq20:ossirian",  cid = 15339, eid = 723, raid = "aq20", boss = "ossirian" },
+        -- §7 Temple of Ahn'Qiraj (zone 531)
+        { id = "aq40:skeram",    cid = 15263, eid = 709, raid = "aq40", boss = "skeram" },
+        { id = "aq40:bugtrio",   cid = 15544, eid = 710, raid = "aq40", boss = "bugtrio" },
+        { id = "aq40:sartura",   cid = 15516, eid = 711, raid = "aq40", boss = "sartura" },
+        { id = "aq40:fankriss",  cid = 15510, eid = 712, raid = "aq40", boss = "fankriss" },
+        { id = "aq40:viscidus",  cid = 15299, eid = 713, raid = "aq40", boss = "viscidus" },
+        { id = "aq40:huhuran",   cid = 15509, eid = 714, raid = "aq40", boss = "huhuran" },
+        { id = "aq40:twinemps",  cid = 15276, eid = 715, raid = "aq40", boss = "twinemps" },
+        { id = "aq40:ouro",      cid = 15517, eid = 716, raid = "aq40", boss = "ouro" },
+        { id = "aq40:cthun",     cid = 15589, eid = 717, raid = "aq40", boss = "cthun" },
+    }
+    for _, e in ipairs(EXPECTED) do
+        local enc = Addon:GetEncounter(e.id)
+        ck(enc ~= nil, e.id .. " is registered")
+        if enc then
+            local errs = API.Validate(enc)
+            eq(#errs, 0, "…with zero validation errors" ..
+               (#errs > 0 and (": " .. table.concat(errs, "; ")) or ""))
+            ck(Addon.encByCreature[e.cid] ~= nil, "…indexed by creature " .. e.cid)
+            ck(Addon.encByEncounterId[e.eid] ~= nil, "…and by encounter id " .. e.eid)
+            ck(enc.legacy and enc.legacy.raidId == e.raid and enc.legacy.bossId == e.boss,
+               "…carrying the legacy seam " .. e.raid .. ":" .. e.boss)
+            local firstRow = enc.timers[1] or enc.warnings[1]
+            if firstRow then
+                eq(API.OptionKey(enc.id, firstRow.key),
+                   Addon:MechKey(e.raid, e.boss, firstRow.key),
+                   "…and OptionKey == MechKey for its rows (one SavedVariables entry, not two)")
+            end
+        end
+    end
+    eq(#Addon.encounters, #EXPECTED + 2, "…17 registrations in all (15 bosses + two trash modules)")
+
+    do  -- the two zone-wide trash modules
+        for _, p in ipairs({ { "aq20:trash", 509 }, { "aq40:trash", 531 } }) do
+            local trash = Addon:GetEncounter(p[1])
+            ck(trash ~= nil and trash.detect.mode == "zone",
+               p[1] .. " registers as a ZONE module")
+            ck(trash and Addon.encByZone[p[2]] ~= nil, "…indexed against instance " .. p[2])
+        end
+        local t20 = Addon:GetEncounter("aq20:trash")
+        local t40 = Addon:GetEncounter("aq40:trash")
+        -- §6.7 / §7.10: the reflect pair, read from the MISS TYPE and the school
+        for _, t in ipairs({ t20, t40 }) do
+            local r = t.rowsByKey.reflectshadowfrost
+            ck(r and r.triggers[1].missType[1] == "REFLECT"
+               and r.triggers[1].missType[2] == "DEFLECT",
+               t.id .. ": the reflect alert matches on REFLECT/DEFLECT, not on a buff")
+            ck(r and r.triggers[1].school == 32 and r.triggers[2].school == 16,
+               "…across the Shadow (32) and Frost (16) schools")
+            local f = t.rowsByKey.reflectfirearcane
+            ck(f and f.triggers[1].school == 4 and f.triggers[2].school == 64,
+               "…with Fire (4) / Arcane (64) as the other pair")
+        end
+        eq(t40.rowsByKey.thunderclap.start.antispamBy, "sourceGUID",
+           "§7.10 Thunderclap's 1 s anti-spam is PER MOB, not per pull")
+        eq(t20.rowsByKey.thunderclapicon.on.antispamBy, "sourceGUID", "…same on the AQ20 side")
+        eq(t40.rowsByKey.explodebar.duration, 6, "§7.10 Explode runs a 6 s cast bar…")
+        ck(t40.rowsByKey.explodebar.nameplate == true, "…one per mob GUID…")
+        eq(t40.rowsByKey.explodebar.stop.creatureId, 15277, "…stopped when that mob dies")
+        eq(t20.rowsByKey.explodebar.stop.creatureId, 15355,
+           "…and AQ20 uses its OWN exploding creature id (15355, not 15277)")
+    end
+
+    do  -- ship-off defaults carried from the spec verbatim
+        local OFF = {
+            { "aq40:twinemps", "explodebug" },     -- §7.7 "off by default"
+            { "aq40:twinemps", "mutatebug" },
+            { "aq40:twinemps", "mutatebugwarn" },
+            { "aq40:cthun",    "clawtentaclewarn" },   -- §7.9 "off by default"
+        }
+        for _, p in ipairs(OFF) do
+            local enc = Addon:GetEncounter(p[1])
+            local row = enc and enc.rowsByKey[p[2]]
+            ck(row and row.default == false, p[1] .. ":" .. p[2] .. " SHIPS OFF (spec default)")
+        end
+        -- …and the two icon options the spec says ship ON
+        eq(Addon:GetEncounter("aq40:skeram").rowsByKey.mcicons.default, true,
+           "§7.1 the mind-control icons ship ON")
+        eq(Addon:GetEncounter("aq40:cthun").rowsByKey.eyebeamicon.default, true,
+           "§7.9 the Eye Beam raid icon ships ON")
+        eq(Addon:GetEncounter("aq40:twinemps").rowsByKey.mutateicons.default, true,
+           "§7.7 the mutated-bug nameplate icon ships ON")
+    end
+
+    do  -- 1.x SavedVariables continuity: the keys a player already toggled
+        local KEPT = {
+            skeram   = { "fulfillment", "images", "teleport" },
+            bugtrio  = { "toxicvolley", "fear", "heal" },
+            sartura  = { "whirlwind", "enrage" },
+            fankriss = { "mortalwound", "entangle", "worms" },
+            viscidus = { "poisonvolley", "freezing", "frozen", "shatter", "rejoin" },
+            huhuran  = { "frenzy", "acidspit", "noxious", "sting", "berserksoon", "berserk" },
+            twinemps = { "teleport", "unbalancing", "mutatebug", "explodebug", "berserk" },
+            ouro     = { "sandblast", "sweep", "submerge", "berserk", "emerge" },
+            cthun    = { "darkglarecd", "darkglare", "eyebeam", "eyetentacles",
+                         "giantclaw", "gianteye", "weaken" },
+        }
+        local missing = {}
+        for boss, keys in pairs(KEPT) do
+            local enc = Addon:GetEncounter("aq40:" .. boss)
+            for _, k in ipairs(keys) do
+                if not (enc and enc.rowsByKey[k]) then missing[#missing + 1] = boss .. ":" .. k end
+            end
+        end
+        eq(#missing, 0, "every 1.x aq40 mechanic key the spec still has a row for is PRESERVED"
+           .. (#missing > 0 and (" (missing " .. table.concat(missing, ", ") .. ")") or ""))
+        eq(Addon:MechKey("aq40", "cthun", "weaken"), "aq40:cthun:weaken",
+           "…at the exact SavedVariables key the 1.x options tree wrote")
+    end
+
+    do  -- the options projection: two more raids in the tree options.lua reads
+        API.PublishOptionsTree()
+        local r20, r40 = Addon:GetRaid("aq20"), Addon:GetRaid("aq40")
+        ck(r20 ~= nil and r40 ~= nil, "both AQ zones PROJECT into the options tree")
+        eq(r20 and r20.size, 20, "…Ruins as a 20-man raid")
+        eq(r40 and r40.size, 40, "…Temple as a 40-man raid")
+        eq(r20 and #r20.bosses, 7, "…with seven AQ20 entries (6 bosses + trash)")
+        eq(r40 and #r40.bosses, 10, "…and ten AQ40 entries (9 bosses + trash)")
+        ck((r20.order or 999) < (r40.order or 999), "…ordered Ruins before Temple")
+        local cthun = Addon:GetBoss("aq40", "cthun")
+        local sawRoster = false
+        for _, m in ipairs(cthun and cthun.mechanics or {}) do
+            if m.id == "stomach" then sawRoster = true end
+        end
+        ck(sawRoster, "…and a ROSTER is a mechanic row like any other (C'Thun's stomach list)")
+        ck(Addon:GetBossByNpcID(15299) ~= nil, "…while the npc index resolves Viscidus")
+    end
+
+    do  -- the tank-swap branch is ONE shape, declared four times, never coded
+        for _, p in ipairs({ { "aq20:kurinnaxx", "wounded", 5 }, { "aq20:buru", "dismembered", 5 },
+                             { "aq40:fankriss", "wounded", 5 }, { "aq40:huhuran", "acid", 10 } }) do
+            local enc = Addon:GetEncounter(p[1])
+            ck(enc and #enc.rosters == 1 and enc.rosters[1].key == p[2],
+               p[1] .. " keeps a roster of the debuff's carriers")
+            local taunt
+            for _, w in ipairs(enc.warnings) do
+                if w.voice == "tauntboss" then taunt = w end
+            end
+            ck(taunt ~= nil, "…and declares the taunt arm")
+            local tr = taunt and taunt.triggers[1]
+            ck(tr and tr.dest == "other" and tr.stacks == p[3],
+               "…gated on SOMEONE ELSE at " .. p[3] .. "+ stacks")
+            ck(tr and tr.condition[1] == "playerAlive"
+               and tr.condition[2] == "playerNotInRoster",
+               "…and on you being alive AND clean (three facts, three predicates)")
+        end
+    end
+end
+endgate()
+
+gate("AQ-DRIVE  §6/§7 per-encounter behaviour through the real engine")
+do
+    loadAQ()
+    Addon:SetEventRecording(true)
+    Addon._suppressLegacyAlerts = true
+    Addon.RoleResolver  = function() return true end
+    Addon.ClassResolver = function() return "WARLOCK" end
+
+    -- ── §6.1 Kurinnaxx — the three-way stack branch ───────────────────────────
+    do
+        local rt = engage("aq20:kurinnaxx", 15348)
+        ck(rt ~= nil, "KURINNAXX: engages off the combat sweep")
+        near(bar(rt, "sandtrap").total, 8, 0.01, "…Sand Trap is an 8 s cycle from pull")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_SUMMON", spellId = 25648, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Sand Trap under Bob"), "…a trap names whoever it is under")
+        near(bar(rt, "sandtrap").total, 8, 0.01, "…and re-arms the cycle")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_SUMMON", spellId = 25648, destName = "Drew",
+                       destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Sand Trap on YOU"), "…a trap under YOU is the personal special")
+        -- the branch: someone else stacks up while you are clean
+        Addon:ClearEventLog()
+        for i = 1, 5 do
+            Life:Deliver({ on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646,
+                           destName = "Bob", amount = i })
+        end
+        eq(rt:RosterCount("wounded"), 1, "…the roster holds exactly one carrier")
+        ck(rt:RosterHas("wounded", "Bob"), "…and it is Bob")
+        ck(sawWarn("WARN_ANNOUNCE", "Mortal Wound Bob (5)"),
+           "…the tank announce carries the STACK, not the fire count")
+        ck(sawWarn("WARN_SPECIAL", "Taunt — Bob is at 5 stacks"),
+           "…and at 5 you are told to taunt, because you are clean and alive")
+        -- …and once YOU are carrying it, the taunt call goes away
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25646, destName = "Drew",
+                       destIsPlayer = true, amount = 1 })
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646,
+                       destName = "Bob", amount = 6 })
+        ck(not sawWarn("WARN_SPECIAL", "Taunt"),
+           "…suppressed the moment you are in the roster yourself")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646, destName = "Drew",
+                       destIsPlayer = true, amount = 5 })
+        ck(sawWarn("WARN_SPECIAL", "Mortal Wound stacks are high"),
+           "…while YOUR fifth stack is the personal stack-high special")
+    end
+
+    -- ── §6.2 General Rajaxx — the out-of-combat RP pull and the wave yells ────
+    do
+        local rt = engage("aq20:rajaxx", 15341, "Remember, Rajaxx, when I said I'd kill you last?")
+        ck(rt ~= nil, "RAJAXX: engages on the Andorov RP yell, not on the boss")
+        near(bar(rt, "pullwave").total, 31.8, 0.01, "…arming the 31.8 s first-wave bar")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL", "Fear is for the enemy! Fear and death!")
+        ck(sawWarn("WARN_ANNOUNCE", "Wave 5"), "…wave yells are matched by SUBSTRING")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_YELL",
+            "Impudent fool! I will kill you myself!")
+        ck(sawWarn("WARN_ANNOUNCE", "Wave 8 — Rajaxx engages"), "…through to the eighth")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25471, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Order on Bob"), "…Order names its target")
+        local ob = rt.timers.order and rt.timers.order:Get("Bob")
+        near(ob and ob.total, 10, 0.01, "…on a 10 s per-target bar")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26550 })
+        near(bar(rt, "thundercrashcloud").total, 15, 0.01, "…and the cloud runs 15 s")
+    end
+
+    -- ── §6.3 Moam ─────────────────────────────────────────────────────────────
+    do
+        local rt = engage("aq20:moam", 15340)
+        near(bar(rt, "stoneform").total, 90, 0.01, "MOAM: Stoneform is 90 s from pull")
+        eq(#Addon:GetEncounter("aq20:moam").warnings, 1,
+           "…and the encounter is deliberately ONE warning (no unverified mana-drain rows)")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25685, destId = 15340 })
+        ck(sawWarn("WARN_ANNOUNCE", "Stoneform"), "…the aura announces at tier 3")
+        near(bar(rt, "stoneformactive").total, 90, 0.01, "…and runs a 90 s active bar")
+        Life:Deliver({ on = "SPELL_AURA_REMOVED", spellId = 25685, destId = 15340 })
+        near(bar(rt, "stoneform").total, 90, 0.01, "…with the next one armed on its removal")
+    end
+
+    -- ── §6.4 Buru — an emote with no spell id behind it ───────────────────────
+    do
+        local rt = engage("aq20:buru", 15370)
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Buru the Gorger sets eyes on Bob!")
+        ck(sawWarn("WARN_ANNOUNCE", "Buru is chasing"),
+           "BURU: the pursuit is EMOTE-ONLY (no spell id exists on Era)")
+        ck(not sawWarn("WARN_SPECIAL", "chasing YOU"), "…and it is not about you")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Buru the Gorger sets eyes on Drew!")
+        ck(sawWarn("WARN_SPECIAL", "Buru is chasing YOU — RUN"),
+           "…until the emote names YOU, which is read out of the TEXT")
+    end
+
+    -- ── §6.5 Ayamiss — phases are pure health polling ─────────────────────────
+    do
+        local rt = engage("aq20:ayamiss", 15369)
+        eq(rt.stage, 1, "AYAMISS: starts in phase 1")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15369, combat = true, hp = 74, hpmax = 100 })
+        Life:PollHealth(rt)
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2 soon"), "…75 % is 'phase 2 soon'")
+        eq(rt.stage, 1, "…and does NOT advance the phase")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15369, combat = true, hp = 69, hpmax = 100 })
+        Life:PollHealth(rt)
+        eq(rt.stage, 2, "…70 % is the landing")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2"), "…announced")
+    end
+
+    -- ── §6.6 Ossirian — five weaknesses, five bars ────────────────────────────
+    do
+        local rt = engage("aq20:ossirian", 15339)
+        local mn, mx = barWindow(rt, "tongues")
+        ck(mn == 17.8 and mx == 50.2, "OSSIRIAN: Curse of Tongues opens on its 17.8-50.2 pull window")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 25195 })
+        mn, mx = barWindow(rt, "tongues")
+        ck(mn == 21 and mx == 43.7, "…and recurs on 21-43.7")
+        Addon:ClearEventLog()
+        local WEAK = { { 25177, "fireweakness", "Fire" }, { 25178, "frostweakness", "Frost" },
+                       { 25180, "natureweakness", "Nature" }, { 25181, "arcaneweakness", "Arcane" },
+                       { 25183, "shadowweakness", "Shadow" } }
+        local allBars, allWarns = true, true
+        for _, w in ipairs(WEAK) do
+            Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = w[1], destId = 15339 })
+            local b = bar(rt, w[2])
+            if not b or math.abs(b.total - 45) > 0.01 then allBars = false end
+            if not sawWarn("WARN_ANNOUNCE", w[3] .. " Weakness") then allWarns = false end
+        end
+        ck(allBars, "…and each of the five weaknesses gets its OWN 45 s bar")
+        ck(allWarns, "…and its own tier-1 caster announce")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25189, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Cyclone on Bob"), "…Cyclone names its victim at tier 4")
+    end
+
+    -- ── §7.1 Skeram — health WINDOWS, not thresholds ──────────────────────────
+    do
+        local rt = engage("aq40:skeram", 15263)
+        ck(Addon:GetEncounter("aq40:skeram").combat.noBossKill,
+           "SKERAM: boss-death kill detection is DISABLED (the images die too)")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15263, combat = true, hp = 79, hpmax = 100 })
+        Life:PollHealth(rt)
+        ck(sawWarn("WARN_ANNOUNCE", "Split soon"), "…79 % is inside the 81-77 split window")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15263, combat = true, hp = 62, hpmax = 100 })
+        Life:PollHealth(rt)
+        ck(not sawWarn("WARN_ANNOUNCE", "Split soon"),
+           "…62 % is BETWEEN windows and stays quiet (a threshold would have re-fired)")
+        Addon:ClearEventLog()
+        setUnit("target", { cid = 15263, combat = true, hp = 54, hpmax = 100 })
+        Life:PollHealth(rt)
+        ck(sawWarn("WARN_ANNOUNCE", "Split soon"), "…and 54 % is the 56-52 window")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 785, destName = "Bob" })
+        ck(sawWarn("WARN_ANNOUNCE", "Mind control on Bob"), "…mind control names its victim")
+        local mc = rt.timers.fulfillment and rt.timers.fulfillment:Get("Bob")
+        near(mc and mc.total, 20, 0.01, "…on a 20 s per-target bar")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 26192 })
+        ck(sawWarn("WARN_SPECIAL", "Interrupt Arcane Explosion"), "…and the interrupt special fires")
+    end
+
+    -- ── §7.2 Silithid Royalty — a bar per bug, stopped by that bug's death ────
+    do
+        local rt = engage("aq40:bugtrio", 15544)
+        local mn, mx = barWindow(rt, "fear")
+        ck(mn == 10.6 and mx == 18.4, "BUG TRIO: Fear's pull window is 10.6-18.4")
+        mn, mx = barWindow(rt, "toxicvolley")
+        ck(mn == 8.1 and mx == 42.6, "…Toxic Volley's is 8.1-42.6")
+        eq(rt:GetCount("bugs"), 3, "…with the census seeded at three")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 15543, destId = 15543,
+                       destGUID = "Creature-0-0-0-0-15543-1" })
+        eq(rt:GetCount("bugs"), 2, "…Yauj's death decrements the census")
+        eq(bar(rt, "fear"), nil, "…and STOPS the Fear bar (it was hers)")
+        ck(bar(rt, "toxicvolley") ~= nil, "…while Kri's Toxic Volley keeps running")
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 15543, destId = 15543,
+                       destGUID = "Creature-0-0-0-0-15543-1" })
+        eq(rt:GetCount("bugs"), 2, "…de-duplicated by GUID")
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 15511, destId = 15511,
+                       destGUID = "Creature-0-0-0-0-15511-1" })
+        eq(bar(rt, "toxicvolley"), nil, "…and Kri's death stops his")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 25807 })
+        ck(sawWarn("WARN_SPECIAL", "Interrupt Great Heal"), "…Great Heal raises the interrupt special")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_PERIODIC_DAMAGE", spellName = "Poison Cloud",
+                       destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the poison"),
+           "…and the cloud is matched on spell NAME as well as id (Era quirk)")
+    end
+
+    -- ── §7.3 Sartura — no cooldown bars, a range-gated whirlwind ──────────────
+    do
+        local rt = engage("aq40:sartura", 15516)
+        eq(#Addon:GetEncounter("aq40:sartura").timers, 0,
+           "SARTURA: declares NO cooldown timers (the whirlwind interval was never characterised)")
+        eq(rt:GetCount("guards"), 3, "…with three Royal Guards on the census")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 15984, destId = 15984,
+                       destGUID = "Creature-0-0-0-0-15984-1" })
+        eq(rt:GetCount("guards"), 2, "…counted down as they die")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26083, sourceId = 15516 })
+        ck(sawWarn("WARN_ANNOUNCE", "Whirlwind"), "…Whirlwind announces at tier 3")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_DAMAGE", spellId = 26084, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of it"),
+           "…and the ground effect is DAMAGE-only (26084 applies no aura)")
+    end
+
+    -- ── §7.5 Viscidus — the emote machine, the failed shatter, the rates ──────
+    do
+        local rt = engage("aq40:viscidus", 15299)
+        eq(rt:GetState("phase"), "normal", "VISCIDUS: starts thawed")
+        local mn, mx = barWindow(rt, "poisonvolley")
+        ck(mn == 11.3 and mx == 12.9, "…the first Poison Bolt Volley is the 11.3-12.9 window")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 25991, sourceId = 15299 })
+        near(bar(rt, "poisonvolley").total, 11.3, 0.01, "…and it recurs on a flat 11.3")
+        -- frost hits, and the rate the info frame reads
+        for i = 1, 8 do
+            advance(0.5)
+            Life:Deliver({ on = "SPELL_DAMAGE", school = 16, destId = 15299 })
+        end
+        eq(rt:GetCount("frosthits"), 8, "…frost hits are counted off the SCHOOL BITMASK")
+        near(rt:Rate("frosthits"), 2, 0.05,
+             "…and the rolling rate over the last 7 is 2.0 hits/sec")
+        Life:Deliver({ on = "SPELL_DAMAGE", school = 4, destId = 15299 })
+        eq(rt:GetCount("frosthits"), 8, "…a Fire hit does not count")
+        -- the freeze ladder
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus begins to slow down!")
+        eq(rt:GetState("phase"), "freeze1", "…'begins to slow' is freeze 1/3")
+        ck(sawWarn("WARN_ANNOUNCE", "Freeze 1/3"), "…announced")
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus is freezing up!")
+        eq(rt:GetState("phase"), "freeze2", "…'is freezing up' is freeze 2/3")
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus is frozen solid!")
+        eq(rt:GetState("phase"), "frozen", "…'is frozen solid' is freeze 3/3")
+        eq(bar(rt, "poisonvolley"), nil, "…which STOPS the volley bar")
+        eq(rt:GetCount("frosthits"), 0, "…and zeroes the hit counters")
+        eq(rt:Rate("frosthits"), nil, "…including the rate (no evidence is not a rate of zero)")
+        ck(sawWarn("WARN_ANNOUNCE", "FROZEN"), "…and calls the melee burn")
+        -- a swing that lands INSIDE the 5 s grace does not unfreeze him
+        advance(2)
+        Life:Deliver({ on = "SWING_DAMAGE", creatureId = 15299, sourceId = 15299 })
+        eq(rt:GetState("phase"), "frozen",
+           "…a swing within 5 s of the freeze is the one already in flight, and is ignored")
+        -- melee hits while frozen
+        for i = 1, 11 do
+            advance(0.25)
+            Life:Deliver({ on = "SWING_DAMAGE", destId = 15299 })
+        end
+        near(rt:Rate("meleehits"), 4, 0.1, "…melee hits per second run on their own 10-wide window")
+        -- the shatter ladder
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus begins to crack!")
+        eq(rt:GetState("phase"), "shatter1", "…'begins to crack' is shatter 1/2")
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus looks ready to shatter!")
+        eq(rt:GetState("phase"), "shatter2", "…'looks ready to shatter' is shatter 2/2")
+        near(bar(rt, "rejoin").total, 16.5, 0.01, "…which starts the 16.5 s rejoin bar")
+        -- FAILED SHATTER: back to frozen, then a swing more than 5 s later
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus is frozen solid!")
+        eq(rt:GetState("phase"), "frozen", "…a failed shatter round re-freezes him")
+        advance(6)
+        Life:Deliver({ on = "SWING_DAMAGE", creatureId = 15299, sourceId = 15299 })
+        eq(rt:GetState("phase"), "normal",
+           "…and a swing MORE than 5 s after the freeze is the failed-shatter tell (Era)")
+        eq(rt:GetCount("meleehits"), 0, "…which zeroes the counters again")
+        -- the globs recombining, honoured once
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "Viscidus is frozen solid!")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 25896 })
+        eq(rt:GetState("phase"), "normal", "…and the recombine cast returns him to normal")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 25989, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Move out of the poison"), "…with the poison-cloud GTFO on you")
+    end
+
+    -- ── §7.6 Huhuran — Berserk stops three bars at once ───────────────────────
+    do
+        local rt = engage("aq40:huhuran", 15509)
+        local mn, mx = barWindow(rt, "frenzy")
+        ck(mn == 6.5 and mx == 25.9, "HUHURAN: Frenzy's pull window is 6.5-25.9")
+        mn, mx = barWindow(rt, "noxious")
+        ck(mn == 11.3 and mx == 38.8, "…Poison Bolt's is 11.3-38.8 (1.x key `noxious` preserved)")
+        mn, mx = barWindow(rt, "sting")
+        ck(mn == 6.8 and mx == 43.7, "…and Wyvern Sting's is 6.8-43.7")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26051, destId = 15509 })
+        ck(sawWarn("WARN_SPECIAL", "Tranquilise the Frenzy"), "…Frenzy raises the tranq special")
+        near(bar(rt, "frenzyactive").total, 8, 0.01, "…and an 8 s active bar")
+        -- the sting bar restarts 1 s after the targets are collected
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26180, destName = "Bob" })
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26180, destName = "Alice" })
+        advance(1.1)
+        mn, mx = barWindow(rt, "sting")
+        ck(mn == 25.9 and mx == 59.2,
+           "…and the Sting cooldown re-arms ONCE, 1 s after the targets are collected")
+        -- berserk kills three bars in one event
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26068, destId = 15509 })
+        ck(sawWarn("WARN_ANNOUNCE", "Berserk"), "…Berserk announces")
+        eq(bar(rt, "sting"), nil, "…and stops the Sting bar")
+        eq(bar(rt, "frenzy"), nil, "…the Frenzy bar")
+        eq(bar(rt, "noxious"), nil, "…and the Poison Bolt bar")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED_DOSE", spellId = 26050, destName = "Drew",
+                       destIsPlayer = true, amount = 10 })
+        ck(sawWarn("WARN_SPECIAL", "Acid Spit stacks are high"),
+           "…and Acid Spit's personal alarm is at TEN, not five")
+    end
+
+    -- ── §7.7 Twin Emperors — the teleport swap and the nameplate-range gate ───
+    do
+        local rt = engage("aq40:twinemps", 15276)
+        near(bar(rt, "berserk").total, 900, 0.01, "TWIN EMPERORS: Berserk is 900 s from pull")
+        near(bar(rt, "teleport").total, 30.8, 0.01, "…the first teleport is a flat 30.8")
+        eq(Addon:GetEncounter("aq40:twinemps").rowsByKey.teleport.countdown.depth, 4,
+           "…with a 4 s spoken countdown (the raid swaps together)")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 800 })
+        ck(sawWarn("WARN_ANNOUNCE", "Teleport — swap sides"), "…the teleport AURA is the trigger")
+        local mn, mx = barWindow(rt, "teleport")
+        ck(mn == 29.1 and mx == 40.5, "…and it recurs on 29.1-40.5")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 799 })
+        eq(warnCount("WARN_ANNOUNCE", "swap sides"), 0,
+           "…with the pair's second id collapsed by the 5 s anti-spam")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26613, destName = "Drew",
+                       destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "use a defensive"), "…Unbalancing Strike on you calls a cooldown")
+        -- Explode Bug: only for a bug that actually has a nameplate
+        Addon:ClearEventLog()
+        W.nameplates = {}
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 804,
+                       sourceGUID = "Creature-0-0-0-0-15316-77" })
+        ck(not sawWarn("WARN_SPECIAL", "Run away from the bug"),
+           "…a bug with no nameplate is out of range and stays quiet")
+        setUnit("nameplate3", { cid = 15316, guid = "Creature-0-0-0-0-15316-77" })
+        W.nameplates = { "nameplate3" }
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 804,
+                       sourceGUID = "Creature-0-0-0-0-15316-77" })
+        ck(sawWarn("WARN_SPECIAL", "Run away from the bug"),
+           "…and the SAME event warns once that bug is on a nameplate (the Era range answer)")
+        W.nameplates = {}
+    end
+
+    -- ── §7.8 Ouro — the submerge cycle ────────────────────────────────────────
+    do
+        local rt = engage("aq40:ouro", 15517)
+        local mn, mx = barWindow(rt, "sandblast")
+        ck(mn == 20.1 and mx == 26.3, "OURO: Sand Blast opens on its 20.1-26.3 pull window")
+        mn, mx = barWindow(rt, "sweep")
+        ck(mn == 22.6 and mx == 25.9, "…Sweep on 22.6-25.9")
+        near(bar(rt, "submerge").total, 184, 0.01, "…and the surface phase is 184 s")
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 26102 })
+        mn, mx = barWindow(rt, "sandblast")
+        ck(mn == 22.1 and mx == 26.8, "…Sand Blast then recurs on 22.1-26.8")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26058, sourceId = 15517 })
+        ck(sawWarn("WARN_ANNOUNCE", "submerging"), "…the submerge cast announces")
+        eq(bar(rt, "sandblast"), nil, "…and stops the Blast bar")
+        eq(bar(rt, "sweep"), nil, "…the Sweep bar")
+        eq(bar(rt, "submerge"), nil, "…and the Submerge bar")
+        near(bar(rt, "emerge").total, 30, 0.01, "…arming a 30 s emerge countdown")
+        Addon:ClearEventLog()
+        advance(30.1)
+        ck(sawWarn("WARN_ANNOUNCE", "emerging"), "…emerge is a SCHEDULE, not an event (Era quirk)")
+        mn, mx = barWindow(rt, "sandblast")
+        ck(mn == 20.1 and mx == 26.3, "…and all three bars restart from their PULL values")
+        mn, mx = barWindow(rt, "sweep")
+        ck(mn == 22.6 and mx == 25.9, "…Sweep included")
+        near(bar(rt, "submerge").total, 184, 0.01, "…and the next surface phase is 184 s again")
+        -- berserk: he never submerges again
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26615, destId = 15517 })
+        eq(rt:GetState("berserked"), "yes", "…the berserk is recorded as a state")
+        eq(bar(rt, "submerge"), nil, "…the submerge bar stops for good")
+        mn, mx = barWindow(rt, "sandblast")
+        ck(mn == 20.1 and mx == 26.3, "…and the Blast cooldown restarts from zero")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26058, sourceId = 15517 })
+        ck(not sawWarn("WARN_ANNOUNCE", "submerging"),
+           "…while a post-berserk submerge cast is not announced at all")
+    end
+
+    -- ── §7.9 C'Thun — the full phase cycle, all three value sets, the stomach ──
+    do
+        local rt = engage("aq40:cthun", 15589)
+        ck(rt ~= nil, "C'THUN: engages off the combat sweep")
+        eq(Addon:GetEncounter("aq40:cthun").combat.wipeWindow, 25, "…with a 25 s wipe timeout")
+        -- VALUE SET 1: phase 1
+        near(bar(rt, "darkglarecd").total, 48, 0.01, "…P1: the first Dark Glare is 48 s")
+        near(bar(rt, "clawtentacle").total, 9, 0.01, "…P1: the first Claw Tentacle is 9 s")
+        near(bar(rt, "eyetentacles").total, 45, 0.01, "…P1: the first Eye Tentacle is 45 s")
+        Addon:ClearEventLog()
+        advance(48.1)
+        ck(sawWarn("WARN_SPECIAL", "Dark Glare — run"),
+           "…the scheduled glare loop fires the laser-run special")
+        near(bar(rt, "darkglare").total, 39, 0.01, "…and the rotating beam runs 39 s")
+        near(bar(rt, "darkglarecd").total, 86, 0.01, "…with the next glare 86 s out")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26586, sourceId = 15726,
+                       sourceGUID = "Creature-0-0-0-0-15726-1" })
+        ck(sawWarn("WARN_ANNOUNCE", "Eye Tentacle"), "…an Eye Tentacle birth announces…")
+        near(bar(rt, "eyetentacles").total, 45, 0.01, "…and re-arms the P1 45 s cadence")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26586, sourceId = 15726,
+                       sourceGUID = "Creature-0-0-0-0-15726-2" })
+        eq(warnCount("WARN_ANNOUNCE", "Eye Tentacle"), 1,
+           "…with a wave of births collapsed by the 5 s per-creature anti-spam")
+        -- the eye beam scan and its icon
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_START", spellId = 26134, sourceId = 15589 })
+        local sawScan, sawIcon = false, false
+        for _, e in ipairs(Addon:GetEventLog()) do
+            if e.event == "SCAN_REQUEST" then sawScan = true end
+        end
+        ck(sawScan, "…Eye Beam raises the boss target scan (0.1 s delay, then 0.1 s x 3)")
+        rt:Route({ on = "targetChanged", key = "eyebeam", destName = "Drew" })
+        for _, e in ipairs(Addon:GetEventLog()) do
+            if e.event == "ICON_REQUEST" then sawIcon = true end
+        end
+        ck(sawIcon, "…whose result marks the target with raid icon 1")
+        ck(sawWarn("WARN_SPECIAL", "Eye Beam on YOU"),
+           "…and fires the personal special when the scan names YOU")
+        -- VALUE SET 2: the moment phase 2 begins
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "UNIT_DIED", creatureId = 15589, destId = 15589,
+                       destGUID = "Creature-0-0-0-0-15589-1" })
+        eq(rt.stage, 2, "…the EYE'S DEATH is phase 2")
+        ck(sawWarn("WARN_ANNOUNCE", "Phase 2"), "…announced")
+        eq(bar(rt, "darkglarecd"), nil, "…P2: Dark Glare stops for good")
+        eq(bar(rt, "clawtentacle"), nil, "…P2: Claw Tentacles stop for good")
+        near(bar(rt, "eyetentacles").total, 40.5, 0.01, "…P2 entry: Eye Tentacles at 40.5")
+        near(bar(rt, "giantclaw").total, 10.5, 0.01, "…P2 entry: Giant Claw at 10.5")
+        near(bar(rt, "gianteye").total, 41.3, 0.01, "…P2 entry: Giant Eye at 41.3")
+        -- the P2 recurring cadence differs from the P2 entry value
+        advance(6)      -- clear of the 5 s per-creature birth anti-spam
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26586, sourceId = 15726,
+                       sourceGUID = "Creature-0-0-0-0-15726-9" })
+        near(bar(rt, "eyetentacles").total, 30, 0.01,
+             "…and the P2 Eye Tentacle CADENCE is 30 s, not the 45 it was in P1")
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 26586, sourceId = 15728,
+                       sourceGUID = "Creature-0-0-0-0-15728-9" })
+        near(bar(rt, "giantclaw").total, 60, 0.01, "…while the Giant Claw cadence is 60 s")
+        -- the stomach: a roster of the eaten, and the tentacles read through their eyes
+        W.group = { "player", "raid1" }
+        setUnit("raid1", { name = "Bob", player = true, combat = true })
+        setUnit("raid1target", { cid = 15802, hp = 40, hpmax = 100 })
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26476, destName = "Bob", amount = 2 })
+        eq(rt:RosterCount("stomach"), 1, "…the stomach roster takes the swallowed player")
+        local entry = rt:GetRoster("stomach")["Bob"]
+        eq(entry and entry.stacks, 2, "…with their acid stack count")
+        local h = Addon.Scan.rosterByKey["aq40:cthun:fleshtentacles"]
+        ck(h ~= nil, "…and arms the roster-relayed tentacle scan")
+        Addon:ClearEventLog()
+        advance(1.1)
+        local probed
+        for _, e in ipairs(Addon:GetEventLog()) do if e.event == "PROBE" then probed = e end end
+        ck(probed ~= nil, "…which reads the Flesh Tentacle THROUGH the stomached player's target")
+        local guid = "Creature-0-0-0-0-15802-0001"
+        ck(h and h.seen[guid] and math.abs(h.seen[guid].pct - 40) < 0.01,
+           "…recovering its health percentage (40 %) from a unit nobody outside can see")
+        -- a second swallowed player does not start a second loop
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 26476, destName = "Alice", amount = 1 })
+        eq(Addon.Scan.rosterByKey["aq40:cthun:fleshtentacles"], h,
+           "…and a second victim re-uses the one live scan rather than starting another")
+        -- VALUE SET 3: after a Weakened
+        Addon:ClearEventLog()
+        Life:OnChat("CHAT_MSG_MONSTER_EMOTE", "C'Thun is weakened!")
+        ck(sawWarn("WARN_SPECIAL", "WEAKENED"), "…the Weakened emote is the burn call")
+        near(bar(rt, "eyetentacles").total, 83, 0.01, "…post-Weaken: Eye Tentacles at 83")
+        near(bar(rt, "giantclaw").total, 53, 0.01, "…post-Weaken: Giant Claw at 53")
+        near(bar(rt, "gianteye").total, 83.7, 0.01, "…post-Weaken: Giant Eye at 83.7")
+        near(bar(rt, "weaken").total, 45, 0.01, "…and the Weakened window itself is 45 s")
+        eq(rt:RosterCount("stomach"), 0, "…while the stomach list is emptied")
+        ck(Addon.Scan.rosterByKey["aq40:cthun:fleshtentacles"] == nil,
+           "…and the tentacle scan is torn down with it")
+        W.group = { "player" }
+    end
+
+    -- ── §6.7 / §7.10 the two zone-wide trash modules ──────────────────────────
+    do
+        resetLife()
+        W.instanceID = 531
+        eq(Life:ArmZones(531), 1, "TRASH: entering the Temple ARMS the AQ40 trash module")
+        ck(Life:IsZoneArmed("aq40:trash"), "…without engaging anything")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 19134 })
+        ck(sawWarn("WARN_ANNOUNCE", "Intimidating Shout"), "…trash alerts fire off the shared path")
+        Addon:ClearEventLog()
+        -- the reflect evidence path, end to end through NormalizeCLEU
+        local ev = Life:NormalizeCLEU("SPELL_MISSED", W.playerGUID, "Drew", 0, 0,
+                                      "Creature-0-0-0-0-15264-1", "Anubisath Defender", 0, 0,
+                                      686, "Shadow Bolt", 32, "REFLECT")
+        eq(ev.missType, "REFLECT", "…the miss TYPE is normalised off the combat log")
+        eq(ev.school, 32, "…alongside the school bitmask")
+        Life:Deliver(ev)
+        ck(sawWarn("WARN_SPECIAL", "Shadow/Frost reflect"),
+           "…and a reflected Shadow spell of YOURS raises the stop-casting special")
+        Addon:ClearEventLog()
+        local ev2 = Life:NormalizeCLEU("SPELL_MISSED", W.playerGUID, "Drew", 0, 0,
+                                       "Creature-0-0-0-0-15264-1", "Anubisath Defender", 0, 0,
+                                       133, "Fireball", 4, "DEFLECT")
+        Life:Deliver(ev2)
+        ck(sawWarn("WARN_SPECIAL", "Fire/Arcane reflect"), "…and a deflected Fire spell the other one")
+        -- per-mob thunderclap bars
+        Addon:ClearEventLog()
+        local rt40 = Life.zoneArmed["aq40:trash"]
+        Life:Deliver({ on = "SPELL_DAMAGE", spellId = 26554,
+                       sourceGUID = "Creature-0-0-0-0-15264-1" })
+        Life:Deliver({ on = "SPELL_DAMAGE", spellId = 26554,
+                       sourceGUID = "Creature-0-0-0-0-15264-2" })
+        local n = 0
+        for _ in pairs(rt40.timers.thunderclap.live) do n = n + 1 end
+        eq(n, 2, "…and Thunderclap runs ONE 7 s nameplate bar PER MOB")
+        W.instanceID = 509
+        eq(Life:ArmZones(509), 1, "…zoning to the Ruins swaps to the AQ20 trash module")
+        ck(Life:IsZoneArmed("aq20:trash") and not Life:IsZoneArmed("aq40:trash"),
+           "…exactly one of the two armed at a time")
+        Addon:ClearEventLog()
+        Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 22997, destIsPlayer = true })
+        ck(sawWarn("WARN_SPECIAL", "Plague on YOU"), "…AQ20's Plague alert is the personal one")
+        W.instanceID = 533
+        Life:ArmZones(533)
+    end
+
+    Addon._suppressLegacyAlerts = nil
+    Addon:SetEventRecording(false)
+    resetLife()
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-4d)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-3, 4d, 4c)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -4561,7 +5307,9 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "ERA  §6.1/§8.6/§5.4 Era services",
                      "PUB  §4.5/§11.8 the 18-field public contract",
                      "NAXX  §8 encounter data: registration, keys, the options tree",
-                     "NAXX-DRIVE  §8 per-encounter behaviour through the real engine" }) do
+                     "NAXX-DRIVE  §8 per-encounter behaviour through the real engine",
+                     "AQ  §6/§7 encounter data: registration, keys, the options tree",
+                     "AQ-DRIVE  §6/§7 per-encounter behaviour through the real engine" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end
