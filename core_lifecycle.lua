@@ -62,6 +62,15 @@ Life.TIMER_SWEEP_DELAY    = 3       -- full timer stop at +3 s
 Life.LOG_STOP_DELAY       = 10
 Life.MUSIC_RESTART_DELAY  = 22
 Life.WORLD_BOSS_RECORD_PCT = 98     -- engaging below this disqualifies the kill record
+-- ENGINE SPEC §9.1 step 3 (added in W3, the smallest seam that makes the rule real):
+-- "a 'recovery in progress' flag is set for 15 s; while set, the boss-frame
+-- combat-start path is disabled so a partial recovery can't be mistaken for a fresh
+-- pull." ERA TRANSLATION: path (b) — the boss-frame path — is INERT on Era (§10.22),
+-- so suppressing only that would suppress nothing. The Era path that can actually
+-- mistake a recovery for a pull is the HEALTH path (e), which is why §1.2 already
+-- delays its arming by 20 s for exactly this reason. So the flag gates BOTH: the
+-- literal boss-frame path (for the day Blizzard fixes it) and the health path.
+Life.RECOVERY_SUPPRESS    = 15
 
 -- ENGINE SPEC §10.9: difficulty index mapping for Era raids.
 Life.ERA_DIFFICULTY = {
@@ -263,7 +272,24 @@ function Life:Boot()
 end
 
 function Life:HealthArmed()
+    if Life:IsRecovering() then return false end          -- §9.1 step 3
     return Life.armedHealthBoot and not Life.healthSuppressed
+end
+
+-- §9.1 step 3. Absolute-deadline flag rather than a scheduled clear, so a second
+-- recovery attempt EXTENDS the window instead of racing a stale unschedule, and so
+-- the harness can read the deadline directly on the fake clock.
+function Life:SetRecovering(on, seconds)
+    if not on then Life.recoveringUntil = nil return false end
+    Life.recoveringUntil = S():Now() + (seconds or Life.RECOVERY_SUPPRESS)
+    return true
+end
+
+function Life:IsRecovering()
+    local until_ = Life.recoveringUntil
+    if not until_ then return false end
+    if S():Now() >= until_ then Life.recoveringUntil = nil return false end
+    return true
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -466,6 +492,10 @@ end
 -- (b) INSTANCE_ENCOUNTER_ENGAGE_UNIT — §10.22 INERT ON ERA. Never starts combat.
 -- If it ever fires with a boss we recognise, that is news, so it is recorded.
 function Life:OnEngageUnit()
+    -- §9.1 step 3: the boss-frame combat-start path is disabled for 15 s while a
+    -- reload recovery is in flight. Inert on Era today, wired anyway so the rule is
+    -- present the moment the path becomes real.
+    if Life:IsRecovering() then return nil, "recovery_in_progress" end
     for i = 1, 10 do
         local u = "boss" .. i
         if not Life.env.UnitExists(u) then break end
@@ -976,6 +1006,16 @@ function Life:OnEvent(event, ...)
         return Life:OnChat(event, text)
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         return Life:Deliver(Life:NormalizeCLEU(...))
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        -- W3 SEAM (§9.1). W1 registered this event but had no handler; the reload
+        -- recovery cascade needs exactly one fact the engine already knows — "we just
+        -- came back, and this is whether it was a fresh login or a /reload". The
+        -- lifecycle publishes it and takes no action of its own; core_sync.lua owns
+        -- the cascade, so the engine core stays free of comms.
+        local isLogin, isReload = ...
+        Life.enteredWorldAt = S():Now()
+        Addon:FireEngineEvent("ENGINE_LOGIN", isLogin and true or false, isReload and true or false)
+        return true
     elseif event == "ZONE_CHANGED_NEW_AREA" or event == "LOADING_SCREEN_DISABLED" then
         Life.zoneAt = S():Now()
         Addon:FireEngineEvent("ENGINE_ZONE")
@@ -1002,6 +1042,7 @@ function Life:Reset()
     Life:Disable()
     Life.armedCombat, Life.armedHealthBoot, Life.healthSuppressed = false, false, false
     Life.lastCombatFlagAt, Life.pendingSweeps, Life.bossSeen = nil, 0, false
+    Life.recoveringUntil = nil
     Life.stats = { engages = 0, kills = 0, wipes = 0, rejected = 0 }
     return true
 end

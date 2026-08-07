@@ -178,40 +178,17 @@ function Addon:UpdateDebugOnlyIndicator()
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  PULL TIMER — re-seated on the new engine
+--  PULL TIMER — RETIRED FROM THIS FILE IN W3 (do not re-add)
 -- ══════════════════════════════════════════════════════════════════════════════
--- ENGINE SPEC §11.4: refuses durations between 0 and 3 s exclusive; 0 cancels;
--- countdown depth defaults to 5. It is now a real engine timer of the `pull`
--- category, so W2 renders it with every other bar instead of owning a bespoke frame.
-local pullTimer
-
-local function ensurePullTimer()
-    if pullTimer then return pullTimer end
-    pullTimer = Addon.Timers.New({
-        id = "engine:pull", key = "pull", kind = "combat",
-        text = "Pull", countdown = { depth = 5 },
-    })
-    pullTimer.Category = function() return "pull" end
-    return pullTimer
-end
-
-function Addon:StartPullTimer(seconds, source)
-    seconds = tonumber(seconds) or 10
-    if seconds == 0 then return Addon:CancelPullTimer() end
-    if seconds < 3 then seconds = 3 elseif seconds > 60 then seconds = 60 end
-    local t = ensurePullTimer()
-    t:Start(seconds)
-    Addon:FireEngineEvent("ENGINE_PULL", seconds, source)
-    DLog("Pull timer started: %.0fs (%s)", seconds, tostring(source or "manual"))
-    return seconds
-end
-
-function Addon:CancelPullTimer()
-    if pullTimer then pullTimer:Stop() end
-    if Addon.StopVoiceCountdown then Addon:StopVoiceCountdown() end
-    Addon:FireEngineEvent("ENGINE_PULL", 0, "cancel")
-    return true
-end
+-- W1 parked a minimal `Addon:StartPullTimer` here so slash.lua and options.lua kept
+-- working across the demolition. W3 owns pull timers for real: core_sync.lua carries
+-- the full ENGINE SPEC §11.4 rule set (rank gate, PvP + in-encounter refusal, the
+-- 0-to-3 s refusal instead of a silent clamp, 0 = cancel, target naming, the engage
+-- cancel from §2.3) AND the wire that broadcasts one. The PUBLIC NAMES are unchanged
+-- — `Addon:StartPullTimer(seconds, source)` / `Addon:CancelPullTimer()` — so nothing
+-- outside this file moved. A re-added copy here would shadow-or-be-shadowed by the
+-- real one depending on load order; the harness (GATE SYNC) asserts core_boot.lua no
+-- longer defines either name.
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  STATS TEXT (ported; reads the same db.stats shape)
@@ -333,6 +310,13 @@ function Addon:InitEngine()
     Addon:RegisterEngineCallback("ENGINE_END", function(_, encId, rt, wiped, duration)
         DLog("END %s after %.1fs (%s)", tostring(encId), duration or 0, wiped and "WIPE" or "KILL")
     end)
+
+    -- W3: the addon channel attaches here, after the engine frame exists, so the
+    -- sync layer is booted by the same one call core.lua already makes and there is
+    -- no second login handler racing this one. Sync is loaded AFTER this file, so
+    -- the reference is resolved at CALL time, never at load time.
+    if Addon.Sync then Addon.Sync:Boot() end
+    if Addon.DBMBridge then Addon.DBMBridge:Boot() end
 
     Addon:UpdateAutoDebug()
     return ef

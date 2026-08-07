@@ -23,6 +23,12 @@ core_api.lua
 core_lifecycle.lua
 core_boot.lua
 
+# ── 2.0 addon channel + recovery (wave 3) ──────────────────────────────────────
+# Loads AFTER core_boot: it registers on the engine dispatch seam and owns the pull
+# and break timers core_boot used to shim. core_boot:InitEngine() calls Sync:Boot()
+# at LOGIN, so the backward reference is resolved at call time, not at load time.
+core_sync.lua
+
 alerts.lua
 dbm_bridge.lua
 modules.lua

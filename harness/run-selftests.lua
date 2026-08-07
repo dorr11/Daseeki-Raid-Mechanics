@@ -27,6 +27,15 @@
 --                        grammar feature, driven engage -> timers -> warnings ->
 --                        wipe -> re-engage
 --   HATCH    item 8      the registered-special-module escape hatch, verbatim seams
+--   SYNC-*   §7/§9/§11.4 WAVE 3: our own addon-channel wire (format, transport and
+--                        sub-protocol version gates, channel scope, two send
+--                        priorities), corroboration thresholds on BOTH client rules,
+--                        throttling/dedupe and the housekeeper prune, the version nag
+--                        at 2 senders WITH the owner-vetoed self-disable asserted
+--                        absent two ways, the full 7/10/13 s reload-recovery cascade
+--                        on the fake clock, pull/break timers end to end, and the
+--                        receive-only boss-mod ingest behind a two-layer transmit
+--                        firewall.
 --
 -- Usage:  lua5.1 run-selftests.lua [RM_DIR]   (exit 0 = ALL PASS)
 -- =====================================================================
@@ -98,7 +107,7 @@ end
 local ALL_LUA = {
     "core.lua", "theme.lua", "media.lua", "soundpacks.lua",
     "core_heap.lua", "core_telemetry.lua", "core_sched.lua", "core_timers.lua",
-    "core_api.lua", "core_lifecycle.lua", "core_boot.lua",
+    "core_api.lua", "core_lifecycle.lua", "core_boot.lua", "core_sync.lua",
     "alerts.lua", "dbm_bridge.lua", "modules.lua",
     "mod_loatheb_healers.lua", "mod_fourhorsemen_rotation.lua",
     "mod_fourhorsemen_tracker.lua", "mod_gothik_waves.lua",
@@ -149,6 +158,8 @@ local CHANGE_SURFACE = {
     ["core_heap.lua"] = true, ["core_telemetry.lua"] = true, ["core_sched.lua"] = true,
     ["core_timers.lua"] = true, ["core_api.lua"] = true, ["core_lifecycle.lua"] = true,
     ["core_boot.lua"] = true, [TOC_FILE] = true,
+    -- wave 3 authored these two; they are clean-room from the behaviour spec alone.
+    ["core_sync.lua"] = true, ["dbm_bridge.lua"] = true,
 }
 gate("FW  clean-room firewall")
 local FW_FILES = { "CHANGELOG.md", "README.md", TOC_FILE, ".pkgmeta" }
@@ -193,21 +204,25 @@ for _, rel in ipairs(PARKED_OUT_OF_TOC) do
 end
 for _, rel in ipairs({ "core_heap.lua", "core_telemetry.lua", "core_sched.lua",
                        "core_timers.lua", "core_api.lua", "core_lifecycle.lua",
-                       "core_boot.lua" }) do
+                       "core_boot.lua", "core_sync.lua" }) do
     ck(TOC_SET[rel], rel .. " IS in the load list (the new core actually ships)")
 end
 do  -- load-order is a dependency chain and the toc must express it
     local pos = {}
     for i, rel in ipairs(TOC_LUA) do pos[rel] = i end
     local chain = { "core_heap.lua", "core_telemetry.lua", "core_sched.lua",
-                    "core_timers.lua", "core_api.lua", "core_lifecycle.lua", "core_boot.lua" }
+                    "core_timers.lua", "core_api.lua", "core_lifecycle.lua", "core_boot.lua",
+                    "core_sync.lua" }
     local monotonic = true
     for i = 2, #chain do
         if not (pos[chain[i - 1]] and pos[chain[i]] and pos[chain[i - 1]] < pos[chain[i]]) then
             monotonic = false
         end
     end
-    ck(monotonic, "engine load order is heap -> telemetry -> sched -> timers -> api -> lifecycle -> boot")
+    ck(monotonic, "engine load order is heap -> telemetry -> sched -> timers -> api -> lifecycle -> boot -> sync")
+    ck(pos["core_sync.lua"] and pos["dbm_bridge.lua"]
+       and pos["core_sync.lua"] < pos["dbm_bridge.lua"],
+       "core_sync.lua loads before dbm_bridge.lua (the bridge writes into the transmit firewall at load)")
     ck(pos["core.lua"] and pos["core.lua"] < pos["core_heap.lua"],
        "core.lua (SavedVariables) loads before the engine")
     ck(pos["modules.lua"] and pos["core_api.lua"] < pos["modules.lua"],
@@ -280,7 +295,12 @@ end
 local function clearWorld()
     W.units, W.group, W.bossUnits, W.nameplates = {}, { "player" }, {}, {}
     W.encounterInProgress = false
-    setUnit("player", { guid = W.playerGUID, player = true, combat = true, dead = false })
+    -- W3 additions: group shape and identity are now world facts too (the sync layer
+    -- reads them). Defaults match what wave 1's injection hard-coded.
+    W.inRaid, W.inGroup = true, true
+    W.realm = "Whitemane"
+    setUnit("player", { guid = W.playerGUID, player = true, combat = true, dead = false,
+                        name = "Drew", realm = "Whitemane" })
 end
 clearWorld()
 
@@ -297,6 +317,9 @@ local Addon = {}
 local ENGINE_FILES = {
     "core.lua", "core_heap.lua", "core_telemetry.lua", "core_sched.lua",
     "core_timers.lua", "core_api.lua", "core_lifecycle.lua", "core_boot.lua",
+    -- wave 3: the addon channel, then the receive-only interop bridge that writes
+    -- its prefixes into the channel's transmit firewall at LOAD time.
+    "core_sync.lua", "dbm_bridge.lua",
 }
 for _, rel in ipairs(ENGINE_FILES) do
     local chunk, err = loadfile(P(rel))
@@ -315,6 +338,7 @@ Addon:Init()
 
 local Heap, Sched, Timers, API, Life, Tele =
     Addon.Heap, Addon.Sched, Addon.Timers, Addon.API, Addon.Lifecycle, Addon.Telemetry
+local Sync, Bridge = Addon.Sync, Addon.DBMBridge
 
 -- ── the injected clock (headless discipline) ──────────────────────────────────
 local CLOCK = 1000
@@ -336,6 +360,35 @@ local function advance(seconds, step)
 end
 
 -- ── the injected world ────────────────────────────────────────────────────────
+----------------------------------------------------------------------
+-- W3: the injected COMMS environment + a wire recorder.
+-- World facts stay on Lifecycle.env (one fake world, not two); only the
+-- comms-specific calls are faked here.
+----------------------------------------------------------------------
+local WIRE       = {}       -- every message that reached the (fake) wire
+local REGISTERED = {}       -- every prefix registered for RECEIVE
+
+Sync:SetEnv({
+    SendAddonMessage = function(prefix, msg, chatType, target)
+        WIRE[#WIRE + 1] = { prefix = prefix, payload = msg, chatType = chatType, target = target }
+        return 0
+    end,
+    RegisterAddonMessagePrefix = function(p) REGISTERED[p] = true return true end,
+    IsInInstanceGroup    = function() return W.instanceGroup == true end,
+    GetNetStats          = function() return 0, 0, 0, W.latencyMs or 0 end,
+    GetRealmName         = function() return W.realm end,
+    UnitIsConnected      = function(u) return (unit(u) or {}).connected ~= false end,
+    UnitIsGroupLeader    = function() return W.leader ~= false end,
+    UnitIsGroupAssistant = function() return false end,
+    FlashClientIcon      = function() W.flashed = (W.flashed or 0) + 1 end,
+    UnitNameRealm        = function(u)
+        local t = unit(u) or {}
+        return t.name or u, t.realm
+    end,
+    Time   = function() return W.wallClock or 1700000000 end,
+    DateAt = function() return "20:15" end,
+})
+
 Life:SetEnv({
     UnitExists          = function(u) return unit(u) ~= nil end,
     UnitAffectingCombat = function(u) return (unit(u) or {}).combat and true or false end,
@@ -350,8 +403,8 @@ Life:SetEnv({
     IsEncounterInProgress = function() return W.encounterInProgress end,
     GetInstanceInfo     = _G.GetInstanceInfo,
     IsInInstance        = function() return W.inInstance end,
-    IsInRaid            = function() return true end,
-    IsInGroup           = function() return true end,
+    IsInRaid            = function() return W.inRaid ~= false end,
+    IsInGroup           = function() return W.inGroup ~= false end,
     GetNumGroupMembers  = function() return #W.group end,
     ForEachGroupMember  = function(fn)
         for _, u in ipairs(W.group) do if fn(u) then return true end end
@@ -1731,8 +1784,678 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- WAVE 3 — SYNC + RECOVERY + BOSS-MOD INGEST
+--
+-- Every assertion below names the DBM_ENGINE_BEHAVIOR_SPEC.md rule it proves and
+-- runs through the SHIPPING code: the real encoder, the real corroboration counter,
+-- the real whisper cascade on the fake clock, the real timer API for restoration.
+-- Nothing is asserted against a mock of our own code.
+----------------------------------------------------------------------
+
+-- The W3 fixture encounter. Small on purpose: it exists to be engaged, corroborated,
+-- torn down and RECOVERED, so it carries one variance timer, one plain timer, one
+-- state variable and one sync-triggered warning — and nothing else.
+local W3ENC
+do
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    local errs
+    W3ENC, errs = Addon:RegisterEncounter({
+        id = "w3boss", name = "Sync Fixture", zone = 533,
+        creatureId = { 91001 }, encounterId = { 9101 },
+        combat = { minCombatTime = 5 },
+        timers = {
+            { key = "vt",   kind = "cd", duration = "v40-60", start = { on = "pull" } },
+            { key = "flat", kind = "cd", duration = 30,       start = { on = "pull" } },
+        },
+        states = { { key = "polarity", initial = "none" } },
+        warnings = {
+            { key = "syncwarn", text = "Polarity synced",
+              trigger = { on = "sync", text = "polarity" } },
+        },
+    })
+    if not W3ENC then
+        realprint("  FAIL  W3 fixture did not register: " .. table.concat(errs or {}, "; "))
+        FAILS = FAILS + 1
+    end
+end
+
+local function resetSync()
+    resetLife()
+    Sync:Reset()
+    Bridge:Reset()
+    for i = #WIRE, 1, -1 do WIRE[i] = nil end
+    W.latencyMs, W.leader, W.flashed = 0, true, 0
+    W.instanceGroup = false
+    W.wallClock = 1700000000
+    Addon.db.settings.updateReminder = nil
+    Addon.db.settings.pullTimerZoneFilter = nil
+    Addon.db.breakTimer = nil
+end
+
+-- Encode + deliver one well-formed peer message through the REAL receive path.
+local function rx(sender, sub, ...)
+    local scope = Sync.SUB[sub].scope
+    return Sync.Receive(Sync.PREFIX, Sync.Encode(sender, sub, ...),
+                        scope == "whisper" and "WHISPER" or "RAID", sender)
+end
+
+local function countOnWire(sub, from)
+    local n = 0
+    for i = (from or 0) + 1, #WIRE do
+        if Sync.Split(WIRE[i].payload)[3] == sub then n = n + 1 end
+    end
+    return n
+end
+
+-- A raid with the four candidate shapes §9.1 filters on.
+local function makeRaid()
+    W.units, W.group = {}, {}
+    -- `player` and `raid1` are the SAME character, exactly as the client reports it:
+    -- if they disagree the sync layer would happily ask itself for a recovery.
+    setUnit("player", { guid = W.playerGUID, player = true, combat = true,
+                        name = "Drew", realm = "Whitemane" })
+    setUnit("raid1", { guid = W.playerGUID, player = true, combat = true,
+                       name = "Drew", realm = "Whitemane" })
+    local defs = {
+        { u = "raid2", name = "Alpha", realm = "Whitemane" },
+        { u = "raid3", name = "Bravo", realm = "Whitemane" },
+        { u = "raid4", name = "Cross", realm = "Faerlina" },                  -- cross-realm
+        { u = "raid5", name = "Dead",  realm = "Whitemane", dead = true },    -- ghost
+        { u = "raid6", name = "Gone",  realm = "Whitemane", connected = false },
+        { u = "raid7", name = "Echo",  realm = "Whitemane" },
+    }
+    W.group[1] = "raid1"
+    for _, d in ipairs(defs) do
+        setUnit(d.u, { player = true, name = d.name, realm = d.realm,
+                       dead = d.dead, connected = d.connected })
+        W.group[#W.group + 1] = d.u
+    end
+end
+
+----------------------------------------------------------------------
+-- GATE SYNC-WIRE — §7.1/§7.2 wire format, versioning, channel scope
+----------------------------------------------------------------------
+gate("SYNC-WIRE  §7.1/§7.2 wire format, protocol gates, channel scope")
+do  -- boot facts, asserted BEFORE anything flushes the scheduler
+    ck(Sync.booted, "Addon:InitEngine() booted the sync layer (one boot order for the engine)")
+    ck(REGISTERED[Sync.PREFIX], "…registering our own prefix " .. Sync.PREFIX .. " for receive")
+    local found = false
+    for _, h in ipairs(Sched.housekeepers) do if h.fn == Sync.Prune then found = true end end
+    ck(found, "…and hanging the sync-spam prune on the ENGINE housekeeper (§3.5), not a private ticker")
+    ck(Sched.housekeeping ~= nil, "…which only runs because something is registered on it")
+end
+do
+    resetSync()
+    local f = Sync.Split(Sync.Encode("Peer-Whitemane", "C", 3, "w3boss", 100, "sweep", 533))
+    eq(f[1], "Peer-Whitemane", "field 1 is the sender full name (§7.1)")
+    eq(f[2], "1",              "field 2 is the transport protocol version")
+    eq(f[3], "C",              "field 3 is the sub-prefix")
+    eq(f[4], "1",              "field 4 is the per-message SUB-PROTOCOL version (hoisted, see the header)")
+    eq(f[5], "3",              "…arguments follow from field 5")
+    eq(#f, 9,                  "…and every declared argument survives the round trip")
+end
+do
+    local f = Sync.Split(Sync.Encode("P", "PT", 10, nil, "Boss"))
+    eq(f[6], "",     "an OMITTED optional argument encodes as an empty field, not a missing one…")
+    eq(f[7], "Boss", "…so every later argument keeps its position")
+    f = Sync.Split(Sync.Encode("P", "PT", "10\t99", 533))
+    eq(f[5], "10 99", "a separator inside an argument is escaped: a field cannot be injected")
+end
+do  -- §7.1 / §7.2 the two version gates
+    resetSync()
+    local function raw(t, proto)
+        return table.concat({ "Peer-Whitemane", t, "PT", proto, 10, 533 }, "\t")
+    end
+    eq(select(2, Sync.Receive(Sync.PREFIX, raw(0, 1), "RAID", "P")), "transport_version",
+       "a message declaring a LOWER transport version is dropped (§7.1)")
+    eq(select(2, Sync.Receive(Sync.PREFIX, raw(1, 0), "RAID", "P")), "subprotocol",
+       "an OLDER sub-protocol number is HARD-DROPPED (§7.2)")
+    eq(select(2, Sync.Receive(Sync.PREFIX, raw(1, 2), "RAID", "P")), "subprotocol",
+       "…and so is a NEWER one — that is exactly how the format evolves without breaking old clients")
+    eq(select(2, Sync.Receive("NOTOURS", raw(1, 1), "RAID", "P")), "not_our_prefix",
+       "another addon's prefix is not ours to interpret")
+    eq(select(2, Sync.Receive(Sync.PREFIX,
+        table.concat({ "P", 1, "ZZZ", 1 }, "\t"), "RAID", "P")), "unknown_sub",
+       "an unknown sub-prefix is dropped")
+end
+do  -- §7.1 receive-side channel validation
+    resetSync()
+    eq(select(2, Sync.Receive(Sync.PREFIX, Sync.Encode("P", "PT", 10, 533), "WHISPER", "P")),
+       "channel_scope", "a GROUP-scoped sub-prefix is refused when it arrives by whisper")
+    eq(select(2, Sync.Receive(Sync.PREFIX, Sync.Encode("P", "CI", "w3boss", 5), "RAID", "P")),
+       "channel_scope", "…and a WHISPER-scoped one is refused when it arrives on raid chat")
+end
+do  -- §7.1 channel selection, incl. the solo loopback
+    resetSync()
+    W.inInstance, W.inGroup, W.inRaid = true, true, true
+    eq(Sync.Channel(), "RAID",
+       "an ordinary raid inside a raid instance is NOT an instance group — it uses RAID (§7.1)")
+    W.instanceGroup = true
+    eq(Sync.Channel(), "INSTANCE_CHAT", "…INSTANCE_CHAT needs an instance GROUP and an instance")
+    W.instanceGroup = false
+    W.inInstance = false
+    eq(Sync.Channel(), "RAID", "…outside an instance, RAID")
+    W.inRaid = false
+    eq(Sync.Channel(), "PARTY", "…else PARTY")
+    W.inGroup = false
+    eq(Sync.Channel(), nil, "…else solo")
+    local before = Sync.stats.received
+    local _, how = Sync.Send("BT", 300)
+    eq(how, "loopback", "solo LOOPS the message back into the local handler rather than sending (§7.1)")
+    eq(Sync.stats.received, before + 1, "…the local handler really saw it")
+    eq(#WIRE, 0, "…and nothing reached the wire")
+    W.inInstance, W.inGroup, W.inRaid = true, true, true
+end
+do  -- §7.1 two send priorities
+    resetSync()
+    Sync.Enqueue(Sync.PREFIX, "n1", { priority = "NORMAL", chatType = "RAID" })
+    Sync.Enqueue(Sync.PREFIX, "a1", { priority = "ALERT",  chatType = "RAID" })
+    advance(0.3)
+    eq(WIRE[1] and WIRE[1].payload, "a1", "ALERT traffic drains ahead of NORMAL (§7.1)")
+    eq(WIRE[2] and WIRE[2].payload, "n1", "…and NORMAL follows")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-CORR — §7.3 corroboration, throttling, de-duplication
+----------------------------------------------------------------------
+gate("SYNC-CORR  §7.3 corroboration thresholds, throttle, de-duplication")
+do  -- BOTH client rules, kept as data so the Classic concession cannot be "tidied up"
+    eq(Sync.Threshold("C",  "classic"), 3, "combat start needs THREE distinct senders on Classic (§7.3)")
+    eq(Sync.Threshold("C",  "retail"),  3, "…and three on retail")
+    eq(Sync.Threshold("EE", "retail"),  3, "encounter end needs THREE senders on retail")
+    eq(Sync.Threshold("EE", "classic"), 1,
+       "…but exactly ONE on Classic — the spec's explicit concession, not a typo")
+    eq(Sync.CLIENT, "classic", "we ship for Era, so the Classic row is the live one")
+end
+do  -- the counter itself
+    resetSync()
+    W.latencyMs = 250
+    local _, _, n1 = rx("A-Whitemane", "C", 2, "w3boss", 100, "sweep", 533)
+    eq(n1, 1, "sender 1 is recorded…")
+    ck(not Life:IsEngaged("w3boss"), "…and starts nothing")
+    rx("A-Whitemane", "C", 2, "w3boss", 100, "sweep", 533)
+    local _, _, n2 = rx("B-Whitemane", "C", 2, "w3boss", 100, "sweep", 533)
+    eq(n2, 2, "a REPEAT from the same sender does not corroborate itself")
+    ck(not Life:IsEngaged("w3boss"), "…two distinct senders still start nothing")
+    rx("C-Whitemane", "C", 2, "w3boss", 100, "sweep", 533)
+    ck(Life:IsEngaged("w3boss"), "the THIRD distinct sender starts the fight (§7.3)")
+    local rt = Life:GetRuntime("w3boss")
+    eq(rt.trigger, "sync", "…with trigger 'sync', so the start does not echo back onto the wire")
+    near(rt.delay, 2.25, 0.01, "…and the receiver's own world latency is added to the reported delay")
+end
+do  -- the rejection list
+    resetSync()
+    eq(select(2, rx(Sync.Me(), "C", 0, "w3boss", 100, "sweep", 533)), "self",
+       "a start sync from ourselves is rejected outright")
+    W.instanceType = "pvp"
+    eq(select(2, rx("A-Whitemane", "C", 0, "w3boss", 100, "sweep", 533)), "pvp",
+       "…and any start sync inside a PvP instance")
+    W.instanceType = "raid"
+    eq(select(2, rx("A-Whitemane", "C", 0, "nosuch", 100, "sweep", 533)), "no_module",
+       "…and one naming an encounter we have no module for")
+    W.instanceID = 999
+    eq(select(2, rx("A-Whitemane", "C", 0, "w3boss", 100, "sweep", 533)), "zone_not_in_module",
+       "…and one whose module's zone list does not include where we are standing")
+    W.instanceID = 533
+    W.inInstance = false
+    eq(select(2, rx("A-Whitemane", "C", 0, "w3boss", 100, "sweep", 4131)), "different_zone",
+       "…and one from a sender in a different world zone while we are outdoors")
+    W.inInstance = true
+end
+do  -- §7.3 encounter end: ONE sender on Classic
+    resetSync()
+    Life:StartCombat(W3ENC, 0, "encounter")
+    ck(Life:IsEngaged("w3boss"), "fixture engaged locally")
+    eq(rx("A-Whitemane", "EE", 9101, 1, "w3boss"), true,
+       "ONE encounter-end sender ends the fight on Classic (§7.3 concession)")
+    ck(not Life:IsEngaged("w3boss"), "…the encounter is no longer engaged")
+end
+do  -- §7.3 mob kill
+    resetSync()
+    W.difficultyID = 9
+    eq(select(2, rx("A-Whitemane", "K", 91001, 148)), "difficulty_mismatch",
+       "a kill sync from a raid on ANOTHER difficulty is rejected (§7.3)")
+    W.instanceType = "none"
+    eq(select(2, rx("A-Whitemane", "K", 91001, 9)), "instance_type",
+       "…and one arriving while we are not in an instance at all")
+    W.instanceType = "raid"
+end
+do  -- §7.3 module syncs: 8 s send-side dedupe + local self-delivery
+    resetSync()
+    Life:StartCombat(W3ENC, 0, "encounter")
+    eq(Sync.DeliverModuleSync("Peer-Whitemane", "w3boss", "polarity", ""), 1,
+       "an inbound module sync routes into the engaged encounter through the `sync` trigger vocabulary")
+    local routed = 0
+    local realDeliver = Sync.DeliverModuleSync
+    Sync.DeliverModuleSync = function(...) routed = routed + 1 return realDeliver(...) end
+    local sent = Sync.SendModuleSync("w3boss", "polarity")
+    eq(sent, true, "an outbound module sync goes out…")
+    eq(routed, 1,
+       "…and the SENDER delivers it to itself locally, so sender and receivers behave identically (§7.3)")
+    eq(select(2, Sync.SendModuleSync("w3boss", "polarity")), "deduped",
+       "…an identical sync inside 8 s is de-duplicated ON SEND (§7.3)")
+    Sync.DeliverModuleSync = realDeliver
+    advance(9, 0.5)
+    eq(Sync.SendModuleSync("w3boss", "polarity"), true, "…and allowed again once the 8 s window passes")
+end
+do  -- §7.3 break-timer throttle and cap
+    resetSync()
+    ck(rx("A-Whitemane", "BT", 300), "a break timer from a peer is accepted")
+    eq(select(2, rx("A-Whitemane", "BT", 600)), "break_throttle",
+       "…a second from the SAME sender inside one second is throttled (§7.3)")
+    advance(1.2)
+    ck(rx("A-Whitemane", "BT", 600), "…and allowed again after a second")
+    rx("B-Whitemane", "BT", 99999)
+    ck((Addon:BreakTimeLeft() or 0) <= Sync.BREAK_MAX,
+       "…and every break timer is capped at 3600 s (§7.3/§11.4)")
+end
+do  -- §7.3/§12 spam-table pruning
+    resetSync()
+    rx("A-Whitemane", "C", 0, "w3boss", 100, "sweep", 533)
+    ck(Sync.corroborate["C:w3boss"] ~= nil, "a partial corroboration is held")
+    advance(9, 0.5)
+    ck(Sync.Prune() >= 1, "the housekeeping pass drops entries older than 8 s (§12)")
+    ck(Sync.corroborate["C:w3boss"] == nil, "…including a stale partial corroboration")
+    ck(next(Sync.spam) == nil, "…and the sync-spam table with it")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-VER — §7.4 version nag, and the OWNER-VETOED self-disable
+----------------------------------------------------------------------
+gate("SYNC-VER  §7.4 version nag at 2 senders — and no self-disable, ever")
+do  -- §7.4 the 3 s debounced reply
+    resetSync()
+    W.inInstance = false
+    local before = #WIRE
+    rx("A-Whitemane", "H")
+    rx("B-Whitemane", "H")
+    rx("C-Whitemane", "H")
+    advance(3.5)
+    eq(countOnWire("V", before), 1,
+       "a WAVE of hellos produces ONE version reply, not one per hello (§7.4 3 s debounce)")
+    W.inInstance = true
+end
+do  -- §7.4 the nag threshold
+    resetSync()
+    local NEWER = Sync.VERSION.release + 1
+    rx("A-Whitemane", "V", 20001, NEWER, "2.0.1", 20001)
+    eq(Sync.newerCount, 1, "one sender on a newer release is tracked")
+    ck(not Sync.nagged, "…and does NOT nag: the threshold is 2 DISTINCT senders")
+    rx("A-Whitemane", "V", 20001, NEWER, "2.0.1", 20001)
+    eq(Sync.newerCount, 1, "…a repeat from the same sender is not a second sender")
+    ck(not Sync.nagged, "…still no nag")
+    rx("B-Whitemane", "V", 20002, NEWER + 1, "2.0.2", 20002)
+    ck(Sync.nagged, "the SECOND distinct newer sender nags (§7.4)")
+    eq(Sync.stats.nagged, 1, "…exactly once")
+    eq(Addon.db.settings.updateReminder, true, "…and sets the persistent reminder flag")
+    eq(Sync.newestSeen.display, "2.0.2", "…tracking the NEWEST release seen, not the first")
+    rx("C-Whitemane", "V", 20003, NEWER + 2, "2.0.3", 20003)
+    eq(Sync.stats.nagged, 1, "…and never nags twice in one session")
+    rx("D-Whitemane", "V", 1, Sync.VERSION.release - 5, "1.9.9", 1)
+    eq(Sync.newerCount, 3, "…an OLDER peer is not counted as newer")
+end
+do  -- THE OWNER VETO, asserted behaviourally through the real handler
+    resetSync()
+    local disabled = 0
+    local realDisable, realFlush = Life.Disable, Sched.Flush
+    Life.Disable = function(...) disabled = disabled + 1 return realDisable(...) end
+    Sched.Flush  = function(...) disabled = disabled + 1 return realFlush(...) end
+    for i = 1, 5 do
+        rx("D" .. i .. "-Whitemane", "V", 99999, Sync.VERSION.release + 10, "9.9.9", 99999)
+    end
+    Life.Disable, Sched.Flush = realDisable, realFlush
+    eq(Sync.stats.forceDisableSeen, 5,
+       "five senders reporting a newer FORCE-DISABLE revision are parsed and counted…")
+    eq(disabled, 0,
+       "…and NOTHING is disabled: the spec's hard self-disable is OWNER-VETOED (design doc R2)")
+    eq(Sync.SELF_DISABLE, false, "…the constant that says so is pinned false")
+    ck(Sync.booted, "…and the sync layer is still live afterwards")
+    ck(Sync.Send("C", 0, "w3boss", 100, "sweep", 533) ~= false,
+       "…and still speaking on the wire, which a force-disabled client would not be")
+end
+do  -- THE MUTATION GATE: restoring the reference behaviour must redden something
+    local src = readFile(P("core_sync.lua"))
+    ck(src ~= nil, "core_sync.lua is readable")
+    ck(src and src:match("[:%.]Disable%s*%(") == nil,
+       "core_sync.lua contains NO disable call at all — adding one reddens this gate")
+    ck(src and src:find("SELF_DISABLE = false", 1, true) ~= nil,
+       "…and the veto is stated as CODE, not only as a comment")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-REC — §9.1 reload recovery, the whole cascade on the fake clock
+----------------------------------------------------------------------
+gate("SYNC-REC  §9.1 reload recovery: cascade, reply window, restoration")
+do  -- step 1: ranking and the candidate filter
+    resetSync(); makeRaid()
+    Sync.peers["Echo-Whitemane"] = { rev = 30000, release = 1, at = 0 }
+    local c = Sync.RankCandidates()
+    eq(#c, 3, "cross-realm, ghost and disconnected candidates are skipped entirely (§9.1)")
+    eq(c[1] and c[1].name, "Echo-Whitemane", "the group is ranked by version, highest first")
+    eq(c[2] and c[2].name, "Alpha-Whitemane", "…then deterministically by name")
+    eq(c[3] and c[3].name, "Bravo-Whitemane", "…")
+end
+do  -- steps 2 + 3: the 7/10/13 cascade and the 15 s suppression
+    resetSync(); makeRaid()
+    Sync.peers["Echo-Whitemane"] = { rev = 30000 }
+    local ok, asked = Sync.BeginRecovery("reload")
+    eq(ok, true, "a reload in a group with no boss engaged begins recovery")
+    eq(asked, 3, "…queueing three requests")
+    ck(Life:IsRecovering(), "the 'recovery in progress' flag is set immediately (§9.1 step 3)")
+    ck(not Life:HealthArmed(),
+       "…and the health combat-start path is suppressed while it is set (the Era translation)")
+    eq(select(2, Life:OnEngageUnit()), "recovery_in_progress",
+       "…as is the boss-frame path the spec names literally")
+    advance(6.9); eq(countOnWire("RT"), 0, "nothing is asked before 7 s")
+    advance(0.4); eq(countOnWire("RT"), 1, "the 1st-ranked candidate is whispered at 7 s (§12)")
+    eq(WIRE[1] and WIRE[1].target, "Echo-Whitemane", "…in rank order")
+    eq(WIRE[1] and WIRE[1].chatType, "WHISPER", "…by WHISPER")
+    advance(3);   eq(countOnWire("RT"), 2, "the 2nd-ranked candidate at 10 s")
+    advance(3);   eq(countOnWire("RT"), 3, "the 3rd at 13 s")
+    advance(2.2)
+    ck(not Life:IsRecovering(), "the in-progress flag clears after 15 s (§12)")
+    ck(Life:HealthArmed(), "…and the health path is armed again")
+end
+do  -- step 4 + the 5 s reply-validity window
+    resetSync(); makeRaid()
+    Sync.BeginRecovery("reload")
+    advance(7.3)
+    eq(select(2, rx("Nobody-Whitemane", "CI", "w3boss", 12)), "reply_rejected",
+       "a reply from a player we NEVER ASKED is refused (§9.1)")
+    advance(5.2)
+    eq(select(2, rx("Alpha-Whitemane", "CI", "w3boss", 12)), "reply_rejected",
+       "…and a reply from one we DID ask is refused once the 5 s validity window has passed")
+end
+do
+    resetSync(); makeRaid()
+    Sync.BeginRecovery("reload")
+    advance(7.3)
+    rx("Alpha-Whitemane", "CI", "w3boss", 12)
+    advance(8)
+    eq(countOnWire("RT"), 1,
+       "any reply invalidates the remaining requests — the 10 s and 13 s asks never happen (§9.1)")
+end
+do  -- restoration: combat, state, stage, timers
+    resetSync(); makeRaid()
+    W.latencyMs = 500
+    Sync.BeginRecovery("reload")
+    advance(7.3)
+    rx("Alpha-Whitemane", "CI", "w3boss", 40)
+    ck(Life:IsEngaged("w3boss"), "a combat-info reply RESTORES the fight (§9.1)")
+    local rt = Life:GetRuntime("w3boss")
+    near(rt.delay, 40.5, 0.01, "…with the reported elapsed time plus our own network latency")
+    eq(rt.recordEligible, false, "…and marks the pull NOT record-eligible")
+    eq(countOnWire("C"), 0, "…without echoing a combat-start broadcast back at the raid")
+
+    rx("Alpha-Whitemane", "VI", "w3boss", "polarity", "positive")
+    eq(rt:GetState("polarity"), "positive", "a variable-info reply restores state VERBATIM")
+    rx("Alpha-Whitemane", "VI", "w3boss", "flag", "true")
+    eq(rt.states.flag, true, "…converting \"true\"/\"false\" back to booleans")
+    local stages = 0
+    local scb = function() stages = stages + 1 end
+    Addon:RegisterEngineCallback("ENGINE_STAGE", scb)
+    rx("Alpha-Whitemane", "VI", "w3boss", "__stage", "3")
+    eq(rt.stage, 3, "…and restores the stage")
+    eq(stages, 1, "…RE-FIRING the stage-change broadcast so external consumers resync (§9.1)")
+    Addon:UnregisterEngineCallback("ENGINE_STAGE", scb)
+
+    Timers.StopAll("recovery-fixture")
+    local bar = rx("Alpha-Whitemane", "TR", "w3boss", "vt", 22, 60, "", 0)
+    ck(bar ~= nil, "a timer-info reply restores the bar through the REAL timer API")
+    eq(bar and bar.hasVariance, true, "…and the VARIANCE WINDOW SURVIVES restoration (§4.2 + §9.1)")
+    eq(bar and bar.min, 40, "…min intact")
+    eq(bar and bar.max, 60, "…max intact")
+    near(Timers.Remaining(bar), 21.5, 0.05, "…restored as total - timeLeft + latency")
+
+    local pb = rx("Alpha-Whitemane", "TR", "w3boss", "flat", 10, 30, "", 1)
+    ck(pb ~= nil and pb.paused, "a PAUSED bar is restored and re-paused")
+    near(Timers.Remaining(pb), 10, 0.01, "…with latency omitted for paused bars")
+end
+do  -- the responder side
+    resetSync(); makeRaid()
+    Life:StartCombat(W3ENC, 0, "encounter")
+    advance(5)
+    local before = #WIRE
+    Sync.OnRequestTimers("Alpha-Whitemane", "WHISPER")
+    eq(select(2, Sync.OnRequestTimers("Alpha-Whitemane", "WHISPER")), "reply_throttle",
+       "recovery replies are limited to one per requester per second (§7.3)")
+    advance(3)
+    local kinds = {}
+    for i = before + 1, #WIRE do kinds[#kinds + 1] = Sync.Split(WIRE[i].payload)[3] end
+    eq(kinds[1], "CI", "the responder answers CI first (§9.1 reply order)")
+    eq(kinds[2], "VI", "…then a VI per state variable")
+    local sawTR = false
+    for _, k in ipairs(kinds) do if k == "TR" then sawTR = true end end
+    ck(sawTR, "…then a TR per live bar")
+end
+do  -- §9.1: not in combat -> answer with the break timer instead
+    resetSync(); makeRaid()
+    Addon:StartBreakTimer(300, "manual")
+    local before = #WIRE
+    Sync.OnRequestTimers("Alpha-Whitemane", "WHISPER")
+    advance(1)
+    eq(countOnWire("BTR", before), 1,
+       "a responder NOT in combat answers with its break timer instead (§9.1)")
+end
+do  -- the three trigger guards
+    resetSync()
+    W.inGroup, W.inRaid = false, false
+    eq(select(2, Sync.BeginRecovery("reload")), "solo", "recovery does not run solo")
+    W.inGroup, W.inRaid = true, true
+    makeRaid()
+    W.instanceType = "pvp"
+    eq(select(2, Sync.BeginRecovery("reload")), "pvp", "…nor in a PvP instance")
+    W.instanceType = "raid"
+    Life:StartCombat(W3ENC, 0, "encounter")
+    eq(select(2, Sync.BeginRecovery("reload")), "already_engaged", "…nor while a boss is engaged")
+end
+do  -- the W3 seam added to W1's lifecycle
+    resetSync(); makeRaid()
+    local fired = 0
+    local cb = function() fired = fired + 1 end
+    Addon:RegisterEngineCallback("ENGINE_LOGIN", cb)
+    Life:OnEvent("PLAYER_ENTERING_WORLD", false, true)
+    eq(fired, 1, "PLAYER_ENTERING_WORLD publishes ENGINE_LOGIN (the one seam W3 added to W1)")
+    ck(Life:IsRecovering(), "…and the whole cascade hangs off it, with no comms in the engine core")
+    Addon:UnregisterEngineCallback("ENGINE_LOGIN", cb)
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-PB — §11.4 / §9.2 pull and break timers, end to end, headless
+----------------------------------------------------------------------
+gate("SYNC-PB  §11.4/§9.2 pull + break timers end to end")
+do
+    resetSync()
+    eq(select(2, Addon:StartPullTimer(1, "manual")), "too_short",
+       "§11.4 REFUSES durations between 0 and 3 s exclusive (wave 1's shim silently clamped)")
+    eq(Addon:StartPullTimer(3, "manual"), 3, "…3 s is accepted")
+    eq(Addon:StartPullTimer(999, "manual"), Sync.PULL_MAX, "…and an absurd value is capped")
+    ck((W.flashed or 0) > 0, "…starting one flashes the taskbar icon (§11.4)")
+    eq(Addon:StartPullTimer(0, "manual"), true, "0 IS the cancel signal (§11.4)")
+    ck(Sync._ensurePullTimer():Get() == nil, "…and the bar is gone")
+end
+do  -- rank gate, broadcast, and NO re-broadcast of a received pull
+    resetSync(); makeRaid()
+    local before = #WIRE
+    Addon:StartPullTimer(10, "manual")
+    advance(0.5)
+    eq(countOnWire("PT", before), 1, "a MANUAL pull is broadcast on OUR OWN prefix")
+    W.leader = false
+    ck(not Sync.CanBroadcastPull(), "a member without rank cannot broadcast one (§11.4)")
+    W.leader = true
+
+    Addon:CancelPullTimer("manual")
+    advance(0.5)                 -- let the cancel's own broadcast leave first
+    before = #WIRE
+    rx("Alpha-Whitemane", "PT", 12, 533, "")
+    advance(0.5)
+    eq(countOnWire("PT", before), 0,
+       "a RECEIVED pull is rendered but NEVER re-broadcast (no amplification loop)")
+    ck(Sync._ensurePullTimer():Get() ~= nil, "…and it really started our own bar")
+    rx("Alpha-Whitemane", "PT", 0, 533, "")
+    ck(Sync._ensurePullTimer():Get() == nil, "…and a peer sending 0 cancels it (§11.4)")
+end
+do  -- §11.4 reception zone filter, off by default
+    resetSync()
+    Addon.db.settings.pullTimerZoneFilter = true
+    eq(select(2, rx("Alpha-Whitemane", "PT", 12, 4131, "")), "zone_filter",
+       "the optional filter drops pull timers whose sender is on a different map (§11.4)")
+    Addon.db.settings.pullTimerZoneFilter = nil
+    ck(rx("Alpha-Whitemane", "PT", 12, 4131, ""), "…and is OFF by default")
+end
+do  -- §2.3 the engage cancel, and the in-encounter / PvP refusals
+    resetSync()
+    Addon:StartPullTimer(10, "manual")
+    ck(Sync._ensurePullTimer():Get() ~= nil, "a pull bar is live")
+    Life:StartCombat(W3ENC, 0, "encounter")
+    ck(Sync._ensurePullTimer():Get() == nil, "§2.3: a combat start CANCELS any running pull timer")
+    eq(select(2, Addon:StartPullTimer(10, "manual")), "in_encounter",
+       "…and a new pull timer is refused during an encounter (§11.4)")
+    Life:EndCombat(Life:GetRuntime("w3boss"), false, "fixture")
+    W.instanceType = "pvp"
+    eq(select(2, Addon:StartPullTimer(10, "manual")), "pvp", "…and inside a PvP instance")
+    W.instanceType = "raid"
+end
+do  -- §11.4 break announcements at 10 / 5 / 2 / 1 minutes
+    resetSync()
+    local announces = 0
+    local cb = function() announces = announces + 1 end
+    Addon:RegisterEngineCallback("WARN_ANNOUNCE", cb)
+    eq(Addon:StartBreakTimer(3600 * 2, "manual"), Sync.BREAK_MAX,
+       "§11.4 break timers are capped at 60 minutes")
+    Addon:CancelBreakTimer("manual")
+    Addon:StartBreakTimer(660, "manual")
+    local base = announces
+    advance(61, 0.5);  eq(announces - base, 1, "…announcing at 10 minutes remaining")
+    advance(300, 0.5); eq(announces - base, 2, "…at 5 minutes")
+    advance(180, 0.5); eq(announces - base, 3, "…at 2 minutes")
+    advance(60, 0.5);  eq(announces - base, 4, "…and at 1 minute")
+    Addon:UnregisterEngineCallback("WARN_ANNOUNCE", cb)
+    Addon:CancelBreakTimer("manual")
+end
+do  -- §9.2 break-timer persistence across a reload
+    resetSync()
+    Addon:StartBreakTimer(600, "manual")
+    ck(type(Addon.db.breakTimer) == "table", "§9.2 a running break timer is written to disk…")
+    eq(Addon.db.breakTimer.duration, 600, "…as duration / wallclock-at-start")
+    W.wallClock = W.wallClock + 200
+    Timers.StopAll("reload")
+    near(Sync.RestorePersistedBreak(), 400, 0.5,
+         "…and the remaining time is recomputed against the wall clock on the next load")
+    W.wallClock = W.wallClock + 100000
+    Timers.StopAll("reload")
+    eq(select(2, Sync.RestorePersistedBreak()), "expired",
+       "…while an EXPIRED record is discarded rather than restarted")
+    eq(Addon.db.breakTimer, nil, "…and cleared from disk")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-DBM — receive-only boss-mod ingest + the transmit firewall
+----------------------------------------------------------------------
+gate("SYNC-DBM  receive-only ingest + the transmit firewall (both layers)")
+do  -- §7.1 wire decode, pure
+    local m = Bridge.Decode("Peer-Whitemane\t1\tBT\t900")
+    ck(m ~= nil, "the boss-mod payload decodes")
+    eq(m and m.sender, "Peer-Whitemane", "…sender first (§7.1)")
+    eq(m and m.protocol, 1, "…then the protocol version")
+    eq(m and m.sub, "BT", "…then the sub-prefix")
+    eq(m and m.args[1], "900", "…then the arguments")
+end
+do  -- ingest rows
+    resetSync()
+    eq(select(2, Bridge.OnAddonMessage("SOMETHINGELSE", "x", "RAID", "P")), "notOurs",
+       "a prefix we do not listen on is ignored outright")
+    eq(select(2, Bridge.OnAddonMessage("D5", "P\t0\tBT\t900", "RAID", "P")), "protocol",
+       "a payload declaring a LOWER protocol version is dropped (§7.1)")
+    eq(select(2, Bridge.OnAddonMessage("D5", "P\t1\tK\t1234", "RAID", "P")), "unknownSub",
+       "their kill/version/combat traffic is counted and IGNORED — their engine never drives ours")
+    ck(Bridge.OnAddonMessage("D5", "P\t1\tBT\t900", "RAID", "P"),
+       "a BREAK timer on their wire renders through OUR §11.4 break timer")
+    near(Addon:BreakTimeLeft(), 900, 0.5, "…for the reported duration")
+    eq(Addon.breakSource, "P", "…with the sender attributed")
+    eq(select(2, Bridge.OnAddonMessage("D5", "P\t1\tBT\t900", "RAID", "P")), "throttled",
+       "…and a repeat inside a second is throttled")
+end
+do  -- the ingest is switchable, and the 1.x option name still works
+    resetSync()
+    Addon.db.settings.dbmIngest = false
+    eq(select(2, Bridge.OnAddonMessage("D5", "P\t1\tBT\t900", "RAID", "P")), "disabled",
+       "ingest can be turned off")
+    Addon.db.settings.dbmIngest = nil
+    Addon.db.settings.mirrorDBMPull = false
+    eq(select(2, Bridge.OnAddonMessage("D5", "P\t1\tBT\t900", "RAID", "P")), "disabled",
+       "…and the 1.x option still on screen (options.lua is W5's file) still switches it")
+    Addon.db.settings.mirrorDBMPull = nil
+    ck(Bridge.OnAddonMessage("D5", "P\t1\tBT\t900", "RAID", "P"), "…default is ON")
+end
+do  -- §10.19: pull timers are NOT on their addon channel — they ride Blizzard's countdown
+    resetSync()
+    ck(Bridge.OnStartCountdown("Alpha", 15),
+       "§10.19 a pull arrives on the Blizzard countdown API, never the addon channel")
+    ck(Sync._ensurePullTimer():Get() ~= nil, "…and renders through OUR pull-timer path")
+    eq(select(2, Bridge.OnStartCountdown("Alpha", 15)), "throttled",
+       "…a re-broadcast countdown inside the dedupe window is ONE pull, not two")
+    Bridge.OnCancelCountdown("Alpha")
+    ck(Sync._ensurePullTimer():Get() == nil, "…and the cancel event cancels it")
+    eq(Bridge.stats.pullIngested, 1, "…exactly one pull was ingested")
+end
+do  -- THE TRANSMIT FIREWALL, both layers, through the real functions
+    resetSync()
+    eq(Sync.IsForbiddenTxPrefix("D5"), true,
+       "the prefix the bridge listens on is in the transmit firewall — pushed there AT LOAD")
+    eq(Sync.IsForbiddenTxPrefix(Sync.PREFIX), false, "…our own prefix is not")
+    local blocked, n0 = Sync.forbiddenTxBlocked, #WIRE
+    eq(Sync.Enqueue("D5", "anything", { chatType = "RAID", priority = "ALERT" }), false,
+       "LAYER 1 (scheduler): a forbidden prefix cannot even ENTER the send queue")
+    eq(Sync._rawSend("D5", "anything", "RAID"), false,
+       "LAYER 2 (wire): …and cannot reach SendAddonMessage even when handed straight to it")
+    eq(Sync.forbiddenTxBlocked - blocked, 2, "…both guard fires are counted")
+    advance(0.5)
+    eq(#WIRE, n0, "…and NOTHING carrying that prefix ever reached the wire")
+    eq(Sync.Enqueue(Sync.PREFIX, "ours", { chatType = "RAID" }), true,
+       "our own prefix still enqueues (or this gate would prove nothing)")
+    advance(0.5)
+    ck(#WIRE > n0, "…and still reaches the wire")
+end
+do  -- listening somewhere and being forbidden to speak there are ONE list
+    for _, p in ipairs(Bridge.RECV_PREFIXES) do
+        ck(Sync.IsForbiddenTxPrefix(p), "receive prefix " .. p .. " is transmit-forbidden")
+        ck(REGISTERED[p], "…and was registered for RECEIVE at boot")
+    end
+    local src = readFile(P("dbm_bridge.lua")) or ""
+    ck(src:find("SendAddonMessage", 1, true) == nil,
+       "dbm_bridge.lua contains no send call of any kind")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SYNC-RETIRE — the wave-1 pull-timer shim is gone from core_boot.lua
+----------------------------------------------------------------------
+gate("SYNC-RETIRE  core_boot.lua's W1 pull-timer shim is retired")
+do
+    local boot = readFile(P("core_boot.lua")) or ""
+    ck(boot:find("function Addon:StartPullTimer", 1, true) == nil,
+       "core_boot.lua no longer defines StartPullTimer (W3 owns pull timers for real)")
+    ck(boot:find("function Addon:CancelPullTimer", 1, true) == nil, "…nor CancelPullTimer")
+    local src = readFile(P("core_sync.lua")) or ""
+    ck(src:find("function Addon:StartPullTimer", 1, true) ~= nil,
+       "core_sync.lua defines it instead — the PUBLIC NAME is unchanged, so slash/options still work")
+    ck(type(Addon.StartPullTimer) == "function" and type(Addon.CancelPullTimer) == "function",
+       "…and both names resolve at runtime")
+    ck(type(Addon.StartBreakTimer) == "function" and type(Addon.CancelBreakTimer) == "function",
+       "…and the break timer the spec pairs them with exists too (§11.4)")
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
-realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (wave 1)")
+realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1 + 3)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
                      "MIG-ALGO  stamp / newer / transform / gap-not-wipe",
                      "HEAP  §3.1/§3.2 pure min-heap",
@@ -1741,7 +2464,14 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "TRIP  §4.3 early-refresh tripwire + telemetry ring",
                      "LIFE  §2 lifecycle: engage paths, lockouts, wipe matrix, end",
                      "API  encounter grammar: validation + expressiveness",
-                     "HATCH  registered-special-module escape hatch" }) do
+                     "HATCH  registered-special-module escape hatch",
+                     "SYNC-WIRE  §7.1/§7.2 wire format, protocol gates, channel scope",
+                     "SYNC-CORR  §7.3 corroboration thresholds, throttle, de-duplication",
+                     "SYNC-VER  §7.4 version nag at 2 senders — and no self-disable, ever",
+                     "SYNC-REC  §9.1 reload recovery: cascade, reply window, restoration",
+                     "SYNC-PB  §11.4/§9.2 pull + break timers end to end",
+                     "SYNC-DBM  receive-only ingest + the transmit firewall (both layers)",
+                     "SYNC-RETIRE  core_boot.lua's W1 pull-timer shim is retired" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end
