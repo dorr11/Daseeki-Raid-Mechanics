@@ -87,9 +87,21 @@ end
 --   { key, name, count }, "All sounds" first, then Built-in, then the bundled packs
 -- alphabetically, then LibSharedMedia. Sorted (lesson Class 8) so the control does
 -- not reshuffle between openings.
+--
+-- MEMOIZED, unlike GetSounds. GetSounds deliberately rebuilds on every call so
+-- late-registering LibSharedMedia media appears — which is right for a list read
+-- once per interaction, and wrong for one read on every KEYSTROKE in the picker's
+-- search box: the bundled manifest alone is over a thousand entries, and deriving
+-- the pack list walks it twice. The cache is dropped whenever the picker opens
+-- (Addon:ShowSoundPicker), which is the only moment new media could matter.
+Addon._soundPackCache = nil
+function Addon:InvalidateSoundPacks() Addon._soundPackCache = nil end
+
 function Addon:GetSoundPacks()
+    if Addon._soundPackCache then return Addon._soundPackCache end
+    local all = Addon:GetSounds()
     local byKey, order = {}, {}
-    for _, e in ipairs(Addon:GetSounds()) do
+    for _, e in ipairs(all) do
         local pk, name = Addon:SoundPackOf(e.key)
         local rec = byKey[pk]
         if not rec then
@@ -108,8 +120,9 @@ function Addon:GetSoundPacks()
         if ra ~= rb then return ra < rb end
         return a.name < b.name
     end)
-    local out = { { key = Addon.SOUNDPACK_ALL, name = "All sounds", count = #Addon:GetSounds() } }
+    local out = { { key = Addon.SOUNDPACK_ALL, name = "All sounds", count = #all } }
     for _, r in ipairs(order) do out[#out + 1] = r end
+    Addon._soundPackCache = out
     return out
 end
 

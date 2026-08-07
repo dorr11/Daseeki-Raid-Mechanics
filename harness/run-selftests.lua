@@ -7934,7 +7934,7 @@ endgate()
 -- report' chat line", so that "timer data becomes self-auditing across Drew's raids".
 -- A ring nobody can read is not an instrument. These assertions are about the REPORT.
 ----------------------------------------------------------------------
-gate("W5-TELEM  timer-telemetry viewer: the ring is readable in-game")
+gate("W5-SURFACES  the options panes' own logic: telemetry viewer + sound packs")
 do
     Tele.Clear()
     ck(type(Addon.BuildTelemetryReport) == "function", "the report builder exists")
@@ -7973,6 +7973,12 @@ do
     ck(rep:find("1 other engine entr", 1, true) ~= nil,
        "…non-tripwire entries are counted, not silently dropped from the total")
 
+    -- The one-line status the pane shows, which is the only thing most sittings need.
+    ck(Addon:TelemetryLineText():find("7 observations recorded", 1, true) ~= nil,
+       "…and the pane's status line reports the count")
+    ck(Addon:TelemetryLineText():find(Tele.BUILD, 1, true) ~= nil,
+       "…stamped with the build that recorded them")
+
     -- The raw export is the escape hatch, and it must carry the build token so an
     -- observation from an older engine is never mistaken for current behaviour.
     local raw = table.concat(Tele.Export(), "\n")
@@ -7997,6 +8003,52 @@ do
     Tele.Write("timer.refresh", { enc = "x", key = "y", obs = 1, delta = -1 })
     eq(Tele.Count(), 1, "…and back ON resumes them")
     Tele.Clear()
+
+    ------------------------------------------------------------------
+    -- THE SOUND-PACK SURFACE. Same category: pure logic sitting behind an options
+    -- pane, and the thing that makes a 750-entry flat list pickable at all.
+    ------------------------------------------------------------------
+    do
+        Addon:InvalidateSoundPacks()
+        local packs = Addon:GetSoundPacks()
+        ck(#packs > 10, ("the bundled sounds derive into %d packs"):format(#packs))
+        eq(packs[1].key, Addon.SOUNDPACK_ALL, "…with \"All sounds\" first")
+        eq(packs[2].key, Addon.SOUNDPACK_BUILTIN, "…then the built-ins")
+        eq(packs[#packs].key == Addon.SOUNDPACK_LSM or #packs > 2, true,
+           "…and LibSharedMedia last when present")
+
+        -- Sorted, so the dropdown does not reshuffle between openings (Class 8).
+        local mid = {}
+        for i = 3, #packs do
+            if packs[i].key ~= Addon.SOUNDPACK_LSM then mid[#mid + 1] = packs[i].name end
+        end
+        local sorted = true
+        for i = 2, #mid do if mid[i] < mid[i - 1] then sorted = false end end
+        ck(sorted, "…and the bundled packs are alphabetical")
+
+        -- Membership is DERIVED from the key, not a second table to keep in sync.
+        eq(Addon:SoundPackOf("pk:DBM-Core/Alexander/1.ogg"), "pk:DBM-Core/Alexander",
+           "a bundled key resolves to its pack")
+        eq(Addon:SoundPackOf("pk:DBM-Core/AirHorn.ogg"), "pk:DBM-Core",
+           "…a file in an addon's own folder resolves to that addon")
+        eq(Addon:SoundPackOf("none"), Addon.SOUNDPACK_BUILTIN, "…\"none\" is a built-in")
+        eq(Addon:SoundPackOf("lsm:Whatever"), Addon.SOUNDPACK_LSM,
+           "…and a LibSharedMedia key resolves to LSM")
+
+        -- Every pack has members, and the counts add up to the whole list.
+        local total = 0
+        for i = 2, #packs do
+            if packs[i].count <= 0 then fail("empty pack in the list: " .. packs[i].key) end
+            total = total + packs[i].count
+        end
+        eq(total, packs[1].count, "the per-pack counts sum to the whole sound list")
+
+        -- Memoized (it is read per keystroke in the picker's search box), and the
+        -- memo is droppable so late-registering LSM media is not locked out forever.
+        ck(Addon:GetSoundPacks() == packs, "the pack list is memoized")
+        Addon:InvalidateSoundPacks()
+        ck(Addon:GetSoundPacks() ~= packs, "…and the memo is droppable")
+    end
 end
 endgate()
 
@@ -8314,7 +8366,7 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "W5-SCAFFOLD  core_boot.lua is a composition root, not scaffolding",
                      "W5-TREE  options projection: 8 raids, ship-off defaults, a flip reaches the row",
                      "W5-BRIEF-G  determinism + role re-derivation (RM-1, RMS-1, RMS-2, RME-1, RML-1)",
-                     "W5-TELEM  timer-telemetry viewer: the ring is readable in-game",
+                     "W5-SURFACES  the options panes' own logic: telemetry viewer + sound packs",
                      "W5-RELEASE  the assertable release-gate rows",
                      "W5-DBFIX  the owner's SavedVariables shape survives the upgrade" }) do
     local n = GATE_FAILS[g] or 0

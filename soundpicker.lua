@@ -51,6 +51,9 @@ end
 
 local function Rebuild()
     if not picker then return end
+    -- Resolved once per rebuild, not once per row: the pack name lookup walks the
+    -- (memoized) pack list, and Rebuild runs on every keystroke in the search box.
+    local packName = Addon:GetSoundPackName(CurrentPack())
     results = Filter(picker.search:GetText())
     local maxOffset = math.max(0, #results - VISIBLE)
     if offset > maxOffset then offset = maxOffset end
@@ -78,8 +81,7 @@ local function Rebuild()
     picker.scroll:SetShown(maxOffset > 0)
 
     if picker.packBtn then
-        picker.packBtn.txt:SetText(("Pack: %s  (%d)"):format(
-            Addon:GetSoundPackName(CurrentPack()), #results))
+        picker.packBtn.txt:SetText(("Pack: %s  (%d)"):format(packName, #results))
     end
 end
 
@@ -210,6 +212,9 @@ function Addon:ShowSoundPicker(currentKey, onPick, anchorFrame)
     f._current = currentKey or "none"
     offset = 0
     f.search:SetText("")
+    -- Opening the picker is the one moment new LibSharedMedia registrations could
+    -- matter, so it is where the memoized pack list is dropped.
+    Addon:InvalidateSoundPacks()
     -- Each opening starts from the user's PREFERRED pack (options -> Sounds), not
     -- from whatever the last opening happened to leave the cycle button on — except
     -- that if the current sound is not in that pack the filter widens to All, so the

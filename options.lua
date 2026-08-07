@@ -1080,7 +1080,6 @@ end
 -- anchors laid out as one grid rather than two ragged stacks, and the placement
 -- affordances (anchors / demo) sit with the thing they place.
 local SLIDER_W = 210
-local PICK_W   = 120
 
 function Addon:BuildBarOptions(flow, panel)
     local B = Addon.Bars
@@ -1128,19 +1127,23 @@ function Addon:BuildBarOptions(flow, panel)
         set = function(v) S().enlargeAt = math.floor(v + 0.5) end,
     })
 
-    -- ONE GRID for the two anchors (principle 5): both rows carry the same three
-    -- controls at the same widths, under one set of column headers.
+    -- ONE GRID for the two anchors (principle 5): each list gets a titled block with
+    -- the SAME two controls in the SAME order, so the two blocks read as one grid.
+    --
+    -- The controls are NOT paired with bare Label row-items. UI.MakeLabel sets no
+    -- uiWidth, so the flow row measures it with GetWidth() — which is 0 for a frame
+    -- that never had a width set — and a "column header" built that way does not
+    -- reliably line up with the control beneath it. Column headers over columnar
+    -- controls is principle 6, so the honest way to satisfy it here is a titled block
+    -- per list plus segment captions that say what they are: Up/Down is manifestly a
+    -- growth direction and Soonest/Latest is manifestly a sort order.
     sec:AddSeparator()
-    local hdr = sec:AddRow()
-    hdr:Label("List")
-    hdr:Label("Grows")
-    hdr:Label("Sorted")
-    local function anchorRow(label, field, defGrow)
+    local function anchorBlock(title, field, defGrow)
+        sec:Label(title)
         local r = sec:AddRow()
-        r:Label(label)
         r:SegmentedChoice({
-            width = PICK_W, compact = true,
-            choices = { { value = "UP", text = "Up" }, { value = "DOWN", text = "Down" } },
+            compact = true,
+            choices = { { value = "UP", text = "Grows up" }, { value = "DOWN", text = "Grows down" } },
             get = function()
                 local t = S()[field]; return (t and t.grow) or defGrow
             end,
@@ -1149,8 +1152,8 @@ function Addon:BuildBarOptions(flow, panel)
             end,
         })
         r:SegmentedChoice({
-            width = PICK_W, compact = true,
-            choices = { { value = "asc", text = "Soonest" }, { value = "desc", text = "Latest" } },
+            compact = true,
+            choices = { { value = "asc", text = "Soonest first" }, { value = "desc", text = "Latest first" } },
             get = function()
                 local t = S()[field]; return (t and t.sort) or "asc"
             end,
@@ -1159,8 +1162,8 @@ function Addon:BuildBarOptions(flow, panel)
             end,
         })
     end
-    anchorRow("Small bars", "small", "DOWN")
-    anchorRow("Large bars", "large", "UP")
+    anchorBlock("Small bars \226\128\148 the normal stack", "small", "DOWN")
+    anchorBlock("Large bars \226\128\148 important abilities and the pull timer", "large", "UP")
 
     sec:AddSeparator()
     sec:Checkbox({
@@ -1357,7 +1360,12 @@ function Addon:BuildTelemetryOptions(flow, panel)
         .. "allows, that observation is written down here instead of being shouted at "
         .. "your raid. After a few nights this is the evidence for correcting a timer.")
 
-    panel.telemetryLine = sec:Hint("")
+    -- Built with its real text, not with "" and a later SetText: a Hint recomputes
+    -- its height from the WRAPPED string at layout time, so a placeholder that grows
+    -- later leaves the block sized for the placeholder until something relayouts.
+    -- RefreshTelemetryLine sets the text AND relayouts, for the same reason.
+    panel.telemetryLine = sec:Hint(Addon:TelemetryLineText())
+    panel.telemetryPane = sec.pane
 
     local trow = sec:AddRow()
     trow:Button({ text = "View observations", width = 160, onClick = function()
@@ -1387,20 +1395,26 @@ function Addon:BuildTelemetryOptions(flow, panel)
     Addon:RefreshTelemetryLine()
 end
 
+-- The one-line status the pane shows. Pure string work, so it is assertable.
+function Addon:TelemetryLineText()
+    local T = Addon.Telemetry
+    if not T then return "" end
+    local n, dropped = T.Count(), T.Dropped()
+    if n == 0 then return "No observations recorded yet." end
+    return ("%d observation%s recorded%s (build %s)."):format(
+        n, n == 1 and "" or "s",
+        dropped > 0 and (", %d older dropped by the cap"):format(dropped) or "",
+        T.BUILD)
+end
+
 function Addon:RefreshTelemetryLine()
     local panel = Addon.optFrames and Addon.optFrames.general
     local lbl = panel and panel.telemetryLine
     if not lbl or not lbl._label then return end
-    local T = Addon.Telemetry
-    local n, dropped = T.Count(), T.Dropped()
-    if n == 0 then
-        lbl._label:SetText("No observations recorded yet.")
-    else
-        lbl._label:SetText(("%d observation%s recorded%s (build %s)."):format(
-            n, n == 1 and "" or "s",
-            dropped > 0 and (", %d older dropped by the cap"):format(dropped) or "",
-            T.BUILD))
-    end
+    lbl._label:SetText(Addon:TelemetryLineText())
+    -- The Hint's block height comes from the wrapped string, so a longer or shorter
+    -- line needs the pane re-laid or it leaves a gap (or clips) under itself.
+    if panel.telemetryPane and panel.telemetryPane.Layout then panel.telemetryPane:Layout() end
 end
 
 -- The SUMMARY the ring exists to produce: one line per timer key, sorted by how far
