@@ -172,6 +172,35 @@ function Life.env.ForEachGroupMember(fn)
     return false
 end
 
+-- ── AUDIT RM-2 (Brief N, lesson Class 6: "dark reads of populatable lists") ───
+-- `ForEachGroupMember` above walks a list the SERVER populates. On the
+-- PLAYER_ENTERING_WORLD frame after a /reload the client has already restored
+-- `IsInGroup()` — you are demonstrably in a raid — while `GetNumGroupMembers()`
+-- still answers 0 and `IsInRaid()` may still be false, so the walk covers
+-- `party1..N` units that do not exist in a 40-man. Every consumer of that walk
+-- then reads an EMPTY group and cannot tell it apart from a group of one.
+--
+-- So the group list gets the same treatment the class prescribes: a populate
+-- witness. `GROUP_ROSTER_UPDATE` is the server's "here is the group" signal
+-- (catalog-verified against 1.15.9: Event.PartyInfo.GroupRosterUpdate, no
+-- payload); `RAID_ROSTER_UPDATE` is its 1.x-era sibling and is accepted too,
+-- because either one arriving proves the same thing. A non-zero member count is
+-- accepted as its own proof — a roster we can already read needs no witness.
+--
+-- This is a REFUSAL primitive, not a cache: it never answers a question about
+-- WHO is in the group, only whether the answer is worth reading yet.
+Life.rosterSeen = false
+
+function Life:RosterPopulated()
+    if (Life.env.GetNumGroupMembers() or 0) > 0 then return true end
+    return Life.rosterSeen and true or false
+end
+
+function Life:NoteRosterUpdate()
+    Life.rosterSeen = true
+    return true
+end
+
 function Life.env.ForEachNameplate(fn)
     for i = 1, 40 do
         local u = "nameplate" .. i
@@ -1127,6 +1156,10 @@ Life.EVENTS = {
     -- combat log entirely, which is exactly why those encounters reach for it.
     "UNIT_SPELLCAST_SUCCEEDED",
     "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_DISABLED",
+    -- AUDIT RM-2 (Brief N, lesson Class 6). The engine takes NO action on these —
+    -- they are the group list's populate witness and nothing else. See
+    -- `Life:RosterPopulated`.
+    "GROUP_ROSTER_UPDATE", "RAID_ROSTER_UPDATE",
 }
 
 -- ENGINE SPEC §8.6: the Era unit-event token set. UNIT_HEALTH is explicitly
@@ -1236,6 +1269,11 @@ function Life:OnEvent(event, ...)
         return Life:OnChat(event, text)
     elseif event == "COMBAT_LOG_EVENT_UNFILTERED" then
         return Life:Deliver(Life:NormalizeCLEU(...))
+    elseif event == "GROUP_ROSTER_UPDATE" or event == "RAID_ROSTER_UPDATE" then
+        -- AUDIT RM-2 (Brief N, lesson Class 6). One fact, no action: the server has
+        -- answered about the group at least once this session, so a subsequent
+        -- empty read is a real empty rather than an unanswered one.
+        return Life:NoteRosterUpdate()
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- W3 SEAM (§9.1). W1 registered this event but had no handler; the reload
         -- recovery cascade needs exactly one fact the engine already knows — "we just
@@ -1299,6 +1337,7 @@ function Life:Reset()
     Life.armedCombat, Life.armedHealthBoot, Life.healthSuppressed = false, false, false
     Life.lastCombatFlagAt, Life.pendingSweeps, Life.bossSeen = nil, 0, false
     Life.recoveringUntil = nil
+    Life.rosterSeen = false             -- AUDIT RM-2: the populate witness is per-session
     Life.pullCountdownAt = nil          -- W4b extension 25
     Life.stats = { engages = 0, kills = 0, wipes = 0, rejected = 0 }
     return true
