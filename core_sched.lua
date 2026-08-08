@@ -151,6 +151,28 @@ end
 
 function Sched:Count() return self.heap:Count() end
 
+-- Shift every queued task's ABSOLUTE due time by a constant.
+--
+-- This exists for exactly one caller: the testing suite's compressed playback
+-- (ui_testing.lua), which runs the encounter's own scheduled script on a TIME-SCALED
+-- clock and must hand the real clock back afterwards without moving anything. The
+-- scaled clock is continuous at the moment it is installed but has run AHEAD by the
+-- time it is removed, so restoring the real clock would otherwise make every
+-- surviving task's delay jump. Rebasing by (realNow - scaledNow) preserves every
+-- remaining task's RELATIVE delay exactly across the swap.
+--
+-- The heap invariant survives untouched because a CONSTANT shift cannot reorder a
+-- strict min on `at` (nor the insertion-sequence tie-break), so this is an O(n) walk
+-- with no re-heapify. It is deliberately NOT part of the live path — nothing in the
+-- engine calls it, and the harness asserts that.
+function Sched:Rebase(delta)
+    delta = tonumber(delta)
+    if not delta or delta == 0 then return 0 end
+    local h = self.heap
+    for i = 1, h.n do h[i].at = h[i].at + delta end
+    return h.n
+end
+
 -- ENGINE SPEC §9.4: the hard-disable path flushes the scheduler.
 function Sched:Flush()
     local sink = {}

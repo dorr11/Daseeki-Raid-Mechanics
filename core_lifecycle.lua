@@ -436,6 +436,16 @@ function Life:StartCombat(enc, delay, trigger)
         return nil, reason
     end
 
+    -- QUARANTINE RULE 4 (ui_testing.lua): A REAL PULL ALWAYS WINS, and it wins HERE
+    -- rather than off ENGINE_ENGAGE, because the ordering is the whole point. This
+    -- line runs before the real runtime exists and before `StartPullSchedules` puts a
+    -- single bar on screen, so the rehearsal is already gone by the time the fight
+    -- populates. Aborting later would mean a test bar and a real bar addressing the
+    -- same timer object for a few milliseconds — and the tear-down would then stop the
+    -- REAL one. `Testing.Stop` is idempotent and a no-op when nothing is running, so
+    -- this costs one nil check on every pull in a build where the suite never ran.
+    if Addon.Testing and Addon.Testing.IsActive() then Addon.Testing.Stop("real engage") end
+
     local now = S():Now()
     local difficulty = Life:SnapshotDifficulty()
     local rt = API().NewRuntime(enc, {
@@ -1105,6 +1115,13 @@ end
 -- Kill counter clamped so kills can never exceed pulls; a stale best-time under
 -- 1.5 s is treated as corrupt and overwritten (§2.6).
 function Life:RecordStats(rt, report)
+    -- QUARANTINE RULE 2 (ui_testing.lua): a rehearsal never touches the kill/wipe
+    -- history. This is the ONLY writer of db.stats, so the refusal belongs here and
+    -- nowhere else. In practice the test suite never reaches EndCombat (it owns no
+    -- lifecycle runtime) and rule 4 tears it down before a real fight starts — this is
+    -- the belt to that pair of braces, and it is what makes "db.stats is byte-identical
+    -- across a test run" an assertion about the shipping code rather than about luck.
+    if Addon.Testing and Addon.Testing.IsActive() then return nil end
     if type(Addon.GetBossStats) ~= "function" then return nil end
     local legacy = rt.def.legacy
     if not legacy then return nil end

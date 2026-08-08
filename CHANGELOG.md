@@ -81,6 +81,34 @@ a fight that starts oddly still arms your timers.
   addon, so they work whether or not you have those addons installed, and anything
   registered with LibSharedMedia is picked up too. Pick a default pack and the sound
   picker opens filtered to it, instead of dropping you into a thousand-entry list.
+- **You can rehearse any fight, out of combat.** Every boss page has a **Test this
+  boss** button, and every ability on it has **Play** and **Sound** buttons of its own.
+  - **Play** fires that one ability exactly the way the fight will — its real duration,
+    its real uncertainty window, in the place you routed it to, with the sound you
+    chose. Press it again and it restarts. **Sound** plays just the cue.
+  - **Test this boss** is the whole rehearsal: the engage banner, every enabled timer
+    started at its real value all at once (so you see the screen you will actually
+    have), the warnings walked out about a second apart so you can read them, the
+    phases stepped, and the boss's own special tracker switched on. **Stop** clears all
+    of it.
+  - **None of it can reach your raid.** A test never sends anything on the addon
+    channel, never touches your kill and wipe record, and never feeds the timer
+    self-audit. And if a real pull starts while you are testing, the test is dropped
+    instantly in favour of the fight.
+- **`/drm layout`** is a placement workbench. It fills every list and both warning
+  tiers with one of everything — every colour, both buckets, a variance window, a count
+  bar, a pull countdown and a sample boss tracker — and **keeps them there** while you
+  drag, following your changes as you make them. `/drm demo` is still the one-shot
+  quick version; this is the one you leave running.
+- **`/drm playback <boss>`** replays a scripted fight at five times speed (or any speed
+  you name). Heigan's dance clock, Noth's teleport cycle and Gothik's eighteen add
+  waves all run in accelerated real order, so a five-minute sequence takes one minute
+  to watch and you can check the whole thing before the raid instead of during it.
+- **`/drm validate`** checks all 65 encounters against your actual game client in one
+  pass: every spell ID, every icon, every sound file and every voice line. Anything the
+  client no longer recognises is listed by boss and by ability. Worth running after
+  every patch — a renumbered spell ID is an alert that silently stops firing, and this
+  is the only cheap way to find out before it matters.
 - **`/drm demo`** draws the whole display out of combat — one bar of every kind, one
   line of every warning tier, and labelled draggable anchors — so you can place
   everything without needing a boss.

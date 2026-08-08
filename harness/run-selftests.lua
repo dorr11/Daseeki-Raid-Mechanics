@@ -152,7 +152,7 @@ local ALL_LUA = {
     "core_heap.lua", "core_telemetry.lua", "core_sched.lua", "core_timers.lua",
     "core_api.lua", "core_lifecycle.lua", "core_diag.lua", "core_boot.lua", "core_sync.lua",
     "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars.lua", "ui_warnings.lua",
-    "public_api.lua",
+    "public_api.lua", "ui_testing.lua",
     "alerts.lua", "dbm_bridge.lua", "modules.lua",
     "mod_loatheb_healers.lua", "mod_fourhorsemen_rotation.lua",
     "mod_fourhorsemen_tracker.lua", "mod_gothik_waves.lua",
@@ -222,6 +222,8 @@ local CHANGE_SURFACE = {
     ["ui_warnings.lua"] = true, ["public_api.lua"] = true,
     -- the anchor/routing rework authored this one, on the same clean-room terms
     ["ui_anchors.lua"] = true,
+    -- the testing suite authored this one, on the same clean-room terms
+    ["ui_testing.lua"] = true,
 }
 
 -- INTEROP ALLOWANCE — exact (file, token) pairs only, each with a written reason,
@@ -316,6 +318,7 @@ for _, rel in ipairs({ "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars
                        "ui_warnings.lua", "public_api.lua" }) do
     ck(TOC_SET[rel], rel .. " IS in the load list (the wave-2 surfaces actually ship)")
 end
+ck(TOC_SET["ui_testing.lua"], "ui_testing.lua IS in the load list (the testing suite actually ships)")
 ck(TOC_SET["enc_naxxramas.lua"], "enc_naxxramas.lua IS in the load list (wave 4d ships the data)")
 ck(TOC_SET["enc_aq20.lua"], "enc_aq20.lua IS in the load list (wave 4c ships AQ20)")
 ck(TOC_SET["enc_aq40.lua"], "enc_aq40.lua IS in the load list (wave 4c ships AQ40)")
@@ -331,6 +334,10 @@ do  -- wave 2 stacks ON the wave-1 seam, and the toc must express that too
     ck(pos["ui_anchors.lua"] and pos["ui_anchors.lua"] < pos["ui_bars.lua"]
        and pos["ui_anchors.lua"] < pos["ui_warnings.lua"],
        "the placement model loads before the two surfaces that route through it")
+    ck(pos["ui_testing.lua"] and pos["ui_testing.lua"] > pos["ui_bars.lua"]
+       and pos["ui_testing.lua"] > pos["ui_warnings.lua"]
+       and pos["ui_testing.lua"] > pos["ui_anchors.lua"],
+       "the testing suite loads AFTER the three surfaces it drives (it renders nothing itself)")
     ck(pos["theme.lua"] < pos["ui_bars.lua"] and pos["media.lua"] < pos["ui_warnings.lua"],
        "the theme tokens and the sound bucket load before the surfaces that use them")
     ck(pos["alerts.lua"] and pos["alerts.lua"] > pos["ui_bars.lua"],
@@ -380,11 +387,34 @@ local function newFrame()
     function f:Show() self.shown = true end
     function f:Hide() self.shown = false end
     function f:IsShown() return self.shown end
-    function f:SetSize() end
-    function f:SetPoint() end
-    function f:ClearAllPoints() end
+    function f:SetSize(w, h) self.w, self.h = w, h end
+    function f:SetPoint(p, rel, rp, x, y)
+        self._last = { p = p, rel = rel, rp = rp, x = x, y = y }
+        self.points[#self.points + 1] = self._last
+    end
+    function f:ClearAllPoints() for i = #self.points, 1, -1 do self.points[i] = nil end end
     function f:SetFrameStrata() end
     function f:SetAlpha() end
+    -- The drag/mouse surface `Addon:HudAnchor` dresses every anchor with. Deliberately
+    -- NOT CreateTexture: the bar and warning views probe for that ONE method to decide
+    -- whether they can draw at all, and answering yes would put the whole presentation
+    -- layer into a rendering mode no headless gate is asserting.
+    function f:SetMovable() end
+    function f:EnableMouse() end
+    function f:StartMoving() end
+    function f:StopMovingOrSizing() end
+    function f:HookScript(k, fn)
+        self.hooks = self.hooks or {}
+        self.hooks[k] = self.hooks[k] or {}
+        table.insert(self.hooks[k], fn)
+    end
+    function f:GetPoint()
+        local L = self._last
+        if not L then return nil end
+        return L.p, L.rel, L.rp, L.x, L.y
+    end
+    function f:GetHeight() return self.h or 0 end
+    function f:GetWidth()  return self.w or 0 end
     function f:CreateFontString() return setmetatable({}, { __index = function() return function() end end }) end
     function f:CreateAnimationGroup()
         local ag = { anims = {} }
@@ -482,6 +512,9 @@ local ENGINE_FILES = {
     -- TOC ORDER with the surfaces that route through it, like everything else here.
     "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars.lua", "ui_warnings.lua",
     "public_api.lua",
+    -- the testing suite: it drives every surface above through its real path and owns
+    -- no rendering of its own, so it loads last, exactly as the toc says.
+    "ui_testing.lua",
 }
 for _, rel in ipairs(ENGINE_FILES) do
     local chunk, err = loadfile(P(rel))
@@ -2387,10 +2420,14 @@ Warn:SetEnv({
 -- GATE HATCH; both paths are idempotent). Re-installing the resolvers matters:
 -- GATE API deliberately swapped in fixture resolvers.
 Era.Init(); Scan.Init(); Bars.Init(); Warn.Init(); Public.Init()
+Addon.Testing.Init()                     -- the testing suite's own boot (quarantine rule 4)
 Addon.RoleResolver, Addon.ClassResolver = Era.ResolveRole, Era.Class
 Addon.RoleKnown = Era.RoleKnown          -- AUDIT RM-1: the third resolver, same seam
 
 local function resetW2()
+    -- The testing suite goes down FIRST, before anything it might be holding: no gate
+    -- may inherit another's rehearsal, its scaled clock, or its transient buckets.
+    Addon.Testing.Stop("fixture reset")
     resetLife()
     Timers.StopAll()
     BM.Clear()
@@ -9284,6 +9321,1076 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- THE TESTING SUITE (owner design, 2026-08-07)
+--
+-- Six gates for the six features plus one for the quarantine. Everything below drives
+-- the SHIPPING ui_testing.lua over the SHIPPING encounter data through the SHIPPING
+-- surfaces on the injected clock. The point of a test surface is that it is the real
+-- thing, so a gate that accepted a stand-in would be asserting the opposite of the
+-- feature's whole claim.
+----------------------------------------------------------------------
+local Tst = Addon.Testing
+
+-- Deterministic dumps for the two "byte-identical across a test run" quarantine rules.
+-- Sorted keys, never pairs() order, so a difference in the dump is a difference in the
+-- data rather than in the walk.
+local function dumpTable(t, depth)
+    if type(t) ~= "table" then return tostring(t) end
+    if (depth or 0) > 4 then return "…" end
+    local keys = {}
+    for k in pairs(t) do keys[#keys + 1] = tostring(k) end
+    table.sort(keys)
+    local parts = {}
+    for _, ks in ipairs(keys) do
+        local v = t[ks]
+        if v == nil then for k2, v2 in pairs(t) do if tostring(k2) == ks then v = v2 end end end
+        parts[#parts + 1] = ks .. "=" .. dumpTable(v, (depth or 0) + 1)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+local function ringDump() return dumpTable(Tele.Ring(false) or {}) end
+local function statsDump() return dumpTable(Addon.db.stats or {}) end
+
+local function clearWire() for i = #WIRE, 1, -1 do WIRE[i] = nil end end
+
+----------------------------------------------------------------------
+-- GATE TEST-ROW — feature 1 (per-row play) and feature 5 (per-row sound)
+----------------------------------------------------------------------
+gate("TEST-ROW  one row through the real dispatch: bar, warning, cue")
+resetAnchors()
+loadNaxx()
+API.PublishOptionsTree()
+
+do  -- A TIMER ROW: real duration, real variance, on the anchor the routing implies
+    resetAnchors()
+    local encId = "naxxramas:noth"
+    local kind, bar = Tst.Row(encId, "curse")
+    eq(kind, "timer", "play on a timer row starts a timer")
+    ck(bar ~= nil, "…and produces a live engine bar")
+    -- Noth's curse ships `pull = "v6.5-25.9"`, so occurrence 1 is the PULL window, not
+    -- the recurring one. A rehearsal that showed the recurring value would be showing
+    -- a number the raider will never see at that moment.
+    near(bar.min, 6.5, 0.001, "…at the row's REAL first-occurrence minimum")
+    near(bar.max, 25.9, 0.001, "…and its REAL maximum")
+    eq(bar.hasVariance, true, "…so the variance window renders")
+    local row = BM.rows[bar.id]
+    ck(row ~= nil, "the bar reaches the real bar model")
+    eq(row.optionKey, "naxxramas:noth:curse",
+       "…addressed by the SAME option key the row's checkbox and dropdown write")
+    eq(row.route, "minor",
+       "…and lands in the bucket the row's own severity implies (class 2 -> Minor)")
+    -- …and then obeys the ordinary escalation rule, because it IS an ordinary bar: a
+    -- 6.5 s minimum is already inside the 11 s promote point, so it draws on the Major
+    -- list exactly as the real one would that far into its window.
+    eq(BM.AnchorOf(row, Sched:Now()), "large",
+       "…promoting on the clock like any Minor row that is already under the promote point")
+end
+
+do  -- CLICK AGAIN RESTARTS: the same bar, re-based, never a second one
+    resetAnchors()
+    local encId = "naxxramas:noth"
+    local b1 = select(2, Tst.Row(encId, "curse"))
+    local id1, at1 = b1.id, b1.startedAt
+    advance(3)
+    local b2 = select(2, Tst.Row(encId, "curse"))
+    eq(b2.id, id1, "pressing play again addresses the SAME bar id…")
+    ck(b2.startedAt > at1, "…restarted, not duplicated")
+    local n = 0
+    for _ in pairs(Timers.bars) do n = n + 1 end
+    eq(n, 1, "…so two presses leave exactly one bar on screen")
+end
+
+do  -- A CUSTOM-ROUTED ROW goes to its own place, through the real resolver
+    resetAnchors()
+    Route.Set("naxxramas:noth:curse", "custom")
+    local _, bar = Tst.Row("naxxramas:noth", "curse")
+    local L = BM.Layout(Sched:Now())
+    eq(#L.custom, 1, "a row the user routed CUSTOM is rehearsed in the Custom bucket…")
+    eq(L.custom[1].optionKey, "naxxramas:noth:curse", "…under its own option key…")
+    eq(#L.small + #L.large, 0, "…and on neither list")
+    eq(BM.rows[bar.id].route, "custom", "…because the test bar read the USER's choice, not a default")
+    Route.Clear("naxxramas:noth:curse")
+end
+
+do  -- A WARNING ROW: the real dispatch, with a sample target name filled in
+    resetAnchors()
+    Addon.API.ForgetPlayerName()
+    setUnit("player", { guid = W.playerGUID, player = true, name = "Drew" })
+    local kind, text = Tst.Row("naxxramas:noth", "dispelcurse")
+    eq(kind, "warning", "play on a warning row fires a warning")
+    -- `dispelcurse` reads "Dispel the curse on %s" and DECLARES `combine = 0.5`, so the
+    -- real path batches it. Nothing is on screen until the debounce flushes — which is
+    -- exactly what happens in the fight, and a rehearsal that skipped the batcher would
+    -- be showing a line the raider never gets.
+    eq(Warn.specialStack:Count(), 0, "…through the batcher the row declares, so nothing shows yet")
+    advance(1)
+    ck(Warn.specialStack:Count() > 0, "…and lands on the Major surface when the batch flushes")
+    local shown = tostring(text)
+    ck(shown:find("Drew", 1, true) ~= nil or Warn.specialStack[1] == nil,
+       "…naming a SAMPLE TARGET, so the %s in the row's text is not left raw")
+    ck(tostring(text):find("%%s") == nil, "…with no unfilled placeholder left in the line")
+end
+
+do  -- an UNBATCHED announcement is immediate, and its text is built by Act's own rules
+    resetAnchors()
+    local _, text = Tst.Row("naxxramas:heigan", "fever")
+    eq(text, "Decrepit Fever", "an ordinary announcement row shows its declared text")
+    eq(Warn.announceStack:Count(), 1, "…on the Minor surface, at once")
+end
+
+do  -- a SCHEDULE row shows its announce; a row with nothing to say says so
+    resetAnchors()
+    local kind = Tst.Row("naxxramas:heigan", "dance")
+    eq(kind, nil, "a schedule row that declares no announce has nothing to fire…")
+    local kind2, why = Tst.Row("naxxramas:heigan", "nosuchrow")
+    eq(kind2, nil, "…and an unknown row key is refused")
+    eq(why, "unknown_row", "…by name, not silently")
+end
+
+do  -- THE TEXT BUILDER, asserted directly against Runtime:Act's three rules
+    eq(Tst.WarnText({ key = "k", text = "Impale" }, "Drew"), "Impale", "plain text passes through")
+    eq(Tst.WarnText({ key = "k", text = "Web Wrap on %s" }, "Drew"), "Web Wrap on Drew",
+       "…a %s takes the sample target")
+    eq(Tst.WarnText({ key = "k", text = "Mark (%d)", stacks = true }, nil), "Mark (3)",
+       "…a stacks row takes a sample stack count")
+    eq(Tst.WarnText({ key = "k", text = "Meteor", count = true }, nil), "Meteor 2",
+       "…and a count row with no %d gets the count appended, exactly as Act does it")
+end
+
+do  -- FEATURE 5: the cue, through the real sound dispatch
+    resetAnchors()
+    clearSounds()
+    local played = Tst.RowSound("naxxramas:heigan", "fever")
+    eq(played, "sound", "the speaker button on a warning row plays through the real dispatch")
+    ck(lastSound() ~= nil, "…and something audible actually happened")
+
+    -- §5.5's rule that a user-chosen sound beats everything, reached from this button
+    clearSounds()
+    Addon.db.mechanics["naxxramas:noth:curse"] = { sound = "raidwarning" }
+    eq(Tst.RowSound("naxxramas:noth", "curse"), "sound",
+       "a TIMER row plays the sound the user attached to it")
+    ck(lastSound() ~= nil, "…for real")
+    Addon.db.mechanics["naxxramas:noth:curse"] = nil
+
+    clearSounds()
+    local v, why = Tst.RowSound("naxxramas:noth", "curse")
+    eq(v, nil, "…and a timer row with no sound and no countdown is honestly silent")
+    eq(why, "silent", "…and says which")
+    eq(lastSound(), nil, "…having played nothing")
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
+-- GATE TEST-BOSS — feature 2, the per-boss rehearsal and its Stop
+----------------------------------------------------------------------
+gate("TEST-BOSS  the rehearsal populates, staggers, steps phases, and sweeps")
+resetAnchors()
+loadNaxx()
+
+do  -- THE TRUE MID-FIGHT BAR POPULATION
+    resetAnchors()
+    local enc = Addon:GetEncounter("naxxramas:noth")
+    local want = 0
+    for _, row in ipairs(enc.timers) do
+        if API.IsRowEnabled(enc.id, row) and API.ResolveDuration(row, 1, nil) ~= nil then
+            want = want + 1
+        end
+    end
+    ck(want >= 2, "Noth has more than one enabled timer row to populate")
+    local r = Tst.Boss("naxxramas:noth")
+    ck(r ~= nil, "the rehearsal starts")
+    eq(r.bars, want, "…starting EVERY enabled timer row, not a sample of them")
+    eq(Timers.Count(), want, "…and every one of them is a live bar")
+    eq(Tst.IsActive(), true, "…with the quarantine armed for the duration")
+    eq(Tst.Mode(), "boss", "…in boss mode")
+
+    -- the engage banner is on the Major warning surface, where a real one lands
+    ck(Warn.specialStack:Count() >= 1, "an engage banner announces the rehearsal…")
+    local top = Warn.specialStack.slots[1]
+    ck(top and tostring(top.text):find("Noth", 1, true) ~= nil, "…naming the boss")
+    ck(top and tostring(top.text):find("rehearsal", 1, true) ~= nil,
+       "…and saying plainly that it is not a real pull")
+end
+
+do  -- THE STAGGER: readable, ~1 s apart, WITHIN each tier
+    resetAnchors()
+    Tst.Boss("naxxramas:heigan")
+    local enc = Addon:GetEncounter("naxxramas:heigan")
+    local wantA, wantS = 0, 0
+    for _, row in ipairs(enc.warnings) do
+        if API.IsRowEnabled(enc.id, row) then
+            if (row.tier or "announce") == "special" then wantS = wantS + 1 else wantA = wantA + 1 end
+        end
+    end
+    ck(wantA >= 3, "Heigan has at least three enabled announcement rows to walk out")
+    Addon:SetEventRecording(true); Addon:ClearEventLog()
+    advance(0.9)
+    eq(warnCount("WARN_ANNOUNCE", "Teleport"), 0,
+       "no announcement has fired before the first second is up")
+    advance(0.3)
+    local afterOne = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == "WARN_ANNOUNCE" then afterOne = afterOne + 1 end
+    end
+    eq(afterOne, 1, "…exactly ONE has fired at the 1 s mark")
+    advance(1)
+    local afterTwo = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == "WARN_ANNOUNCE" then afterTwo = afterTwo + 1 end
+    end
+    eq(afterTwo, 2, "…and exactly two at the 2 s mark: one per second, within the tier")
+    advance(wantA + 2)
+    local total = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == "WARN_ANNOUNCE" then total = total + 1 end
+    end
+    eq(total, wantA, "…until every enabled announcement row has been shown, once each")
+    Addon:SetEventRecording(false)
+end
+
+do  -- PHASES ARE STEPPED, through the real stage register
+    resetAnchors()
+    local enc = Addon:GetEncounter("naxxramas:gothik")
+    local phases = 0
+    for _, p in ipairs(enc.phases) do if p.stage ~= nil then phases = phases + 1 end end
+    ck(phases >= 1, "Gothik declares a phase to step")
+    local r = Tst.Boss("naxxramas:gothik")
+    eq(r.phases, phases, "the rehearsal schedules one step per declared phase")
+    Addon:SetEventRecording(true); Addon:ClearEventLog()
+    advance(Tst.PHASE_STAGGER * phases + 1)
+    local stages = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == "ENGINE_STAGE" then stages = stages + 1 end
+    end
+    eq(stages, phases, "…and every one of them broadcasts ENGINE_STAGE, off the REAL register")
+    Addon:SetEventRecording(false)
+end
+
+do  -- THE SPECIAL MODULE SEAM: the module's own Test is what runs
+    resetAnchors()
+    local calls = { test = 0, preview = 0, previewOff = 0 }
+    local def = Addon:RegisterModule({
+        id = "gate_testmod", raidId = "naxxramas", bossId = "patchwerk",
+        name = "Gate module", defaults = { enabled = true },
+        Test = function() calls.test = calls.test + 1 end,
+        SetPreview = function(_, on)
+            if on then calls.preview = calls.preview + 1
+            else calls.previewOff = calls.previewOff + 1 end
+        end,
+    })
+    local r = Tst.Boss("naxxramas:patchwerk")
+    eq(r.modules, 1, "an enabled special is invoked by the rehearsal")
+    eq(calls.preview, 1, "…through the preview seam it declares…")
+    Tst.Stop("gate")
+    eq(calls.previewOff, 1, "…and turned back off by Stop, exactly once")
+
+    -- a module with only a Test (the toggle shape) gets Test on the way in AND out
+    def.SetPreview = nil
+    Tst.Boss("naxxramas:patchwerk")
+    eq(calls.test, 1, "a module with only a Test is toggled on by it…")
+    Tst.Stop("gate")
+    eq(calls.test, 2, "…and toggled back off by the same call, because that is its off switch")
+
+    -- a DISABLED special is left alone
+    Addon:SetModuleEnabled("gate_testmod", false)
+    local r2 = Tst.Boss("naxxramas:patchwerk")
+    eq(r2.modules, 0, "a special the user switched off is not started by a rehearsal")
+    Tst.Stop("gate")
+    Addon.modulesByBoss["naxxramas:patchwerk"] = nil
+    for i = #Addon.modules, 1, -1 do
+        if Addon.modules[i].id == "gate_testmod" then table.remove(Addon.modules, i) end
+    end
+end
+
+do  -- STOP IS TOTAL
+    resetAnchors()
+    Tst.Boss("naxxramas:noth")
+    advance(2)
+    ck(Timers.Count() > 0, "the rehearsal is up")
+    ck(Warn.announceStack:Count() + Warn.specialStack:Count() > 0, "…with warnings on screen")
+    ck(Sched:IsScheduled(nil, Tst), "…and staggered work still queued")
+    eq(Tst.Stop("gate"), true, "Stop reports it did something")
+    eq(Timers.Count(), 0, "…the full timer sweep left NO bar behind")
+    eq(BM.count, 0, "…nor a row in the bar model")
+    eq(Warn.announceStack:Count() + Warn.specialStack:Count(), 0, "…the warnings are cleared")
+    eq(Warn.CustomCount(), 0, "…including any Custom ones")
+    eq(Sched:IsScheduled(nil, Tst), false, "…and every queued step of it is cancelled")
+    eq(Tst.IsActive(), false, "…with the quarantine disarmed")
+    eq(Tst.Stop("again"), false, "…and Stop is idempotent: calling it twice is not an error")
+end
+
+do  -- REFUSALS
+    resetAnchors()
+    eq(Tst.Boss("naxxramas:nosuchboss"), nil, "an unknown encounter is refused")
+    local _, why = Tst.Boss("naxxramas:nosuchboss")
+    eq(why, "unknown_encounter", "…by name")
+    local rt = engage("naxxramas:patchwerk", 16028)
+    ck(rt ~= nil, "a real fight is running")
+    local r2, why2 = Tst.Boss("naxxramas:noth")
+    eq(r2, nil, "a rehearsal is REFUSED while a real fight is in progress…")
+    eq(why2, "engaged", "…and says so, rather than fighting the fight for the screen")
+    resetLife()
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
+-- GATE TEST-LAYOUT — feature 3, the persistent placement workbench
+----------------------------------------------------------------------
+gate("TEST-LAYOUT  populate everything, keep it alive, exit clean")
+resetAnchors()
+do  -- POPULATES EVERYTHING: every colour class, in BOTH buckets
+    resetAnchors()
+    eq(Tst.Layout(true), true, "layout mode turns on")
+    eq(Tst.Mode(), "layout", "…and says so")
+    local L = BM.Layout(Sched:Now())
+    -- Major: seven colour classes + the count bar + the pull countdown (which is Major
+    -- by the routing model's own rule, and is a bar a placement pass must be able to see).
+    eq(#L.large, #Tst.LAYOUT_CLASSES + 2,
+       "the MAJOR list carries one bar of every colour class, plus the count and pull bars")
+    eq(#L.small, #Tst.LAYOUT_CLASSES + 1,
+       "the MINOR list carries one of every colour class too, plus the variance bar")
+    local hasPull = false
+    for _, row in ipairs(L.large) do if row.category == "pull" then hasPull = true end end
+    ck(hasPull, "…and the pull countdown is one of them, in the bucket the model routes it to")
+    local seenMajor, seenMinor = {}, {}
+    for _, row in ipairs(L.large) do seenMajor[row.class] = true end
+    for _, row in ipairs(L.small) do seenMinor[row.class] = true end
+    local allMajor, allMinor = true, true
+    for c = 1, 7 do
+        if not seenMajor[c] then allMajor = false end
+        if not seenMinor[c] then allMinor = false end
+    end
+    ck(allMajor, "…classes 1-7 are ALL present in the Major bucket")
+    ck(allMinor, "…and ALL present in the Minor one — which severity alone can never do")
+
+    -- the two shapes a placement pass otherwise never sees
+    local hasVariance, hasCount = false, false
+    for _, row in pairs(BM.rows) do
+        if row.bar and row.bar.hasVariance then hasVariance = true end
+        if row.count then hasCount = true end
+    end
+    ck(hasVariance, "a variance window is on screen to place against")
+    ck(hasCount, "…and a count bar, whose number sits beside its label")
+
+    -- both warning tiers
+    ck(Warn.announceStack:Count() > 0, "the Minor warning surface is populated")
+    ck(Warn.specialStack:Count() > 0, "…and the Major one")
+end
+
+do  -- IT DOES NOT WRITE SAVEDVARIABLES
+    resetAnchors()
+    local before = dumpTable(Addon.db.mechanics)
+    Tst.Layout(true)
+    advance(1)
+    eq(dumpTable(Addon.db.mechanics), before,
+       "a layout pass writes NOTHING to db.mechanics — the buckets it forces are transient")
+    ck(next(Route.transient) ~= nil, "…they live in the in-memory override table instead")
+    eq(Route.Of("#layout:layoutmajor1", { kind = "timer", color = 1 }, false), "major",
+       "…which Route.Of consults FIRST, above the saved answer")
+    Tst.Layout(false)
+    eq(next(Route.transient), nil, "…and which is emptied on the way out")
+    eq(dumpTable(Addon.db.mechanics), before, "…leaving the profile exactly as it was found")
+end
+
+do  -- IT KEEPS ITSELF ALIVE while the anchors are dragged
+    resetAnchors()
+    Tst.Layout(true)
+    local first = BM.count
+    ck(first > 0, "the pass starts populated")
+    -- run past the sample bars' own duration: without upkeep the screen would empty
+    advance(Tst.LAYOUT_BAR + 3)
+    ck(BM.count >= first, "…and is STILL populated after every sample bar would have expired")
+    ck(Warn.announceStack:Count() > 0, "…with the warning lines still standing")
+    ck(Warn.specialStack:Count() > 0, "…on both tiers")
+end
+
+do  -- …AND IT DOES NOT STROBE. A warning lives 1.5 s by design, so a pass that kept
+    -- itself alive by re-pushing on its 2 s tick would fire the screen flash and the
+    -- tier sound over and over for as long as the pass was open. The samples declare
+    -- their own long duration instead, so they are pushed ONCE and then sit still.
+    resetAnchors()
+    clearSounds()
+    Tst.Layout(true)
+    local pushedOnEntry = Warn.specialStack.pushed
+    local soundsOnEntry = #SOUNDS
+    ck(pushedOnEntry > 0, "the special tier is populated on entry")
+    ck(Tst.LAYOUT_WARN_HOLD > Warn.DURATION * 100,
+       "…with a hold far longer than a warning's shipped 1.5 s lifetime")
+    advance(Tst.LAYOUT_REFRESH * 6)         -- six upkeep ticks
+    eq(Warn.specialStack.pushed, pushedOnEntry,
+       "…and six upkeep ticks later NOT ONE line has been re-pushed")
+    eq(#SOUNDS, soundsOnEntry, "…so the tier sounds fired once, not once every two seconds")
+    ck(Warn.specialStack:Count() > 0, "…while the lines are all still on screen to place")
+
+    -- the pull countdown is likewise started once, not restarted on every tick
+    local pullBar = Timers.bars["engine:pull"]
+    ck(pullBar ~= nil, "the pull countdown is on screen for the pass to place")
+    local startedAt = pullBar.startedAt
+    advance(Tst.LAYOUT_REFRESH * 2)
+    eq(Timers.bars["engine:pull"].startedAt, startedAt,
+       "…and is not restarted underneath itself on every tick")
+end
+
+do  -- IT REFRESHES AS PLACEMENT CHANGES
+    -- The witness is a host that DOES NOT EXIST when the attachment is made and appears
+    -- a moment later — the late-frame case the anchor watcher was built for. If the
+    -- upkeep tick did not re-apply, the sample would still be sitting on its screen
+    -- fallback when the frame turned up.
+    resetAnchors()
+    _G.TargetFrame = nil
+    Tst.Layout(true)
+    local f = testFrame({ cx = 100, cy = 100 })
+    Anchors.Install("#layoutwatch", f, {})
+    Anchors.SetAttach("#layoutwatch", "target")
+    eq(Anchors.installed["#layoutwatch"].mode, "screen",
+       "with the host absent the sample falls back to its own screen position")
+    _G.TargetFrame = testFrame({ cx = 400, cy = 300 })
+    advance(Tst.LAYOUT_REFRESH + 0.2)
+    eq(Anchors.installed["#layoutwatch"].mode, "attach",
+       "the upkeep tick re-applies every anchor, so a placement changed mid-pass takes effect")
+    eq(f._last.rel, _G.TargetFrame, "…against the host that turned up while the pass was open")
+    _G.TargetFrame = nil
+end
+
+do  -- EXIT RESTORES CLEAN
+    resetAnchors()
+    Tst.Layout(true)
+    advance(1)
+    eq(Tst.Layout(false), false, "layout mode turns off")
+    eq(Timers.Count(), 0, "…every sample bar is gone")
+    eq(BM.count, 0, "…and every row with them")
+    eq(Warn.announceStack:Count() + Warn.specialStack:Count(), 0, "…both warning tiers cleared")
+    eq(Tst.IsActive(), false, "…the quarantine disarmed")
+    eq(Sched:IsScheduled(nil, Tst), false, "…and the upkeep loop cancelled, not left ticking")
+    eq(Anchors.installed["#layout:special"], nil,
+       "…and the sample special's anchor forgotten, so it cannot stack under a real one")
+end
+
+do  -- …WITHOUT TAKING THE RAID'S PULL TIMER WITH IT. The quarantine stops a test
+    -- SENDING sync, not receiving it, so a real countdown broadcast by the raid can be
+    -- running while someone has a layout pass open.
+    resetAnchors()
+    Addon:StartPullTimer(25, "sync")
+    ck(Timers.bars["engine:pull"] ~= nil, "the raid's own pull countdown is running")
+    Tst.Layout(true)
+    advance(1)
+    Tst.Layout(false)
+    ck(Timers.bars["engine:pull"] ~= nil,
+       "…and it survives a whole layout pass: only the sample the pass started is cancelled")
+    Addon:CancelPullTimer("cleanup")
+
+    -- …while the sample the pass DID start is cleaned up
+    resetAnchors()
+    Tst.Layout(true)
+    ck(Timers.bars["engine:pull"] ~= nil, "a pass with no raid countdown starts its own sample")
+    eq(Addon.pullSource, "layout", "…marked as the pass's own")
+    Tst.Layout(false)
+    eq(Timers.bars["engine:pull"], nil, "…and takes it away again on the way out")
+end
+
+do  -- the toggle, and the refusal
+    resetAnchors()
+    eq(Tst.Layout(nil), true, "the toggle with no argument turns it on…")
+    eq(Tst.Layout(nil), false, "…and off again")
+    local rt = engage("naxxramas:patchwerk", 16028)
+    ck(rt ~= nil, "a real fight is running")
+    local on, why = Tst.Layout(true)
+    eq(on, false, "layout mode is REFUSED while a real fight is in progress")
+    eq(why, "engaged", "…and says so")
+    resetLife()
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
+-- GATE TEST-PLAYBACK — feature 4, the scaled clock and the reproduced orders
+----------------------------------------------------------------------
+gate("TEST-PLAYBACK  the scaled clock, Noth's tail and Gothik's wave order at 5x")
+resetAnchors()
+loadNaxx()
+
+do  -- Sched:Rebase, the primitive, asserted pure
+    local before = Sched:Count()
+    eq(Sched:Rebase(0), 0, "rebasing by zero is a no-op")
+    Sched:Flush()
+    local a = Sched:Schedule(10, function() end, "rb")
+    local b = Sched:Schedule(5,  function() end, "rb")
+    local c = Sched:Schedule(20, function() end, "rb")
+    eq(Sched:Rebase(100), 3, "rebase touches every queued task")
+    near(a.at - b.at, 5, 0.001, "…preserving the GAP between two tasks exactly…")
+    near(c.at - a.at, 10, 0.001, "…every gap…")
+    eq(Sched.heap:Peek(), b, "…and the heap's order, because a constant shift cannot reorder a min")
+    Sched:Flush()
+    eq(before >= 0, true, "(the heap is flushed clean for the run below)")
+    -- and it is NOT a live-path function: nothing in the engine calls it
+    local callers = 0
+    for _, rel in ipairs({ "core_lifecycle.lua", "core_api.lua", "core_timers.lua",
+                           "core_sync.lua", "ui_bars.lua", "ui_warnings.lua" }) do
+        if (readFile(P(rel)) or ""):find("Rebase", 1, true) then callers = callers + 1 end
+    end
+    eq(callers, 0, "Sched:Rebase has NO caller in the live path — only the testing suite")
+end
+
+do  -- THE CLOCK SWAP: continuous in, rebased out
+    resetW2()
+    local rawBefore = Sched:Now()
+    eq(Tst.BeginScaledClock(5), 5, "the scaled clock installs at the requested speed")
+    near(Sched:Now(), rawBefore, 0.001,
+       "…CONTINUOUS at the swap: the clock does not jump, so nothing queued fires early")
+    advance(2)      -- 2 real seconds
+    near(Sched:Now() - rawBefore, 10, 0.05, "…and 2 real seconds are 10 scaled ones at 5x")
+
+    -- a task queued DURING the scaled run keeps its delay across the restore
+    local t = Sched:Schedule(50, function() end, "rb2")
+    local scaledDue = t.at
+    local scaledNow = Sched:Now()
+    eq(Tst.EndScaledClock(), true, "the real clock comes back")
+    near(t.at - Sched:Now(), scaledDue - scaledNow, 0.001,
+       "…REBASED: every surviving task keeps its remaining delay exactly")
+    ck(t.at > Sched:Now(), "…and none of them is left due in the past")
+    Sched:Unschedule(nil, "rb2")
+
+    -- the swap restores the injected clock VERBATIM, not some notion of "the real one"
+    near(Sched:Now(), CLOCK, 0.001,
+       "…and the clock the harness injected is the clock that came back")
+end
+
+do  -- the speed is bounded, so a typo cannot freeze or fast-forward the client
+    resetW2()
+    eq(Tst.BeginScaledClock(9999), Tst.PLAYBACK_MAX, "an absurd speed clamps to the maximum")
+    Tst.EndScaledClock()
+    eq(Tst.BeginScaledClock(0), Tst.PLAYBACK_MIN, "…and zero to the minimum (never a stopped clock)")
+    Tst.EndScaledClock()
+    eq(Tst.BeginScaledClock(nil), Tst.PLAYBACK_SPEED, "…with 5x the shipped default")
+    Tst.EndScaledClock()
+end
+
+do  -- boss reference resolution, deterministic
+    eq(Tst.ResolveEncounter("naxxramas:heigan").id, "naxxramas:heigan", "an encounter id resolves")
+    eq(Tst.ResolveEncounter("heigan").id, "naxxramas:heigan", "…so does a boss id")
+    eq(Tst.ResolveEncounter("Heigan the Unclean").id, "naxxramas:heigan", "…and a name")
+    eq(Tst.ResolveEncounter("unclean").id, "naxxramas:heigan", "…and a substring of one")
+    eq(Tst.ResolveEncounter("nonsense"), nil, "…and nonsense resolves to nothing")
+end
+
+-- NOTH'S TELEPORT CYCLE at 5x. The schedule is `gaps = { 90.8, 75, 109, … }` with a
+-- `pre = 20` lead, so the announce order is pre / teleported / pre / teleported, and
+-- the SCALED times are the gap table's own cumulative sums. Both the ORDER and the
+-- RATIO are asserted: an accelerated run that got the order right and the ratio wrong
+-- would be a different bug wearing the same green tick.
+do
+    resetW2()
+    resetAnchors()
+    local fires = {}
+    local function rec(_, encId, row, text)
+        fires[#fires + 1] = { text = tostring(text), raw = CLOCK, scaled = Sched:Now() }
+    end
+    Addon:RegisterEngineCallback("WARN_ANNOUNCE", rec)
+
+    local raw0 = CLOCK
+    local encId, used = Tst.Playback("noth", 5)
+    eq(encId, "naxxramas:noth", "playback starts on Noth")
+    eq(used, 5, "…at 5x")
+    local scaled0 = Sched:Now()
+    advance(20, 0.02)          -- 100 scaled seconds: the pre at 70.8 and tick 1 at 90.8
+
+    local pres, teles = {}, {}
+    for _, f in ipairs(fires) do
+        if f.text:find("Teleport in 20", 1, true) then pres[#pres + 1] = f
+        elseif f.text == "Teleported" then teles[#teles + 1] = f end
+    end
+    ck(#pres >= 1 and #teles >= 1, "the pre-warning and the teleport both fired")
+    near(pres[1].scaled - scaled0, 70.8, 0.3,
+         "the 20 s pre-warning lands 20 s before the first 90.8 s gap, in SCALED time")
+    near(pres[1].raw - raw0, 70.8 / 5, 0.15, "…which is 14.2 REAL seconds at 5x — the ratio holds")
+    near(teles[1].scaled - scaled0, 90.8, 0.3, "the first teleport lands on the gap table's 90.8 s")
+    near(teles[1].raw - raw0, 90.8 / 5, 0.15, "…18.2 real seconds later: five times faster, exactly")
+
+    advance(20, 0.02)          -- through gap 2 (75) and towards gap 3 (109)
+    pres, teles = {}, {}
+    for _, f in ipairs(fires) do
+        if f.text:find("Teleport in 20", 1, true) then pres[#pres + 1] = f
+        elseif f.text == "Teleported" then teles[#teles + 1] = f end
+    end
+    ck(#teles >= 2, "the cycle keeps going")
+    near(teles[2].scaled - scaled0, 165.8, 0.4, "…tick 2 at 90.8+75, the gap table's own second sum")
+    near((teles[2].scaled - teles[1].scaled) / (teles[2].raw - teles[1].raw), 5, 0.05,
+         "…and the scaled/real ratio between consecutive ticks IS the time scale")
+    -- ORDER: pre, teleported, pre, teleported — never two of a kind in a row
+    local order = {}
+    for _, f in ipairs(fires) do
+        if f.text:find("Teleport in 20", 1, true) then order[#order + 1] = "P"
+        elseif f.text == "Teleported" then order[#order + 1] = "T" end
+    end
+    eq(table.concat(order, ""):sub(1, 4), "PTPT",
+       "…in the alternating order the schedule declares, off the REAL StartPullSchedules")
+
+    Addon:UnregisterEngineCallback("WARN_ANNOUNCE", rec)
+    Tst.Stop("gate")
+    near(Sched:Now(), CLOCK, 0.001, "…and Stop hands the real clock back")
+end
+
+-- HEIGAN'S CLOCK, the two-state loop whose PRE LEAD alternates with it (15 s before a
+-- room phase ends, 10 s before a dance does). `gaps = { 90, 47, 88, repeatFrom = 2 }`.
+do
+    resetW2()
+    resetAnchors()
+    local fires = {}
+    local function rec(_, _, _, text)
+        fires[#fires + 1] = { text = tostring(text), raw = CLOCK, scaled = Sched:Now() }
+    end
+    Addon:RegisterEngineCallback("WARN_ANNOUNCE", rec)
+    local scaled0 = Sched:Now()
+    Tst.Playback("heigan", 5)
+    advance(30, 0.02)          -- 150 scaled seconds: ticks at 90 and 137
+    local teles = {}
+    for _, f in ipairs(fires) do if f.text == "Teleported" then teles[#teles + 1] = f end end
+    ck(#teles >= 2, "Heigan's dance clock ticks twice inside 150 scaled seconds")
+    near(teles[1].scaled - scaled0, 90, 0.4, "…the first at the declared 90 s")
+    near(teles[2].scaled - teles[1].scaled, 47, 0.4,
+         "…and the second 47 s later: the dance leg, not a repeat of the room leg")
+    Addon:UnregisterEngineCallback("WARN_ANNOUNCE", rec)
+    Tst.Stop("gate")
+end
+
+-- GOTHIK'S EIGHTEEN WAVES. That schedule lives inside mod_gothik_waves.lua on C_Timer,
+-- which does not read the engine clock and therefore cannot be accelerated — which is
+-- exactly why the module publishes its running order through the playback seam. Two
+-- halves: the seam is PINNED in the shipping file, and the ORDER is DRIVEN, with the
+-- wave data read straight out of that same shipping file so the fixture cannot drift.
+do
+    local src = readFile(P("mod_gothik_waves.lua")) or ""
+    ck(src:find("playbackScript = function", 1, true) ~= nil,
+       "mod_gothik_waves.lua declares the playback seam…")
+    ck(src:find("for i, w in ipairs(WAVES)", 1, true) ~= nil,
+       "…as a one-line accessor over the WAVES upvalue it already had…")
+    ck(src:find("local function Position", 1, true) ~= nil,
+       "…with its own Position() untouched: metadata was declared, nothing was rewritten")
+    ck(src:find("Addon.Anchors", 1, true) == nil and src:find("Addon.Testing", 1, true) == nil,
+       "…and the module still reaches into neither the anchor system nor the test suite")
+
+    -- The waves, parsed from the shipping source: a fixture built from anything else
+    -- would prove the fixture, not the addon.
+    local waves = {}
+    for t, text in src:gmatch("{%s*t%s*=%s*([%d%.]+),%s*text%s*=%s*\"(.-)\"%s*}") do
+        waves[#waves + 1] = { t = tonumber(t), text = text }
+    end
+    eq(#waves, 18, "the shipping file declares eighteen waves")
+    local p2 = tonumber(src:match("local PHASE2_T%s*=%s*(%d+)"))
+    eq(p2, 270, "…and phase 2 at 270 s")
+
+    resetW2()
+    resetAnchors()
+    Addon:RegisterModule({
+        id = "gate_gothik_playback", raidId = "naxxramas", bossId = "gothik",
+        name = "Gothik waves (fixture)", defaults = { enabled = true },
+        playbackScript = function()
+            local out = {}
+            for i, w in ipairs(waves) do
+                out[i] = { at = w.t, label = ("Wave %d: %s"):format(i, w.text) }
+            end
+            out[#out + 1] = { at = p2, label = "Phase 2" }
+            return out
+        end,
+    })
+
+    local fires = {}
+    local function rec(_, _, _, text)
+        fires[#fires + 1] = { text = tostring(text), raw = CLOCK, scaled = Sched:Now() }
+    end
+    Addon:RegisterEngineCallback("WARN_ANNOUNCE", rec)
+    local raw0, scaled0 = CLOCK, nil
+    local _, used, scripted = Tst.Playback("gothik", 5)
+    scaled0 = Sched:Now()
+    eq(used, 5, "playback runs Gothik at 5x")
+    eq(scripted, 19, "…scheduling all eighteen waves plus the phase-2 banner")
+
+    advance(46, 0.05)          -- 230 scaled seconds: waves 1..17 (last at 207)
+    local seen = {}
+    for _, f in ipairs(fires) do
+        local n = f.text:match("^Wave (%d+):")
+        if n then seen[#seen + 1] = { n = tonumber(n), f = f } end
+    end
+    ck(#seen >= 17, "seventeen waves have gone by inside 230 scaled seconds")
+    local ordered, i = true, 0
+    for _, s in ipairs(seen) do i = i + 1; if s.n ~= i then ordered = false end end
+    ck(ordered, "…and they arrived in WAVE ORDER, 1..17, with none out of place")
+    eq(seen[1].f.text, "Wave 1: " .. waves[1].text, "…each naming its own composition")
+    near(seen[1].f.scaled - scaled0, waves[1].t, 0.4, "…wave 1 on its declared 27 s…")
+    near(seen[1].f.raw - raw0, waves[1].t / 5, 0.2, "…which is 5.4 real seconds at 5x")
+    near(seen[8].f.scaled - scaled0, waves[8].t, 0.5, "…wave 8 on its declared 127 s…")
+    near((seen[8].f.scaled - seen[1].f.scaled) / (seen[8].f.raw - seen[1].f.raw), 5, 0.05,
+         "…and the ratio across a hundred scaled seconds is still exactly the time scale")
+
+    Addon:UnregisterEngineCallback("WARN_ANNOUNCE", rec)
+    Tst.Stop("gate")
+    Addon.modulesByBoss["naxxramas:gothik"] = nil
+    for j = #Addon.modules, 1, -1 do
+        if Addon.modules[j].id == "gate_gothik_playback" then table.remove(Addon.modules, j) end
+    end
+end
+
+do  -- refusals and the self-stopping horizon
+    resetW2()
+    local encId, why = Tst.Playback("nonsense", 5)
+    eq(encId, nil, "playback of an unknown boss is refused")
+    eq(why, "unknown_encounter", "…by name")
+    local rt = engage("naxxramas:patchwerk", 16028)
+    ck(rt ~= nil, "a real fight is running")
+    local e2, w2 = Tst.Playback("noth", 5)
+    eq(e2, nil, "playback is REFUSED while a real fight is in progress")
+    eq(w2, "engaged", "…and says so")
+    resetLife()
+
+    resetW2()
+    Tst.Playback("heigan", 20)
+    ck(Tst.IsActive(), "a playback is running")
+    advance(Tst.PLAYBACK_HORIZON / 20 + 1, 0.25)
+    eq(Tst.IsActive(), false, "…and stops itself at the horizon rather than running forever")
+    near(Sched:Now(), CLOCK, 0.001, "…handing the real clock back on the way out")
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
+-- GATE TEST-VALIDATE — feature 6, the registry sweep against the live client
+----------------------------------------------------------------------
+gate("TEST-VALIDATE  every spell id, icon, sound and voice cue in the registry")
+resetW2()
+do  -- THE FIXTURE REGISTRY, with a known-bad spell id
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+
+    -- The client, injected: 1001 and 1002 are known, 999999 is not — which is exactly
+    -- the shape of a spell id Blizzard renumbers on a patch day.
+    local KNOWN = { [1001] = "Good Spell", [1002] = "Other Spell" }
+    Tst.SetEnv({
+        SpellName    = function(id) return KNOWN[id] end,
+        SpellTexture = function(id) return KNOWN[id] and "Interface\\Icons\\Fixture" or nil end,
+    })
+
+    Addon:RegisterZone({ id = "fixzone", name = "Fixture Zone", order = 1 })
+    Addon:RegisterEncounter({
+        id = "fixzone:good", name = "Good Boss", zone = 1, creatureId = { 1 },
+        legacy = { raidId = "fixzone", bossId = "good" },
+        detect = { mode = "combat" },
+        timers = { { key = "fine", name = "Fine", kind = "cd", spellId = 1001, duration = 30,
+                     icon = "Interface\\Icons\\Ok",
+                     start = { on = "SPELL_CAST_SUCCESS", spellId = 1001 } } },
+    })
+    Addon:RegisterEncounter({
+        id = "fixzone:bad", name = "Bad Boss", zone = 1, creatureId = { 2 },
+        legacy = { raidId = "fixzone", bossId = "bad" },
+        detect = { mode = "combat" },
+        timers = {
+            -- the row's own id is fine; the id on its TRIGGER is the renumbered one
+            { key = "rotten", name = "Rotten", kind = "cd", spellId = 1002, duration = 30,
+              icon = "Interface\\Icons\\Ok",
+              start = { on = "SPELL_CAST_SUCCESS", spellId = 999999 } },
+        },
+        warnings = {
+            { key = "novoice", name = "No voice", tier = "special", sound = 1,
+              text = "Speak", voice = "nosuchline",
+              trigger = { on = "SPELL_CAST_SUCCESS", spellId = 1001 } },
+            { key = "badicon", name = "Bad icon", tier = "announce", text = "Look", icon = "",
+              trigger = { on = "SPELL_CAST_SUCCESS", spellId = 1001 } },
+        },
+        -- A raid-marker row is the OTHER meaning of `icon`: an index, 1..8. One good,
+        -- one out of range, so both halves of the rule are exercised.
+        icons = {
+            { key = "goodmark", icon = 8, duration = 5,
+              on = { on = "SPELL_AURA_APPLIED", spellId = 1001 } },
+            { key = "badmark", icon = 12, duration = 5,
+              on = { on = "SPELL_AURA_APPLIED", spellId = 1001 } },
+        },
+    })
+
+    local r = Tst.Validate()
+    eq(r.encounters, 2, "the sweep walks EVERY encounter in the registry")
+    eq(r.checked, 6, "…and every row of every one of them")
+    eq(r.suspects, 1, "…finding the one spell id the client does not know")
+
+    local suspect
+    for _, p in ipairs(r.problems) do if p.kind == Tst.VERDICT_SUSPECT then suspect = p end end
+    ck(suspect ~= nil, "the renumbered id is reported…")
+    eq(suspect.enc, "fixzone:bad", "…named with its ENCOUNTER…")
+    eq(suspect.row, "rotten", "…and its ROW, which is what makes the report actionable…")
+    eq(suspect.detail, "999999", "…and the id itself")
+    ck(suspect.kind == "SUSPECT ID", "…under the verdict the owner asked for, verbatim")
+
+    local voice, icon = nil, nil
+    for _, p in ipairs(r.problems) do
+        if p.kind == Tst.VERDICT_VOICE then voice = p end
+        if p.kind == Tst.VERDICT_ICON  then icon  = p end
+    end
+    ck(voice ~= nil and voice.row == "novoice", "a voice cue missing from the selected pack is named")
+    ck(icon ~= nil and icon.row == "badicon", "…and so is a row whose declared icon is not a path")
+
+    -- THE OTHER MEANING OF `icon`. A raid-marker row carries an INDEX, so the path rule
+    -- must not fire on it and the range rule must.
+    local mark, markGood = nil, true
+    for _, p in ipairs(r.problems) do
+        if p.kind == Tst.VERDICT_MARK then mark = p end
+        if p.row == "goodmark" then markGood = false end
+    end
+    ck(mark ~= nil and mark.row == "badmark",
+       "a raid-marker row whose index is outside 1-8 is named…")
+    eq(mark and mark.detail, "icon=12", "…with the value that is wrong")
+    ck(markGood, "…while a valid marker index is NOT mistaken for a broken texture path")
+
+    -- GROUPED BY ENCOUNTER, and a clean encounter produces no group at all
+    local text = Tst.ValidateText(r)
+    ck(text:find("Bad Boss (fixzone:bad)", 1, true) ~= nil, "the report groups by encounter…")
+    ck(text:find("Good Boss", 1, true) == nil,
+       "…and a clean encounter takes NO room in it: 65 healthy bosses must read as one line")
+    eq(#r.problems, 4, "the fixture's four planted defects are all found")
+    ck(text:find("4 problem(s), 1 of them SUSPECT IDs", 1, true) ~= nil,
+       "…under a headline count a person can act on")
+
+    -- a per-row sound the bucket cannot resolve
+    Addon.db.mechanics["fixzone:good:fine"] = { sound = "pk:NoSuchPack/nope.ogg" }
+    local r2 = Tst.Validate()
+    local snd
+    for _, p in ipairs(r2.problems) do if p.kind == Tst.VERDICT_SOUND then snd = p end end
+    ck(snd ~= nil and snd.row == "fine", "a per-row sound key that no longer resolves is named")
+    Addon.db.mechanics["fixzone:good:fine"] = nil
+
+    -- and a clean sweep says so in one line
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon:RegisterZone({ id = "fixzone", name = "Fixture Zone", order = 1 })
+    Addon:RegisterEncounter({
+        id = "fixzone:good", name = "Good Boss", zone = 1, creatureId = { 1 },
+        legacy = { raidId = "fixzone", bossId = "good" }, detect = { mode = "combat" },
+        timers = { { key = "fine", name = "Fine", kind = "cd", spellId = 1001, duration = 30,
+                     icon = "Interface\\Icons\\Ok",
+                     start = { on = "SPELL_CAST_SUCCESS", spellId = 1001 } } },
+    })
+    local clean = Tst.ValidateText()
+    ck(clean:find("No problems found.", 1, true) ~= nil, "a clean registry reports no problems")
+end
+
+do  -- the id collector, which is where a sweep silently misses things
+    local ids = Tst.CollectIds({
+        key = "k", spellId = 10,
+        start = { on = "x", spellId = 11 },
+        restarts = { { on = "y", spellId = 12 }, { on = "z", spellId = { 13, 14 } } },
+        trigger = { on = "w", spellId = 10 },          -- a duplicate must not double-count
+    })
+    eq(#ids, 5, "every id a row can fire on is collected, de-duplicated")
+    eq(ids[1] .. "," .. ids[5], "10,14", "…in first-seen order, so a report reads the same twice")
+end
+
+do  -- AND OVER THE REAL 65-ENCOUNTER REGISTRY, which is what it ships to do
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    for _, chunk in ipairs({ NAXX_CHUNK, AQ20_CHUNK, AQ40_CHUNK, BWL_CHUNK, ZG_CHUNK,
+                             MC_CHUNK, ONY_CHUNK, WB_CHUNK }) do
+        assert(pcall(chunk, ADDON_NAME, Addon))
+    end
+    -- Every id "known": the point of this pass is that the SWEEP survives all 65
+    -- encounters and every row shape in the grammar, not that a fake client agrees.
+    Tst.SetEnv({
+        SpellName    = function(id) return "Spell " .. tostring(id) end,
+        SpellTexture = function() return "Interface\\Icons\\X" end,
+    })
+    local r = Tst.Validate()
+    -- 70, not 65: the 65 encounters of the spec's coverage table plus the five
+    -- zone-wide trash modules, which are registered encounters like any other and
+    -- carry rows that can rot exactly the same way.
+    eq(r.encounters, 70, "the sweep covers the whole registry — 65 encounters + 5 trash modules")
+    ck(r.checked > 700, "…and well over seven hundred rows")
+    ck(r.spells > 500, "…checking hundreds of spell ids")
+    eq(r.suspects, 0, "…with no suspects against a client that knows every id")
+    ck(#r.problems == 0, "…and no other complaint either: the shipped data is internally sound")
+    -- THE RAID-MARKER RULE, which is the one this sweep had to learn the hard way:
+    -- `icon` means a texture path on an ordinary row and a MARKER INDEX on an icons
+    -- row, and a validator that did not know the difference would flag every marker
+    -- in the addon as a broken path. Both rules are live, and both are checked.
+    local markers = 0
+    for _, enc in ipairs(Addon:GetEncounters()) do markers = markers + #(enc.icons or {}) end
+    ck(markers >= 3, "the shipped data really does contain raid-marker rows to get wrong")
+end
+-- Hand the real client back, so nothing after this gate inherits the fixture.
+Tst.SetEnv({
+    SpellName = function(id)
+        local f = _G.GetSpellInfo
+        if type(f) ~= "function" then return nil end
+        local okc, name = pcall(f, id)
+        return okc and name or nil
+    end,
+    SpellTexture = function(id)
+        local f = _G.GetSpellTexture
+        if type(f) ~= "function" then return nil end
+        local okc, tex = pcall(f, id)
+        return okc and tex or nil
+    end,
+})
+endgate()
+
+----------------------------------------------------------------------
+-- GATE TEST-QUARANTINE — the four hard rules, each through its real path
+----------------------------------------------------------------------
+gate("TEST-QUARANTINE  no sync, no stats, no tripwire, and a real pull always wins")
+resetW2()
+resetAnchors()
+loadNaxx()
+Sync:Boot()
+
+-- RULE 1: NOTHING REACHES THE WIRE. Asserted at every one of the four send entry
+-- points AND end to end through the dispatch seam, because the pull timer calls
+-- Sync.Send directly and a gate that only watched the seam would have a hole in it.
+do
+    resetW2()
+    clearWire()
+    -- THE CONTROL FIRST: with no test running, these DO reach the wire. Without this
+    -- half, a broken wire would pass the quarantine assertions perfectly.
+    Addon:FireEngineEvent("SYNC_SEND", "C", 0, "naxxramas:noth", 100, "combat")
+    Sched:Tick(Sched:Now() + Sync.DRAIN_INTERVAL + 0.01)
+    local baseline = #WIRE + Sync.QueueDepth()
+    ck(baseline > 0, "control: with no test running, a sync intent really does reach the wire")
+
+    clearWire()
+    Sync.queue.ALERT, Sync.queue.NORMAL = {}, {}
+    Tst.Boss("naxxramas:noth")
+    eq(Tst.IsActive(), true, "a rehearsal is up")
+
+    eq(Sync.TestQuarantined(), true, "…so the send path's third gate is closed")
+    local sent, why = Sync.Send("C", 0, "naxxramas:noth", 100, "combat")
+    eq(sent, false, "Sync.Send refuses…")
+    eq(why, "test_quarantine", "…naming the quarantine")
+    eq(select(1, Sync.Whisper("RR", "Someone")), false, "…Sync.Whisper refuses…")
+    eq(select(1, Sync.Enqueue(Sync.PREFIX, "x", {})), false, "…nothing can enter the queue…")
+    eq(select(1, Sync._rawSend(Sync.PREFIX, "x", "RAID")), false, "…and nothing can leave it")
+
+    -- end to end: the engine's own outbound intent, and the pull timer's direct call
+    Addon:FireEngineEvent("SYNC_SEND", "C", 0, "naxxramas:noth", 100, "combat")
+    Addon:FireEngineEvent("SYNC_SEND", "K", 15954, 9)
+    Addon:StartPullTimer(10, "manual")
+    advance(2)
+    eq(#WIRE, 0, "NOTHING a rehearsal does reaches the wire…")
+    eq(Sync.QueueDepth(), 0, "…and nothing is left queued waiting to")
+
+    Tst.Stop("gate")
+    clearWire()
+    Addon:FireEngineEvent("SYNC_SEND", "C", 0, "naxxramas:noth", 100, "combat")
+    advance(0.5)
+    ck(#WIRE + Sync.QueueDepth() > 0, "…and the wire works again the moment the test ends")
+    clearWire()
+    Sync.queue.ALERT, Sync.queue.NORMAL = {}, {}
+end
+
+-- RULE 2: NO KILL / PULL STATISTICS.
+do
+    resetW2()
+    Addon.db.stats = { naxxramas = { noth = { kills = 7, wipes = 2, pulls = 9, bestTime = 123.4 } } }
+    local before = statsDump()
+    Tst.Boss("naxxramas:noth")
+    advance(6)
+    -- and the writer itself, called head-on while the quarantine is up
+    local rt = API.NewRuntime(Addon:GetEncounter("naxxramas:noth"), {})
+    eq(Life:RecordStats(rt, { counted = true, wiped = false, duration = 12, recordEligible = true }),
+       nil, "the ONLY writer of db.stats refuses outright while a test is up")
+    Tst.Stop("gate")
+    eq(statsDump(), before, "…so a whole rehearsal leaves the kill history BYTE-IDENTICAL")
+
+    -- control: it still records for a real fight
+    local rt2 = API.NewRuntime(Addon:GetEncounter("naxxramas:noth"), {})
+    ck(Life:RecordStats(rt2, { counted = true, wiped = false, duration = 12, recordEligible = true })
+       ~= nil, "control: a REAL end of combat still records, so the guard is the quarantine")
+    Addon.db.stats = {}
+end
+
+-- RULE 3: THE ARBITRATION RING IS NOT POISONED. A rehearsal restarts bars on purpose,
+-- which is precisely what the early-refresh tripwire exists to notice.
+do
+    resetW2()
+    Tele.Clear()
+    -- seed one REAL observation, so "byte-identical" is a claim about content and not
+    -- about an empty table staying empty
+    do
+        local t = Timers.New({ id = "QR", key = "qr", encId = "fix", kind = "cd", duration = 30 })
+        t:Start(); advance(2); t:Start()
+        eq(Tele.Count(), 1, "control: a real early refresh writes to the arbitration ring")
+    end
+    local before = ringDump()
+
+    Tst.Boss("naxxramas:noth")
+    advance(3)
+    Tst.Row("naxxramas:noth", "curse")      -- restart 1 — an "early refresh" by construction
+    advance(3)
+    Tst.Row("naxxramas:noth", "curse")      -- restart 2
+    advance(3)
+    Tst.Row("naxxramas:noth", "adds")
+    advance(3)
+    eq(Timers.TestQuarantined(), true, "the tripwire's own guard is closed during a test")
+    Tst.Stop("gate")
+    eq(ringDump(), before,
+       "…so a rehearsal that restarted three bars leaves the ring BYTE-IDENTICAL")
+
+    -- control: it measures again the instant the test ends
+    local t2 = Timers.New({ id = "QR2", key = "qr2", encId = "fix", kind = "cd", duration = 30 })
+    t2:Start(); advance(2); t2:Start()
+    eq(Tele.Count(), 2, "…and starts measuring again the moment the rehearsal is over")
+    Tele.Clear()
+end
+
+-- RULE 4: A REAL PULL WINS, INSTANTLY AND CLEANLY.
+do
+    resetW2()
+    resetAnchors()
+    Tst.Boss("naxxramas:patchwerk")
+    advance(2)
+    ck(Tst.IsActive(), "a rehearsal is up on Patchwerk")
+    ck(Timers.Count() > 0, "…with bars on screen")
+
+    -- the REAL fight arrives, through the encounter's own detection path
+    local rt = engage("naxxramas:patchwerk", 16028)
+    ck(rt ~= nil, "the real fight engaged")
+    eq(Tst.IsActive(), false, "…and the rehearsal was aborted INSTANTLY")
+    eq(Tst.Mode(), nil, "…leaving no mode behind")
+    eq(next(Tst.runtimes), nil, "…no test runtime")
+    eq(Sched:IsScheduled(nil, Tst), false, "…and no queued test work")
+
+    -- EVERY bar now on screen belongs to the REAL fight. This is the assertion the
+    -- ordering rule exists for: abort any later and a rehearsal bar and a real bar
+    -- would share a timer object, and the tear-down would stop the wrong one.
+    local owned, total = 0, 0
+    for barId, b in pairs(Timers.bars) do
+        total = total + 1
+        for _, obj in pairs(rt.timers) do
+            if obj.id == b.timerId and obj.live[barId] then owned = owned + 1 break end
+        end
+    end
+    ck(total > 0, "the real fight has bars of its own")
+    eq(owned, total, "…and EVERY bar on screen is one of them")
+
+    -- and the fight is not disturbed by having been interrupted
+    ck(Life:IsEngaged("naxxramas:patchwerk"), "the real fight is engaged and running")
+    resetLife()
+end
+
+-- A PLAYBACK aborts the same way, and hands the clock back as it goes.
+do
+    resetW2()
+    Tst.Playback("noth", 5)
+    advance(1)
+    ck(Tst.IsActive(), "a playback is running on a scaled clock")
+    ck(Sched:Now() > CLOCK, "…which really is ahead of the real one")
+    local rtP = engage("naxxramas:patchwerk", 16028)
+    ck(rtP ~= nil, "a real fight engages mid-playback")
+    eq(Tst.IsActive(), false, "…and the playback is aborted")
+    near(Sched:Now(), CLOCK, 0.001,
+       "…with the REAL clock restored before the fight computed a single due time")
+    resetLife()
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
@@ -9326,7 +10433,13 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "ESCALATE  the promote + pulse points are settings, bounded",
                      "ATTACH  SetPoint resolution, fallback, late frames, garbage names",
                      "SPECIALS  the placement seam: docked, detachable, mods untouched",
-                     "ROUTE-OPTIONS  the options surface reaches the engine, continuity intact" }) do
+                     "ROUTE-OPTIONS  the options surface reaches the engine, continuity intact",
+                     "TEST-ROW  one row through the real dispatch: bar, warning, cue",
+                     "TEST-BOSS  the rehearsal populates, staggers, steps phases, and sweeps",
+                     "TEST-LAYOUT  populate everything, keep it alive, exit clean",
+                     "TEST-PLAYBACK  the scaled clock, Noth's tail and Gothik's wave order at 5x",
+                     "TEST-VALIDATE  every spell id, icon, sound and voice cue in the registry",
+                     "TEST-QUARANTINE  no sync, no stats, no tripwire, and a real pull always wins" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

@@ -48,6 +48,29 @@
     A module with no placeable frame (Razuvious's understudy icons live on enemy
     NAMEPLATES by construction) declares no seam and is not in the anchor system.
     That is the honest answer for it, not an omission.
+
+    ── THE PLAYBACK SEAM (2.0 testing suite) ───────────────────────────────────
+    `playbackScript` is the second optional metadata declaration, and it is the same
+    KIND of thing `placeFrame` is: a one-line accessor over an upvalue the module
+    already had.
+
+        playbackScript = function() return { { at = 27, label = "Wave 1: 3 Trainees" }, … } end
+
+    Compressed playback (`/drm playback <boss>`) runs an encounter's scheduled script
+    on a time-scaled clock so a five-minute sequence is watchable in one. It does that
+    on the ENGINE's own scheduler, which is what the declarative `schedule` rows of the
+    encounter grammar already ride — so Heigan's dance clock and Noth's teleport cycle
+    need nothing new. Gothik's eighteen waves are the exception: that schedule lives
+    inside a module and is driven by `C_Timer`, which does not read the engine clock and
+    therefore cannot be accelerated.
+
+    `playbackScript` is how such a module PUBLISHES its running order without moving it:
+    an ordered list of `{ at = <seconds after pull>, label = <what to announce> }`. The
+    testing suite schedules those on the scaled clock and speaks them through the real
+    warning dispatch; the module's own `C_Timer` machinery is neither used nor touched,
+    and NOTHING IN A MODULE'S LOGIC MOVES. A module that declares no script is simply
+    not part of a playback, which is the honest answer for the four that have no
+    schedule to play.
 --]]
 
 local _, Addon = ...

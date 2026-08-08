@@ -31,6 +31,10 @@ local COL_GAP     = 10    -- horizontal gap between drill-down columns
 local BOSS_W      = 140   -- bosses column width
 local MECH_W      = 160   -- mechanics/modules column width
 local LOCK_ROW    = 22    -- height reserved for the lock checkbox row
+local LOCK_CB_W   = 150   -- width the lock checkbox occupies in the top strip
+local TEST_BTN_W  = 120   -- per-boss rehearsal button (testing suite)
+local TEST_STOP_W = 70    -- …and its Stop, sharing the strip's one grid
+local TEST_BTN_H  = LOCK_ROW - 2
 local TOP_STRIP_H = 44    -- lock checkbox + stats line strip
 local HDR_H       = 20    -- column-header label strip
 local LIST_TOP    = TOP_STRIP_H + HDR_H
@@ -222,6 +226,27 @@ end
 -- ── Selection accessors ──────────────────────────────────────────────────────--
 local function CurKey(panel)  return panel.selMechKey end
 local function CurDef(panel)  return panel.selMechDef end
+
+-- ── The engine coordinates of the selected row (testing suite) ────────────────
+-- The per-row play/sound buttons address a row the way the ENGINE does — by
+-- (encounter id, row key) — while every control around them addresses it the way the
+-- OPTIONS tree does, by the flat mechanic key. The two are the same string by
+-- construction (API.OptionKey == Addon:MechKey), which is exactly why splitting the
+-- key by hand would be the wrong way to get there: these read the projection.
+local function CurEncId(panel)
+    local boss = Addon:GetBoss(panel.selRaid, panel.selBoss)
+    return boss and boss.encId
+end
+
+-- nil for a REMINDER pseudo-row. A reminder is a sub-setting of its parent mechanic,
+-- not a row in the encounter registry, so there is nothing for the engine to fire and
+-- the buttons say so by being disabled rather than by failing quietly.
+local function CurRowKey(panel)
+    local mech = panel.selMechDef
+    if not (mech and panel.selMechId) then return nil end
+    if tostring(panel.selMechId):find("#", 1, true) then return nil end
+    return mech.id
+end
 local function CurCfg(panel)
     if not panel.selMechKey then return {} end
     return Addon:GetMechanicConfig(panel.selMechKey, panel.selMechDef)
@@ -341,7 +366,12 @@ BuildMechDetail = function(panel)
     flow:AddSeparator()
     local pll = flow:Label("Placement")
     pll._label:SetFontObject(UI.fonts.accent)
-    d.routeDD = flow:Dropdown({
+    -- ONE ROW: where this goes, and the two buttons that show you it going there
+    -- (principle 2 — the affordance sits with the thing it exercises). Both buttons
+    -- drive ui_testing.lua, which fires the row through the REAL dispatch, so what they
+    -- produce is routed by the dropdown beside them without any special casing.
+    local rr = flow:AddRow()
+    d.routeDD = rr:Dropdown({
         label = "Show this as", width = 180, choices = routeNames(),
         get = function()
             local key, mech = CurKey(panel), CurDef(panel)
@@ -356,9 +386,26 @@ BuildMechDetail = function(panel)
             PopulateDetail(panel)
         end,
     })
+    -- Text captions rather than glyphs: the client's default face has no reliable play
+    -- symbol, and a control that renders as an empty box is an unlabelled control
+    -- (principle 6).
+    d.rowPlay = rr:Button({ text = "Play", width = 72, onClick = function()
+        local Tst, enc, rowKey = Addon.Testing, CurEncId(panel), CurRowKey(panel)
+        if not (Tst and enc and rowKey) then return end
+        Tst.Row(enc, rowKey)
+    end })
+    d.rowSound = rr:Button({ text = "Sound", width = 72, onClick = function()
+        local Tst, enc, rowKey = Addon.Testing, CurEncId(panel), CurRowKey(panel)
+        if not (Tst and enc and rowKey) then return end
+        Tst.RowSound(enc, rowKey)
+    end })
     -- The bucket's own one-liner PLUS what this row would do if left alone. A user
-    -- who has overridden a row needs to be able to see what they overrode.
+    -- who has overridden a row needs to be able to see what they overrode. It comes
+    -- FIRST because the dropdown is the primary control of the row above it.
     d.routeHint = flow:Hint("")
+    d.rowHint = flow:Hint("\"Play\" fires this one row exactly as the fight will \226\128\148 "
+        .. "real duration, real placement, real sound. Press it again to restart it. "
+        .. "\"Sound\" plays just the cue.")
 
     -- The Custom group: a Custom row gets its OWN placement record — position,
     -- optional frame attachment, size — and none of it means anything for a row
@@ -689,6 +736,24 @@ PopulateDetail = function(panel)
         end
         d.routeHint._label:SetText(line)
     end
+    -- The two testing buttons are live only for a row the ENGINE can actually fire. A
+    -- reminder pseudo-row is a sub-setting of its parent, not a registry row, so the
+    -- buttons go quiet rather than doing nothing when pressed.
+    do
+        local firable = (Addon.Testing ~= nil) and (CurEncId(panel) ~= nil)
+                        and (CurRowKey(panel) ~= nil)
+        if d.rowPlay and d.rowPlay.SetEnabled then d.rowPlay:SetEnabled(firable) end
+        if d.rowSound and d.rowSound.SetEnabled then d.rowSound:SetEnabled(firable) end
+        if d.rowHint then
+            d.rowHint._label:SetText(firable
+                and ("\"Play\" fires this one row exactly as the fight will \226\128\148 real "
+                     .. "duration, real placement, real sound. Press it again to restart it. "
+                     .. "\"Sound\" plays just the cue.")
+                or "This is a sub-setting of the mechanic above it, so there is nothing "
+                   .. "separate to fire.")
+        end
+    end
+
     groupShown(d._routeGroup, bucket == "custom")
     if bucket == "custom" then
         if d.routeAttach and d.routeAttach.attachDD then d.routeAttach.attachDD.Refresh() end
@@ -1065,7 +1130,18 @@ function Addon:BuildRaidSection(flow, raidId)
 
     -- Lock + clear previews whenever the section is hidden (switch raid/addon / close
     -- hub). flow.pane is the frame the hub hides on section switch.
-    flow.pane:HookScript("OnHide", function() Addon:LockAll() end)
+    -- …and end any rehearsal with it: a test started from this page must not outlive
+    -- the page, or a raider closes the hub and wonders why bars are still running.
+    -- …and end any REHEARSAL with it: a boss test started from this page must not
+    -- outlive the page, or a raider closes the hub and wonders why bars are still
+    -- running. LAYOUT MODE is deliberately exempt: this fires on a section switch as
+    -- well as a close, and the entire point of layout mode is that it survives while
+    -- you move around the options changing where things go.
+    flow.pane:HookScript("OnHide", function()
+        Addon:LockAll()
+        local Tst = Addon.Testing
+        if Tst and Tst.Mode() ~= "layout" then Tst.Stop("options closed") end
+    end)
 
     local drill = CreateFrame("Frame", nil, flow.pane.child)
     drill._fillWidth = true
@@ -1080,6 +1156,30 @@ function Addon:BuildRaidSection(flow, raidId)
         end,
     })
     panel.lockCB:SetPoint("TOPLEFT", drill, "TOPLEFT", 0, 0)
+
+    -- THE PER-BOSS REHEARSAL (testing suite, feature 2), at the top of the boss page
+    -- where the boss is chosen. Two buttons, one grid, laid out in `drill.arrange`
+    -- alongside the lock toggle so the whole top strip stays one row.
+    panel.bossTest = UI.MakeButton(drill, {
+        text = "Test this boss", width = TEST_BTN_W, height = TEST_BTN_H,
+        onClick = function()
+            local Tst = Addon.Testing
+            if not Tst then return end
+            local boss = Addon:GetBoss(panel.selRaid, panel.selBoss)
+            if not (boss and boss.encId) then return end
+            local r, why = Tst.Boss(boss.encId)
+            if not r and why == "engaged" then
+                print(Addon:Tag("[DRM]") .. " " .. Addon:Wrap("danger", "Test refused:")
+                      .. " a boss fight is in progress.")
+            end
+        end,
+    })
+    panel.bossStop = UI.MakeButton(drill, {
+        text = "Stop", width = TEST_STOP_W, height = TEST_BTN_H, variant = "quiet",
+        onClick = function()
+            if Addon.Testing then Addon.Testing.Stop("options") end
+        end,
+    })
 
     panel.statsLine = drill:CreateFontString(nil, "OVERLAY")
     panel.statsLine:SetFontObject(UI.fonts.small)
@@ -1133,6 +1233,16 @@ function Addon:BuildRaidSection(flow, raidId)
         local vh = flow.pane.scroll:GetHeight()
         local H = math.max(MIN_DRILL_H, (vh or 0) - flow.pane._padTop - flow.pane._padBot)
         drill:SetSize(width, H)
+
+        -- The top strip is one grid: lock toggle, then the two rehearsal buttons, each
+        -- following the one before it by a single gap (principle 4/5).
+        if panel.bossTest then
+            panel.bossTest:ClearAllPoints()
+            panel.bossTest:SetPoint("TOPLEFT", drill, "TOPLEFT", LOCK_CB_W, 0)
+            panel.bossStop:ClearAllPoints()
+            panel.bossStop:SetPoint("TOPLEFT", drill, "TOPLEFT",
+                                    LOCK_CB_W + TEST_BTN_W + COL_GAP, 0)
+        end
 
         bossHdr:ClearAllPoints(); bossHdr:SetPoint("TOPLEFT", drill, "TOPLEFT", 0, -TOP_STRIP_H)
         mechHdr:ClearAllPoints(); mechHdr:SetPoint("TOPLEFT", drill, "TOPLEFT", BOSS_W + COL_GAP, -TOP_STRIP_H)
@@ -1440,11 +1550,27 @@ function Addon:BuildBarOptions(flow, panel)
         if Addon.Bars then Addon.Bars.Demo() end
         if Addon.Warnings then Addon.Warnings.Demo() end
     end })
+    -- LAYOUT MODE (testing suite, feature 3). Same grid, same widths — this is the
+    -- fourth cell of one block, not a second block (principle 5). It is a TOGGLE, so
+    -- the caption says which way it will go, and it shares the row with the one-shot
+    -- Demo it is deliberately not replacing.
+    local layoutBtn
+    layoutBtn = place:Button({ text = "Layout mode", width = 130, onClick = function()
+        local Tst = Addon.Testing
+        if not Tst then return end
+        local on = Tst.Layout(nil)
+        btnText(layoutBtn, on and "Exit layout" or "Layout mode")
+    end })
     place:Button({ text = "Lock", width = 130, onClick = function()
         if Addon.Bars then Addon.Bars.StopDemo() end
         if Addon.Warnings then Addon.Warnings.Reset() end
+        if Addon.Testing then Addon.Testing.Stop("lock") end
+        btnText(layoutBtn, "Layout mode")
         Addon:HideHudAnchors()
     end })
+    sec:Hint("\"Demo\" draws one of everything once. \"Layout mode\" fills every list and "
+        .. "both warning tiers and KEEPS them filled while you drag, so a placement pass "
+        .. "never runs out of things to place. Also " .. "/drm layout" .. ".")
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════

@@ -362,8 +362,25 @@ function Sync.UnpackArgs(s)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  SEND PATH — the two gates the firewall rests on
+--  SEND PATH — the three gates the firewall rests on
 -- ══════════════════════════════════════════════════════════════════════════════
+-- GATE 3 of 3, and the newest: THE TESTING QUARANTINE (ui_testing.lua).
+--
+-- Nothing a rehearsal, a layout pass or a compressed playback does may reach forty
+-- other people's screens. That rule is enforced on the SEND PATH rather than at the
+-- engine seam, for the same reason the DBM transmit firewall is: `Addon:StartPullTimer`
+-- calls `Sync.Send` directly, not through SYNC_SEND, so a gate that only watched the
+-- dispatch seam would have a hole in it exactly where a placement pass presses "pull".
+--
+-- It is checked in all four send entry points — Send, Whisper, Enqueue, rawSend — so a
+-- message can neither be composed, nor enter the queue, nor leave it. Note that
+-- `Sync.Send` is refused ABOVE its SOLO loop-back: a loop-back is not wire traffic, but
+-- it does drive the corroboration machinery, and a rehearsal must not do that either.
+function Sync.TestQuarantined()
+    local T = Addon.Testing
+    return (T and type(T.IsActive) == "function" and T.IsActive()) and true or false
+end
+
 Sync.queue  = { ALERT = {}, NORMAL = {} }
 Sync.DRAIN_INTERVAL = 0.1
 Sync.BUCKET_CAP     = 10
@@ -373,9 +390,10 @@ Sync.tokensAt = nil
 Sync.sent   = 0
 Sync.draining = false
 
--- GATE 1 of 2. The wire itself. Nothing reaches SendAddonMessage except through here.
+-- GATE 1 of 3. The wire itself. Nothing reaches SendAddonMessage except through here.
 local function rawSend(prefix, payload, chatType, target)
     if Sync.IsForbiddenTxPrefix(prefix) then return blockTx(prefix, "rawSend") end
+    if Sync.TestQuarantined() then return false, "test_quarantine" end
     Sync.sent = Sync.sent + 1
     Sync.lastSent = { prefix = prefix, payload = payload, chatType = chatType, target = target }
     Sync.env.SendAddonMessage(prefix, payload, chatType, target)
@@ -383,10 +401,11 @@ local function rawSend(prefix, payload, chatType, target)
 end
 Sync._rawSend = rawSend           -- exposed for the transmit-firewall gate
 
--- GATE 2 of 2. The scheduler. A forbidden prefix cannot even enter the queue, so it
+-- GATE 2 of 3. The scheduler. A forbidden prefix cannot even enter the queue, so it
 -- can never be waiting to leave when someone later loosens gate 1.
 function Sync.Enqueue(prefix, payload, meta)
     if Sync.IsForbiddenTxPrefix(prefix) then return blockTx(prefix, "Enqueue") end
+    if Sync.TestQuarantined() then return false, "test_quarantine" end
     meta = meta or {}
     local q = Sync.queue[meta.priority == "ALERT" and "ALERT" or "NORMAL"]
     q[#q + 1] = { prefix = prefix, payload = payload,
@@ -446,6 +465,7 @@ function Sync.Send(sub, ...)
     local meta = Sync.SUB[sub]
     if not meta then return false, "unknown_sub" end
     if meta.scope == "whisper" then return false, "whisper_scope" end
+    if Sync.TestQuarantined() then return false, "test_quarantine" end
     local me = Sync.Me()
     local payload = Sync.Encode(me, sub, ...)
     local chan = Sync.Channel()
@@ -460,6 +480,7 @@ function Sync.Whisper(sub, target, ...)
     local meta = Sync.SUB[sub]
     if not meta then return false, "unknown_sub" end
     if not target or target == "" then return false, "no_target" end
+    if Sync.TestQuarantined() then return false, "test_quarantine" end
     -- §9.1: cross-realm WHISPER addon messages silently fail, so we never send one.
     if not Sync.SameRealm(target) then return false, "cross_realm" end
     local payload = Sync.Encode(Sync.Me(), sub, ...)

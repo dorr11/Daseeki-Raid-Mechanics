@@ -120,6 +120,32 @@ local function mechRow(key)
     return db.mechanics[key]
 end
 
+-- TRANSIENT OVERRIDES — IN MEMORY, NEVER SAVEDVARIABLES.
+--
+-- Layout mode (ui_testing.lua) has to put a bar of every colour class in BOTH buckets
+-- at once so a placement pass can see what a full screen looks like. Severity alone
+-- cannot express that — a class-1 bar is Major by definition — and writing the
+-- override to `db.mechanics[key].route` would leave a synthetic key sitting in a
+-- player's profile the moment they alt-F4 out of a layout pass.
+--
+-- So the answer lives here, above the saved answer, in a table that does not survive a
+-- reload. It is deliberately the FIRST thing `Route.Of` consults: a layout pass wants
+-- its sample bars where it put them even for a key the user has an opinion about.
+-- Nothing in the live path ever writes it.
+Route.transient = {}
+
+function Route.SetTransient(key, bucket)
+    if not key then return nil end
+    Route.transient[key] = Route.VALID[bucket] and bucket or nil
+    return Route.transient[key]
+end
+
+function Route.ClearTransient()
+    local n = 0
+    for k in pairs(Route.transient) do Route.transient[k] = nil; n = n + 1 end
+    return n
+end
+
 -- The live answer for one option key.
 --
 -- THE SHIP-OFF TRAP, AND WHY IT IS NOT ONE. `Route.Default` says a ship-off row is
@@ -129,6 +155,8 @@ end
 -- the row falls back to its severity — the user turned it on, they meant to see it.
 -- An explicit route always wins over both.
 function Route.Of(key, desc, shipsOff)
+    local tr = Route.transient[key]
+    if tr and Route.VALID[tr] then return tr end
     local o = mechRow(key)
     if o and Route.VALID[o.route] then return o.route end
     if shipsOff and o and o.masterEnabled == true then shipsOff = false end
