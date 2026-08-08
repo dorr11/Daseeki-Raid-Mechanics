@@ -370,6 +370,11 @@ Addon:RegisterModule({
     desc = "Per-horse icon, inline ability cooldown, health, current target + that target's mark stacks, and a running Mark count. Dead horses fade. Drag the header to move.",
     defaults = { enabled = false },
 
+    -- 2.0 placement seam (modules.lua). Metadata only; no logic moved.
+    placeKey   = KEY,
+    placeLabel = "Four Horsemen tracker",
+    placeFrame = function() return frame end,
+
     Start = function()
         Show(false)
         if not hookDone then hookDone = true; Addon:RegisterCombatHook(HookFn) end

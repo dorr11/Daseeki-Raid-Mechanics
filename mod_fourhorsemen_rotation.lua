@@ -164,6 +164,11 @@ def = Addon:RegisterModule({
     desc = "Personal corner-rotation bar: MOVE / Currently-at, your mark stacks, 12s timer; dead horseman = Safe Zone. Drag the bar to position it.",
     defaults = { enabled = false },
 
+    -- 2.0 placement seam (modules.lua). Metadata only; no logic moved.
+    placeKey   = KEY,
+    placeLabel = "Four Horsemen rotation bar",
+    placeFrame = function() return bar end,
+
     Start = function()
         EnsureBar(); Position(bar); bar:Show()
         Reset()

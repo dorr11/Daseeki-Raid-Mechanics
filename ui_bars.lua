@@ -87,12 +87,26 @@ View.THROTTLE_ANIM   = 0.01      -- §12 "…/ 0.01 s animating"
 
 -- Anchor pseudo-keys. Same shape as alerts.lua's SPECIAL_ANCHOR, so the existing
 -- saved-position machinery (db.mechanics[key].pos) carries them with no new schema.
+--
+-- 2.0 ANCHOR REWORK — THE KEYS DO NOT CHANGE, THE NAMES DO. These two lists ARE the
+-- Minor and Major buckets of the owner's routing model: "small" is where a Minor row
+-- goes, "large" is where a Major row goes and where a Minor row is promoted to. The
+-- internal keys stay `#bars.small` / `#bars.large` on purpose — they are what every
+-- existing player's saved position is filed under, and renaming them would move
+-- everybody's bars. Only the user-facing labels are renamed, which is the honest
+-- half of the rename: the concept the user sees now matches the control they set.
 Bars.ANCHOR_SMALL  = "#bars.small"
 Bars.ANCHOR_LARGE  = "#bars.large"
+Bars.ANCHOR_MINOR  = Bars.ANCHOR_SMALL      -- the routing name for the same anchor
+Bars.ANCHOR_MAJOR  = Bars.ANCHOR_LARGE
 Bars.DEFAULT_POS = {
     [Bars.ANCHOR_SMALL] = { point = "CENTER", relPoint = "CENTER", x = -300, y = 60 },
     [Bars.ANCHOR_LARGE] = { point = "CENTER", relPoint = "CENTER", x = -300, y = 150 },
 }
+-- Where a Custom row's OWN anchor starts life before the user drags it. Offset from
+-- the Minor list so a freshly-Customised row does not appear inside the stack it
+-- just left.
+Bars.CUSTOM_DEFAULT_POS = { point = "CENTER", relPoint = "CENTER", x = 0, y = -120 }
 
 -- The engine's simplified categories (§4.5) that have no declared colour index get
 -- one here. A row that DOES declare `color` always wins; this is only the fallback,
@@ -101,11 +115,14 @@ Model.CATEGORY_CLASS = {
     pull = "pull", ["break"] = "break", berserk = "berserk",
     target = 3, stage = 6, cast = 2, castnp = 2, cd = 5, cdnp = 5,
 }
--- §4.7: "colour-type 7 bars and explicitly-flagged bars start large and never shrink."
--- The three special categories are the engine's own always-important bars (a pull
--- countdown that renders small among twelve cooldowns is a defect), so they join
--- colour type 7 in that rule.
-Model.ALWAYS_LARGE = { pull = true, ["break"] = true, berserk = true }
+-- §4.7's "colour-type 7 bars and explicitly-flagged bars start large and never shrink",
+-- plus the three special categories (a pull countdown that renders small among twelve
+-- cooldowns is a defect), USED TO LIVE HERE as `Model.ALWAYS_LARGE`.
+--
+-- 2.0 ANCHOR REWORK: the rule did not change, it MOVED — to Addon.Route's Major
+-- default (ui_anchors.lua), where it is one branch of a four-way decision the user
+-- can also make by hand. Keeping a second copy here would be two sources of truth for
+-- one rule, and the copy that is not consulted is the one that goes stale.
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  SETTINGS — additive, lazily defaulted (the telemetry-ring house pattern)
@@ -115,7 +132,13 @@ Model.ALWAYS_LARGE = { pull = true, ["break"] = true, berserk = true }
 local SETTING_DEFAULTS = {
     hideAll        = false,     -- §5.4 global suppressor "hide all bar timers"
     pad            = 2,
+    -- THE TWO ESCALATION POINTS, now Major-bucket settings (owner design item 2).
+    -- `enlargeAt` is "promote a Minor row to the Major list with N seconds left";
+    -- `flashAt` is "start pulsing with N seconds left". Both shipped as fixed §12
+    -- constants; both keep those constants as their defaults, so nothing moves for
+    -- a player who never touches them.
     enlargeAt      = Model.ENLARGE_AT,
+    flashAt        = Model.FLASH_AT,
     hideAbove      = Model.HIDE_ABOVE,
     hiddenMode     = false,     -- §4.7 park long bars off-screen until they cross
     decimalBelow   = Model.DECIMAL_BELOW,
@@ -178,6 +201,13 @@ function Model.ClassOf(bar)
     return Model.CATEGORY_CLASS[bar.category] or 5
 end
 
+-- The option key a bar's user settings are filed under. Identical to
+-- API.OptionKey(encId, rowKey) by construction (core_api §E) — spelled out here so
+-- the bar surface does not have to reach into the encounter API for a string.
+function Model.OptionKeyOf(bar)
+    return tostring(bar.encId) .. ":" .. tostring(bar.key)
+end
+
 -- Whether this bar would be DRAWN. §4.5: the broadcast fires even when this is
 -- false; only the bar is withheld. The two gates are the global suppressor and the
 -- row's own bar-display override.
@@ -185,10 +215,20 @@ function Model.IsDisplayEnabled(bar)
     if settingsOf().hideAll then return false end
     local db = Addon.db
     if db and type(db.mechanics) == "table" and bar.encId and bar.key then
-        local o = db.mechanics[tostring(bar.encId) .. ":" .. tostring(bar.key)]
+        local o = db.mechanics[Model.OptionKeyOf(bar)]
         if o and o.bar == false then return false end
     end
     return true
+end
+
+-- THE BUCKET THIS BAR ROUTES TO (owner design item 1). The user's per-row choice if
+-- they made one; otherwise derived from the row's own severity. `shipsOff` is false
+-- here on purpose: a bar that is being adopted has already passed the engine's
+-- enable gate, so "the encounter ships this off" is answered and irrelevant.
+function Model.RouteOf(bar, resolvedClass)
+    local R = Addon.Route
+    if not R then return "minor" end
+    return R.Of(Model.OptionKeyOf(bar), R.DescribeBar(bar, resolvedClass), false)
 end
 
 function Model.Adopt(bar)
@@ -216,9 +256,17 @@ function Model.Adopt(bar)
     row.priority   = bar.priority and true or false
     row.count      = Model.CountOf(bar)
     row.enabled    = Model.IsDisplayEnabled(bar)
+    row.optionKey  = Model.OptionKeyOf(bar)
     row.expiredKept = nil
-    -- §4.7 "colour-type 7 bars and explicitly-flagged bars start large and never shrink"
-    if row.class == 7 or Model.ALWAYS_LARGE[row.category] or bar.large then row.enlarged = true end
+    -- ROUTING IS DECIDED ONCE, ON FIRST ADOPT, and is then as sticky as the
+    -- enlargement below it. Adopt also runs on every TIMER_UPDATE, and a bar that
+    -- migrated lists mid-fight because the engine refreshed it — or because a
+    -- Chromaggus restyle changed its colour class — would be exactly the bouncing
+    -- §4.7 forbids. The user's own change takes effect on the next cast.
+    if row.route == nil then row.route = Model.RouteOf(bar, row.class) end
+    -- §4.7 "colour-type 7 bars and explicitly-flagged bars start large and never
+    -- shrink" — which is now spelled "a Major row starts large" (owner design 2).
+    if row.route == "major" then row.enlarged = true end
     return row
 end
 
@@ -309,9 +357,34 @@ end
 
 -- §4.7 flash: "below 7.75 s remaining, on a 1.25 s cycle with a 0.5 s bright /
 -- 0.25 s ramp shape". Returns the overlay strength 0..1.
+-- The two escalation points, clamped to a sane range so a slider (or a hand-edited
+-- SavedVariables) cannot produce a bar that pulses for four minutes or promotes at
+-- negative time. The clamp lives with the READ, not with the control, so every
+-- writer is covered by one rule.
+Model.PROMOTE_MIN, Model.PROMOTE_MAX = 0, 60
+Model.PULSE_MIN,   Model.PULSE_MAX   = 0, 30
+
+local function clamp(v, lo, hi, fallback)
+    v = tonumber(v)
+    if v == nil then return fallback end
+    if v < lo then return lo end
+    if v > hi then return hi end
+    return v
+end
+
+function Model.PromoteAt(s)
+    s = s or settingsOf()
+    return clamp(s.enlargeAt, Model.PROMOTE_MIN, Model.PROMOTE_MAX, Model.ENLARGE_AT)
+end
+
+function Model.PulseAt(s)
+    s = s or settingsOf()
+    return clamp(s.flashAt, Model.PULSE_MIN, Model.PULSE_MAX, Model.FLASH_AT)
+end
+
 function Model.FlashAlpha(row, now)
     local rem = Model.SortValue(row, now)
-    if rem > Model.FLASH_AT or rem < 0 then return 0 end
+    if rem > Model.PulseAt() or rem < 0 then return 0 end
     if not settingsOf().animate then return 0 end
     local phase = (now - (row.bornAt or now)) % Model.FLASH_CYCLE
     if phase < Model.FLASH_BRIGHT then return 1 end
@@ -337,7 +410,7 @@ function Model.ColorAt(row, now)
     local s = settingsOf()
     local t = row.noColorFade and 0 or (1 - Model.Fill(row, now))
     local r, g, b = Addon:BarColor(row.class, t)
-    if not row.enlarged and Model.SortValue(row, now) > (s.enlargeAt or Model.ENLARGE_AT) then
+    if not row.enlarged and Model.SortValue(row, now) > Model.PromoteAt(s) then
         r, g, b = Addon:Desaturate(r, g, b, s.desaturate or Model.DESATURATE)
     end
     return r, g, b
@@ -347,7 +420,7 @@ end
 -- that is given time back must not bounce between the two anchors mid-fight.
 function Model.EvaluateEnlarge(row, now)
     if row.enlarged then return true end
-    if Model.SortValue(row, now) <= (settingsOf().enlargeAt or Model.ENLARGE_AT) then
+    if Model.SortValue(row, now) <= Model.PromoteAt() then
         row.enlarged = true
         row.enlargedAt = now
     end
@@ -363,7 +436,17 @@ function Model.IsHidden(row, now)
     return Model.SortValue(row, now) > (s.hideAbove or Model.HIDE_ABOVE)
 end
 
+-- WHICH LIST THIS ROW DRAWS ON. The routing decision comes first and is absolute:
+--   hidden  never drawn (the sound and the voice count still play — see the design
+--           note in ui_anchors.lua; "hidden" means not on screen, not silenced)
+--   custom  its own anchor, outside both lists, outside the sort, never promoted
+--   major   the Major list from the first frame
+--   minor   the Minor list, promoted to Major on the clock exactly as before
 function Model.AnchorOf(row, now)
+    local route = row.route or "minor"
+    if route == "hidden" then return "hidden" end
+    if route == "custom" then return "custom" end
+    if route == "major"  then return "large"  end
     if Model.IsHidden(row, now) then return "hidden" end
     if Model.EvaluateEnlarge(row, now) then return "large" end
     return "small"
@@ -426,7 +509,7 @@ end
 
 function Model.Layout(now)
     local s = settingsOf()
-    local out = { small = {}, large = {}, hidden = {} }
+    local out = { small = {}, large = {}, hidden = {}, custom = {} }
     if s.hideAll then
         for _, row in pairs(Model.rows) do row.slot = 0; out.hidden[#out.hidden + 1] = row end
         return out
@@ -441,6 +524,12 @@ function Model.Layout(now)
     end
     sortRows(out.small, (s.small and s.small.sort) or "asc", now)
     sortRows(out.large, (s.large and s.large.sort) or "asc", now)
+    -- A CUSTOM ROW IS NOT SORTED AND CARRIES NO SLOT. It keeps the spot the user
+    -- gave it; slot 0 is the honest answer to "which position in the stack", because
+    -- it is not in a stack. The list itself is ordered deterministically (never
+    -- pairs() order) so a harness — or a bug report — sees the same thing twice.
+    for i = 1, #out.custom do out.custom[i].slot = 0 end
+    table.sort(out.custom, function(a, b) return tostring(a.id) < tostring(b.id) end)
     return out
 end
 
@@ -532,9 +621,11 @@ function View.CanDraw()
     return View.ready
 end
 
+-- The honest rename (owner design item 1): these two lists are the Minor and Major
+-- buckets, and the handle a raider drags now says so.
 Bars.ANCHOR_LABEL = {
-    [Bars.ANCHOR_SMALL] = "Timer bars \226\128\148 small",
-    [Bars.ANCHOR_LARGE] = "Timer bars \226\128\148 large",
+    [Bars.ANCHOR_SMALL] = "Timer bars \226\128\148 Minor",
+    [Bars.ANCHOR_LARGE] = "Timer bars \226\128\148 Major",
 }
 
 local function anchorFrame(key)
@@ -546,13 +637,29 @@ local function anchorFrame(key)
     return a
 end
 
+-- A CUSTOM ROW GETS ITS OWN ANCHOR, built from the same machinery as the four
+-- buckets — same labelled drag handle, same attach-to resolver, same saved-position
+-- schema. That is the whole implementation of "its own placement": the bar points at
+-- its anchor and the anchor answers to ui_anchors.lua like every other anchor does.
+function Bars.RowAnchor(key, label, w, h)
+    if not key or not View.CanDraw() then return nil end
+    local existing = Addon._hudAnchors and Addon._hudAnchors[key]
+    if existing then return existing end
+    local bw, bh = Bars.Size()
+    return Addon:HudAnchor(key, label or key, Bars.CUSTOM_DEFAULT_POS, w or bw, h or bh)
+end
+
 -- Anchors are created lazily on the first bar, so a placement pass has to ask for
 -- them explicitly — otherwise "unlock" on a quiet night shows nothing to drag.
 function Bars.EnsureAnchors()
     if not View.CanDraw() then return 0 end
     anchorFrame(Bars.ANCHOR_SMALL)
     anchorFrame(Bars.ANCHOR_LARGE)
-    return 2
+    local n = 2
+    -- The fifth anchor. It belongs to the specials, but a placement pass has to be
+    -- able to reach it without a boss loaded, so it is ensured with the other four.
+    if Addon.Anchors and Addon.Anchors.EnsureSpecialsAnchor() then n = n + 1 end
+    return n
 end
 
 local function newBarFrame()
@@ -627,22 +734,10 @@ local function release(d)
     View.pool[#View.pool + 1] = d
 end
 
--- Arrange one frame for one model row. Every dimension is set here, every frame,
--- because a bar's height and width are user settings that can change mid-session.
-local function arrange(d, row, now, anchorKey, slot)
-    local s = Bars.Settings()
-    local w, h = Bars.Size()
-    if row.enlarged then w, h = w * 1.15, h * 1.25 end     -- the "large" list reads larger
-
-    d:SetSize(w, h)
-    local a = anchorFrame(anchorKey)
-    local grow = anchorKey == Bars.ANCHOR_LARGE
-                 and ((s.large and s.large.grow) or "UP")
-                 or ((s.small and s.small.grow) or "DOWN")
-    local ox, oy = Model.SlotOffset(slot, grow, h, s.pad)
-    d:ClearAllPoints()
-    d:SetPoint("CENTER", a, "CENTER", ox, oy)
-
+-- Everything about a bar's INTERNALS: the parts, their points, their sizes. Split
+-- out of `arrange` so a Custom row — which sits at its own anchor rather than in a
+-- slot — is dressed by exactly the same code and cannot drift from the two lists.
+local function dress(d, row, w, h, s)
     local iconW = s.icons and h or 0
     d.bar:ClearAllPoints()
     d.bar:SetPoint("TOPLEFT", d, "TOPLEFT", iconW, 0)
@@ -671,6 +766,48 @@ local function arrange(d, row, now, anchorKey, slot)
 
     d.spark:SetSize(16, h * 2)
     d._barId = row.id
+end
+
+-- §4.7 the enlarged geometry: 15 % wider, 25 % taller. Named because a Custom row
+-- enlarges IN PLACE and must use the same numbers as a promoted row does.
+Model.ENLARGE_W, Model.ENLARGE_H = 1.15, 1.25
+
+-- Arrange one frame for one model row on one of the two LIST anchors.
+local function arrange(d, row, now, anchorKey, slot)
+    local s = Bars.Settings()
+    local w, h = Bars.Size()
+    if row.enlarged then w, h = w * Model.ENLARGE_W, h * Model.ENLARGE_H end
+
+    d:SetSize(w, h)
+    local a = anchorFrame(anchorKey)
+    local grow = anchorKey == Bars.ANCHOR_LARGE
+                 and ((s.large and s.large.grow) or "UP")
+                 or ((s.small and s.small.grow) or "DOWN")
+    local ox, oy = Model.SlotOffset(slot, grow, h, s.pad)
+    d:ClearAllPoints()
+    d:SetPoint("CENTER", a, "CENTER", ox, oy)
+    dress(d, row, w, h, s)
+end
+
+-- …and one for a CUSTOM row, which sits at its own anchor at its own size. It STILL
+-- pulses and STILL enlarges — it just does both where it already is, instead of
+-- migrating to another list (owner design item 3).
+local function arrangeCustom(d, row, now)
+    local s = Bars.Settings()
+    local w, h = Bars.Size()
+    if Model.EvaluateEnlarge(row, now) then w, h = w * Model.ENLARGE_W, h * Model.ENLARGE_H end
+    local k = Addon.Anchors and Addon.Anchors.GetSize(row.optionKey) or 1
+    w, h = w * k, h * k
+
+    d:SetSize(w, h)
+    d:ClearAllPoints()
+    local a = Bars.RowAnchor(row.optionKey, Model.DisplayText(row), w, h)
+    if a then
+        d:SetPoint("CENTER", a, "CENTER", 0, 0)
+    elseif Addon.Anchors then
+        Addon.Anchors.Place(row.optionKey, d, Bars.CUSTOM_DEFAULT_POS)
+    end
+    dress(d, row, w, h, s)
 end
 
 local function paint(d, row, now)
@@ -720,6 +857,17 @@ function View.Refresh(now)
             drawn = drawn + 1
         end
     end
+    -- The Custom bucket. Same pool, same paint, its own anchor per row.
+    for i = 1, #layout.custom do
+        local row = layout.custom[i]
+        local d = View.live[row.id]
+        if not d then d = acquire(); View.live[row.id] = d end
+        arrangeCustom(d, row, now)
+        paint(d, row, now)
+        d:Show()
+        seen[row.id] = true
+        drawn = drawn + 1
+    end
     for id, d in pairs(View.live) do
         if not seen[id] then View.live[id] = nil; release(d) end
     end
@@ -733,7 +881,7 @@ function View.OnUpdate(elapsed, now)
     View.acc = View.acc + (elapsed or 0)
     local animating = false
     for _, row in pairs(Model.rows) do
-        if row.enlarged or Model.SortValue(row, now) <= Model.FLASH_AT then animating = true break end
+        if row.enlarged or Model.SortValue(row, now) <= Model.PulseAt() then animating = true break end
     end
     local step = animating and View.THROTTLE_ANIM or View.THROTTLE_IDLE
     if View.acc < step then return false end

@@ -2175,6 +2175,18 @@ local function projectRow(row, kind)
         icon    = row.icon,
         default = API.RowDefault(row),
         _rowKind = kind,
+        -- 2.0 ANCHOR REWORK. The options surface has to be able to answer "which
+        -- bucket does this row go to, and did the user pick it or did we derive it?"
+        -- without reaching back into the encounter definition, so the two inputs to
+        -- that answer are projected with the row.
+        --
+        -- `_shipsOff` is the STATIC declaration (`default = false` in the data), not
+        -- `API.RowDefault`'s resolved answer: the resolved answer moves with the
+        -- player's role, and a routing default that moved when a raider was promoted
+        -- to Main Tank is exactly the frozen-projection defect of AUDIT RM-1 wearing
+        -- a different hat. The static one cannot go stale because it never changes.
+        _routeDesc = Addon.Route and Addon.Route.DescribeRow(row, kind) or nil,
+        _shipsOff  = (row.default == false),
     }
     if type(row.options) == "table" then
         for k, v in pairs(row.options) do m[k] = v end

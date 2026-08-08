@@ -68,12 +68,23 @@ Warn.COMBINE_CAP_SPECIAL  = 6 -- §12 "(6 for special warnings)"
 Warn.PRECISE_FALLBACK = 1.2   -- §12 "precise-warning fallback: 1.2 s"
 Warn.VOICE_MIN_VERSION = 19   -- §5.5 "minimum acceptable voice-pack version (currently 19)"
 
+-- 2.0 ANCHOR REWORK: the two anchors are unchanged, and so are their saved-position
+-- keys. What changed is that they are now BUCKETS a row can be routed to: the
+-- announcement anchor is Minor, the special-warning anchor is Major, and a per-row
+-- control decides which one a warning arrives at (owner design item 1). Routing a
+-- warning to Major gives it the full special-warning treatment — the big face, the
+-- screen flash, the tier sound — because that IS the Major surface; the control's
+-- hint says so.
 Warn.ANCHOR_ANNOUNCE = "#warn.announce"
 Warn.ANCHOR_SPECIAL  = "#warn.special"
+Warn.ANCHOR_MINOR    = Warn.ANCHOR_ANNOUNCE
+Warn.ANCHOR_MAJOR    = Warn.ANCHOR_SPECIAL
 Warn.DEFAULT_POS = {
     [Warn.ANCHOR_ANNOUNCE] = { point = "TOP", relPoint = "TOP", x = 0, y = -190 },
     [Warn.ANCHOR_SPECIAL]  = { point = "TOP", relPoint = "TOP", x = 0, y = -120 },
 }
+-- Where a Custom warning's own anchor starts before the user drags it.
+Warn.CUSTOM_DEFAULT_POS = { point = "CENTER", relPoint = "CENTER", x = 0, y = 100 }
 
 -- §5.1: "Each special warning carries a SOUND TIER 1-4 (personal / everyone / very
 -- important / run away), and a fifth tier reserved for 'your name appeared in the
@@ -217,6 +228,27 @@ end
 Warn.announceStack = Warn.NewStack(Warn.ANNOUNCE_LINES)
 Warn.specialStack  = Warn.NewStack(Warn.SPECIAL_LINES)
 
+-- CUSTOM WARNINGS. One entry per option key, not a stack: a Custom row has its OWN
+-- place on screen, so a second occurrence of the same row replaces the first rather
+-- than pushing it down a stack that does not exist.
+Warn.customStacks = {}     -- optionKey -> entry
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  ROUTING (owner design item 1) — which bucket this warning goes to
+-- ══════════════════════════════════════════════════════════════════════════════
+function Warn.OptionKey(encId, row)
+    return tostring(encId) .. ":" .. tostring(row and row.key)
+end
+
+-- `shipsOff` is false here on purpose: by the time a warning reaches this file the
+-- engine's enable gate has already passed it (API.IsRowEnabled), so "the encounter
+-- ships this off" is a question that has been answered.
+function Warn.RouteOf(encId, row)
+    local R = Addon.Route
+    if not R then return (row and row.tier == "special") and "major" or "minor" end
+    return R.Of(Warn.OptionKey(encId, row), R.DescribeWarning(row), false)
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  §5.2 NAME COLOURING — pure, over an injectable roster
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -309,8 +341,9 @@ local function flushBatch(key)
     Warn.batches[key] = nil
     local body = Warn.FormatList(b.names, b.cap, b.special, Warn.Settings().combineSort)
     local text = b.template and b.template:gsub("%%s", body) or body
-    if b.special then Warn.ShowSpecial(b.encId, b.row, text)
-    else Warn.ShowAnnounce(b.encId, b.row, text) end
+    -- Through the router, not straight at a tier: a batched row the user routed to
+    -- Major must arrive on the Major surface like an unbatched one does.
+    Warn.Emit(b.encId, b.row, text)
 end
 
 -- §5.2 combined show: "arguments accumulate into a DE-DUPLICATED list ... and the
@@ -318,7 +351,9 @@ end
 -- TARGET RESETTING the debounce."
 function Warn.Combine(encId, row, target, opts)
     opts = opts or {}
-    local special = (row.tier == "special")
+    -- The cap and the overflow wording belong to the tier the list will ACTUALLY be
+    -- shown in, which is the routed bucket, not the declared tier.
+    local special = (Warn.RouteOf(encId, row) == "major")
     local key = tostring(encId) .. ":" .. tostring(row.key)
     local b = Warn.batches[key]
     if not b then
@@ -346,9 +381,10 @@ function Warn.Precise(encId, row, target, total)
     local key = tostring(encId) .. ":" .. tostring(row.key)
     local b = Warn.batches[key]
     if not b then
+        local special = (Warn.RouteOf(encId, row) == "major")
         b = { names = {}, seen = {}, encId = encId, row = row,
-              special = (row.tier == "special"), template = row.text,
-              cap = (row.tier == "special") and Warn.COMBINE_CAP_SPECIAL or Warn.COMBINE_CAP_ANNOUNCE }
+              special = special, template = row.text,
+              cap = special and Warn.COMBINE_CAP_SPECIAL or Warn.COMBINE_CAP_ANNOUNCE }
         Warn.batches[key] = b
         S():Schedule(Warn.PRECISE_FALLBACK, flushBatch, Warn, key)
     end
@@ -434,8 +470,8 @@ function View.CanDraw()
 end
 
 Warn.ANCHOR_LABEL = {
-    [Warn.ANCHOR_ANNOUNCE] = "Announcements",
-    [Warn.ANCHOR_SPECIAL]  = "Special warnings",
+    [Warn.ANCHOR_ANNOUNCE] = "Announcements \226\128\148 Minor",
+    [Warn.ANCHOR_SPECIAL]  = "Special warnings \226\128\148 Major",
 }
 
 local function anchorFrame(key)
@@ -444,6 +480,15 @@ local function anchorFrame(key)
     a = Addon:HudAnchor(key, Warn.ANCHOR_LABEL[key], Warn.DEFAULT_POS[key], 260, 22)
     View.anchors[key] = a
     return a
+end
+
+-- A Custom warning's own anchor — the identical machinery the two tier anchors use,
+-- so it drags the same way and answers to the same attach-to resolver.
+function Warn.RowAnchor(key, label)
+    if not key or not View.CanDraw() then return nil end
+    local existing = Addon._hudAnchors and Addon._hudAnchors[key]
+    if existing then return existing end
+    return Addon:HudAnchor(key, label or key, Warn.CUSTOM_DEFAULT_POS, 260, 22)
 end
 
 function Warn.EnsureAnchors()
@@ -512,12 +557,57 @@ local function drawStack(which, stack, anchorKey, now)
     return shown
 end
 
+-- The Custom bucket. Each entry has its own anchor and its own size multiplier; it
+-- keeps the face of the tier the encounter declared, because Custom is a decision
+-- about WHERE a warning appears, not about how loud it is.
+View.customLines = {}      -- optionKey -> line frame
+
+local function drawCustom(now)
+    local shown = 0
+    for key, e in pairs(Warn.customStacks) do
+        local dead = (now - e.at) >= (e.duration + e.duration * Warn.FADE_FRACTION)
+        local f = View.customLines[key]
+        if dead then
+            Warn.customStacks[key] = nil
+            if f then f:Hide() end
+        else
+            if not f then f = newLine(e.which); View.customLines[key] = f end
+            local s = Warn.Settings()
+            local size = (e.which == "special") and (s.specialFont or Warn.SPECIAL_FONT)
+                                                or  (s.announceFont or Warn.ANNOUNCE_FONT)
+            local a = Warn.RowAnchor(key, e.label)
+            f:ClearAllPoints()
+            if a then
+                f:SetPoint("CENTER", a, "CENTER", 0, 0)
+            elseif Addon.Anchors then
+                Addon.Anchors.Place(key, f, Warn.CUSTOM_DEFAULT_POS)
+            end
+            f:SetSize(700, size + 8)               -- BOTH dimensions, every arrange
+            local k = Addon.Anchors and Addon.Anchors.GetSize(key) or 1
+            f.text:SetText(e.text or "")
+            f.text:SetTextColor(e.r, e.g, e.b)
+            f.text:SetScale(Warn.PopScale(e, now) * k)
+            f:SetAlpha(Warn.Alpha(e, now))
+            f:Show()
+            shown = shown + 1
+        end
+    end
+    return shown
+end
+
+function Warn.CustomCount()
+    local n = 0
+    for _ in pairs(Warn.customStacks) do n = n + 1 end
+    return n
+end
+
 function View.Refresh(now)
     if not View.CanDraw() then return 0 end
     Warn.announceStack:Prune(now)
     Warn.specialStack:Prune(now)
     local n = drawStack("announce", Warn.announceStack, Warn.ANCHOR_ANNOUNCE, now)
             + drawStack("special",  Warn.specialStack,  Warn.ANCHOR_SPECIAL,  now)
+            + drawCustom(now)
     return n
 end
 
@@ -527,7 +617,8 @@ function View.OnUpdate(elapsed, now)
     if View.acc < Warn.TICK then return false end
     View.acc = 0
     View.Refresh(now)
-    if Warn.announceStack:Count() == 0 and Warn.specialStack:Count() == 0 then View.Sleep() end
+    if Warn.announceStack:Count() == 0 and Warn.specialStack:Count() == 0
+       and Warn.CustomCount() == 0 then View.Sleep() end
     return true
 end
 
@@ -658,6 +749,72 @@ function Warn.ShowSpecial(encId, row, text, now)
     return idx, body
 end
 
+-- A CUSTOM WARNING: the row's own place on screen, its own size, and the tier
+-- treatment the encounter declared. It is deliberately NOT a stack — a Custom row
+-- owns one spot, so a second occurrence replaces the first.
+function Warn.ShowCustom(encId, row, text, now)
+    local s = Warn.Settings()
+    if s.hideWarnings then return nil end
+    row = row or {}
+    local special = (row.tier == "special")
+    if special and Warn.SpecialFullySuppressed() then return nil end
+    now = now or S():Now()
+
+    local r, g, b
+    if special then
+        local st = Addon.Theme.specialText
+        r, g, b = st[1], st[2], st[3]
+    else
+        r, g, b = Addon:WarnColor(row.color or 2)
+    end
+    local body = Warn.ColorNames(text, hexOf(r, g, b))
+    local key  = Warn.OptionKey(encId, row)
+
+    if not (special and s.suppressSpecialText) then
+        Warn.customStacks[key] = {
+            text = body, r = r, g = g, b = b, at = now,
+            duration = row.duration or Warn.DURATION,
+            which = special and "special" or "announce",
+            label = row.name or row.text or row.key or key,
+            key = key,
+        }
+        View.Wake()
+        View.Refresh(now)
+    end
+    Warn.DispatchSound(encId, row, special)
+    if special then
+        Warn.Flash(row.sound or 1, now)
+        Warn.Vibrate(row.sound or 1)
+    end
+    Warn.MirrorToChat(body)
+    return key, body
+end
+
+-- THE ROUTER (owner design item 1). Every warning that reaches a surface goes
+-- through here, batched or not.
+--
+-- HIDDEN IS NOT MUTE. A hidden row still plays its sound and its voice line: the
+-- raider who picks Hidden is the one who wants the cue without the clutter, and
+-- silencing them as well is what the three global suppressors are for.
+function Warn.Emit(encId, row, text, now)
+    row = row or {}
+    local bucket = Warn.RouteOf(encId, row)
+    if bucket == "hidden" then
+        Warn.DispatchSound(encId, row, row.tier == "special")
+        return nil, nil, "hidden"
+    end
+    if bucket == "custom" then
+        local idx, body = Warn.ShowCustom(encId, row, text, now)
+        return idx, body, "custom"
+    end
+    if bucket == "major" then
+        local idx, body = Warn.ShowSpecial(encId, row, text, now)
+        return idx, body, "major"
+    end
+    local idx, body = Warn.ShowAnnounce(encId, row, text, now)
+    return idx, body, "minor"
+end
+
 -- ══════════════════════════════════════════════════════════════════════════════
 --  ENGINE SEAM
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -673,7 +830,7 @@ local function onAnnounce(_, encId, row, text, target)
     target = target or row.target
     if row.combine then return Warn.Combine(encId, row, target, nil) end
     if row.precise then return Warn.Precise(encId, row, target, row.precise.total) end
-    return Warn.ShowAnnounce(encId, row, text)
+    return Warn.Emit(encId, row, text)
 end
 
 local function onSpecial(_, encId, row, text, target)
@@ -681,7 +838,7 @@ local function onSpecial(_, encId, row, text, target)
     target = target or row.target
     if row.combine then return Warn.Combine(encId, row, target, nil) end
     if row.precise then return Warn.Precise(encId, row, target, row.precise.total) end
-    return Warn.ShowSpecial(encId, row, text)
+    return Warn.Emit(encId, row, text)
 end
 
 function Warn.Init()
@@ -695,6 +852,11 @@ end
 function Warn.Reset()
     Warn.announceStack:Clear()
     Warn.specialStack:Clear()
+    for k in pairs(Warn.customStacks) do
+        Warn.customStacks[k] = nil
+        local f = View.customLines[k]
+        if f then f:Hide() end
+    end
     for k in pairs(Warn.batches) do Warn.batches[k] = nil end
 end
 

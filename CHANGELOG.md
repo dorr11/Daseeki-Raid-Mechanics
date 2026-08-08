@@ -19,6 +19,29 @@ a fight that starts oddly still arms your timers.
   stack and a larger one for the things that matter — with spell icons, colour by school,
   and bars that recolour or rename themselves mid-fight when the fight demands it
   (Chromaggus changes his breath every pull; the bar changes with him).
+- **You decide where everything goes.** Every timer and every warning has one control on
+  its boss page: **Major**, **Minor**, **Hidden** or **Custom**.
+  - **Major** is the big list and the big centred warning — where adds, interrupts and
+    the pull timer go by default. A Major bar starts large and stays there.
+  - **Minor** is the normal stack and the ordinary announcement line. A Minor bar is
+    promoted into the Major list as its time runs out, and you choose when: "promote at
+    N seconds" and "pulse under N seconds" are now sliders instead of fixed numbers.
+  - **Hidden** takes something off your screen without silencing it. The sound and the
+    spoken countdown still play — useful for the cue you want to hear but not see.
+  - **Custom** gives that one ability its own spot: drag it wherever you like, at
+    whatever size you like, outside both lists. It never joins a stack, never migrates,
+    and still grows and pulses where you put it.
+
+  Nothing is switched off by this. Every ability starts in the bucket its own severity
+  implies, so a fresh install is already sorted the way you would have sorted it.
+- **Anchors can ride your unit frames.** Any anchor — either bar list, either warning
+  tier, the new boss-specials anchor, and every Custom ability — can be attached to your
+  **target frame**, your **player frame**, the **minimap**, or any frame you can name,
+  with a drag-adjustable offset. If that frame is hidden or does not exist — your target
+  dies, or the addon that owns it is not loaded — the content falls straight back to its
+  own position on screen. **Nothing ever vanishes because the thing it was attached to
+  went away**, and a frame that appears later is picked up automatically without a
+  reload.
 - **Honest uncertainty.** Some abilities genuinely do not have a fixed cooldown. Instead
   of inventing a number, those bars show the real WINDOW as a shaded band — "somewhere
   between 26 and 29 seconds" — and the countdown voice speaks at the earliest end of it.
@@ -45,9 +68,15 @@ a fight that starts oddly still arms your timers.
   that observation is written down instead of being announced to your raid. `/drm
   telemetry` shows which timers have been wrong and by how much — after a few raid
   nights it is a list of exactly what needs correcting.
-- **The five Naxxramas specials are intact.** The Four Horsemen rotation caller and mark
-  tracker, the Gothik wave counter, the Loatheb healer rotation, the Razuvious understudy
-  tracker and the Thaddius polarity watcher all came across with their own config panels.
+- **The five Naxxramas specials are intact — and now they are placeable like everything
+  else.** The Four Horsemen rotation caller and mark tracker, the Gothik wave counter,
+  the Loatheb healer rotation, the Razuvious understudy tracker and the Thaddius polarity
+  watcher all came across with their own config panels. The five that draw a widget now
+  dock to a single **Boss specials** anchor, so you place them once and every boss's
+  tracker turns up in the same corner — and any of them can be detached to its own spot,
+  or attached to a unit frame, from its own page. (The Razuvious tracker is the exception
+  and always was: its icons sit on the understudies' nameplates, which the game places,
+  not us.)
 - **Sound packs, made pickable.** The DBM and NovaWorldBuffs sound packs ship inside the
   addon, so they work whether or not you have those addons installed, and anything
   registered with LibSharedMedia is picked up too. Pick a default pack and the sound
@@ -72,6 +101,11 @@ Three things to know:
 - **Some alerts you never had now exist**, and a few of them ship switched ON because
   they are load-bearing (a poison cloud when Kri dies; the Twin Emperors' heal). The
   chatty ones — cleaves, thrashes, knockdowns — ship switched OFF, as before.
+- **Add and interrupt bars now start in the big list.** With Major/Minor placement, the
+  bars that name adds or an interruptible cast begin on the Major anchor instead of
+  waiting to be promoted with 11 seconds left. If you preferred them in the normal
+  stack, set that ability's placement to Minor — the control is on its own page, and it
+  is remembered per ability.
 - **Everyone in the raid should be on 2.0.0** for pull-timer sharing and kill
   confirmation to work between you. Mixed versions degrade quietly rather than erroring,
   and Raid Mechanics will never disable itself for being out of date.
@@ -86,7 +120,12 @@ everything the rebuild added. If you want to go back, keep a copy of your
 ### Also in 2.0.0
 
 - New options pages for the timer bars (size, spacing, growth direction, sort order per
-  list), the warning tiers, sound packs and the timer telemetry.
+  list, promote-at and pulse-under), the warning tiers, attachment, sound packs and the
+  timer telemetry.
+- The two bar lists are now labelled **Minor** and **Major** everywhere — on the options
+  page and on the drag handles — instead of "small" and "large". They are the same two
+  lists in the same two places; only the names changed, so your saved positions are
+  exactly where you left them.
 - `/drm telemetry`, `/drm telemetry raw` and `/drm telemetry clear`.
 - Requires Daseeki Core 2.0.0 or newer for the options window; everything else works
   standalone.

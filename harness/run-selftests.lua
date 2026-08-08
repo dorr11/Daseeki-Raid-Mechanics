@@ -151,7 +151,8 @@ local ALL_LUA = {
     "core.lua", "theme.lua", "media.lua", "soundpacks.lua",
     "core_heap.lua", "core_telemetry.lua", "core_sched.lua", "core_timers.lua",
     "core_api.lua", "core_lifecycle.lua", "core_diag.lua", "core_boot.lua", "core_sync.lua",
-    "svc_era.lua", "svc_scan.lua", "ui_bars.lua", "ui_warnings.lua", "public_api.lua",
+    "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars.lua", "ui_warnings.lua",
+    "public_api.lua",
     "alerts.lua", "dbm_bridge.lua", "modules.lua",
     "mod_loatheb_healers.lua", "mod_fourhorsemen_rotation.lua",
     "mod_fourhorsemen_tracker.lua", "mod_gothik_waves.lua",
@@ -219,6 +220,8 @@ local CHANGE_SURFACE = {
     -- wave 2
     ["svc_era.lua"] = true, ["svc_scan.lua"] = true, ["ui_bars.lua"] = true,
     ["ui_warnings.lua"] = true, ["public_api.lua"] = true,
+    -- the anchor/routing rework authored this one, on the same clean-room terms
+    ["ui_anchors.lua"] = true,
 }
 
 -- INTEROP ALLOWANCE — exact (file, token) pairs only, each with a written reason,
@@ -309,7 +312,7 @@ for _, rel in ipairs({ "core_heap.lua", "core_telemetry.lua", "core_sched.lua",
                        "core_boot.lua", "core_sync.lua" }) do
     ck(TOC_SET[rel], rel .. " IS in the load list (the new core actually ships)")
 end
-for _, rel in ipairs({ "svc_era.lua", "svc_scan.lua", "ui_bars.lua",
+for _, rel in ipairs({ "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars.lua",
                        "ui_warnings.lua", "public_api.lua" }) do
     ck(TOC_SET[rel], rel .. " IS in the load list (the wave-2 surfaces actually ship)")
 end
@@ -325,6 +328,9 @@ do  -- wave 2 stacks ON the wave-1 seam, and the toc must express that too
        "the wave-1 engine loads before the wave-2 services")
     ck(pos["svc_era.lua"] < pos["ui_bars.lua"] and pos["svc_era.lua"] < pos["ui_warnings.lua"],
        "svc_era loads before the presentation (it installs the role/class resolvers)")
+    ck(pos["ui_anchors.lua"] and pos["ui_anchors.lua"] < pos["ui_bars.lua"]
+       and pos["ui_anchors.lua"] < pos["ui_warnings.lua"],
+       "the placement model loads before the two surfaces that route through it")
     ck(pos["theme.lua"] < pos["ui_bars.lua"] and pos["media.lua"] < pos["ui_warnings.lua"],
        "the theme tokens and the sound bucket load before the surfaces that use them")
     ck(pos["alerts.lua"] and pos["alerts.lua"] > pos["ui_bars.lua"],
@@ -472,7 +478,10 @@ local ENGINE_FILES = {
     "core_sync.lua", "dbm_bridge.lua",
     -- wave 2: services, presentation, public contract. Loaded in TOC ORDER, so a
     -- load-order mistake shows up here rather than in-game.
-    "svc_era.lua", "svc_scan.lua", "ui_bars.lua", "ui_warnings.lua", "public_api.lua",
+    -- ui_anchors.lua is the placement model (routing + the anchor resolver): loaded in
+    -- TOC ORDER with the surfaces that route through it, like everything else here.
+    "svc_era.lua", "svc_scan.lua", "ui_anchors.lua", "ui_bars.lua", "ui_warnings.lua",
+    "public_api.lua",
 }
 for _, rel in ipairs(ENGINE_FILES) do
     local chunk, err = loadfile(P(rel))
@@ -2411,6 +2420,7 @@ local function resetW2()
     local bs = Bars.Settings()
     bs.hideAll, bs.hiddenMode, bs.variance, bs.varianceCountdown = false, false, true, false
     bs.animate, bs.enlargeAt, bs.hideAbove = true, 11, 60
+    bs.flashAt = 7.75                       -- the pulse point, now a Major-bucket setting
     bs.small.sort, bs.small.grow = "asc", "DOWN"
     bs.large.sort, bs.large.grow = "asc", "UP"
     local ws = Warn.Settings()
@@ -2423,6 +2433,15 @@ local function resetW2()
         ws[k] = v
     end
     Addon.db.mechanics = {}
+    -- The anchor rework's own state: per-key routing lives on db.mechanics (wiped
+    -- above), per-key placement on db.anchors. Both start clean per fixture, and the
+    -- installed-frame registry with them, so no gate can inherit another's placement.
+    Addon.db.anchors = {}
+    if Addon.Anchors then
+        Addon.Anchors.installed = {}
+        Addon.Anchors.order = {}
+        Addon.Anchors.pending = {}
+    end
 end
 
 ----------------------------------------------------------------------
@@ -2438,7 +2457,14 @@ do  -- the model adopts a real engine bar off the real seam
     ck(row ~= nil, "a TIMER_START on the engine seam creates a bar row (no polling)")
     eq(row.class, 4, "…carrying the declared colour class")
     eq(BM.DisplayText(row), "Cleave", "…and its display text")
-    eq(BM.AnchorOf(row, CLOCK), "small", "a 30 s bar sits on the SMALL list")
+    -- ANCHOR REWORK, 2026-08-07. This row asserted "small" until the owner's routing
+    -- model landed, and the change is the DESIGN, not a regression: colour class 4 is
+    -- the INTERRUPT class, and "boss-adds and interrupt-class rows default to Major"
+    -- is the model's own default table. An interrupt bar that renders small among
+    -- twelve cooldowns was the complaint the model exists to answer.
+    eq(BM.AnchorOf(row, CLOCK), "large",
+       "an INTERRUPT-class bar defaults to the Major list and starts there (routing default)")
+    eq(row.route, "major", "…because that is the bucket the severity default routes it to")
     Timers.StopAll()
     eq(BM.count, 0, "a TIMER_STOP removes the row")
 end
@@ -8701,6 +8727,563 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- THE ANCHOR / ROUTING REWORK (owner design, 2026-08-07)
+--
+-- Five gates for the five halves of the design: the routing table, the escalation
+-- points, frame attachment, the specials seam, and the options surface. Everything
+-- below drives the SHIPPING ui_anchors.lua / ui_bars.lua / ui_warnings.lua through
+-- their real paths on the injected clock — no mock of our own code anywhere.
+----------------------------------------------------------------------
+local Route   = Addon.Route
+local Anchors = Addon.Anchors
+
+-- A frame stub that is UNKIND on purpose: it answers GetPoint honestly, it can be
+-- hidden, it can report a centre and a scale, and it hooks scripts. Every one of
+-- those is a fact the resolver reads, so a stub that lied about any of them would
+-- make the attach gate meaningless.
+local function testFrame(opts)
+    opts = opts or {}
+    local f = {
+        _points = {}, _shown = (opts.shown ~= false),
+        _cx = opts.cx or 0, _cy = opts.cy or 0, _scale = opts.scale or 1,
+        _h = opts.h or 20, _hooks = {},
+    }
+    function f:SetPoint(p, rel, rp, x, y)
+        self._points[#self._points + 1] = { p = p, rel = rel, rp = rp, x = x, y = y }
+        self._last = self._points[#self._points]
+    end
+    function f:ClearAllPoints() for i = #self._points, 1, -1 do self._points[i] = nil end end
+    function f:GetPoint()
+        local L = self._last
+        if not L then return nil end
+        return L.p, L.rel, L.rp, L.x, L.y
+    end
+    function f:IsVisible() return self._shown end
+    function f:IsShown() return self._shown end
+    function f:Show() self._shown = true end
+    function f:Hide() self._shown = false end
+    function f:GetHeight() return self._h end
+    function f:GetCenter() return self._cx, self._cy end
+    function f:GetEffectiveScale() return self._scale end
+    function f:HookScript(k, fn) self._hooks[k] = self._hooks[k] or {}; table.insert(self._hooks[k], fn) end
+    function f:SetSize() end
+    function f:SetScale() end
+    return f
+end
+
+local function resetAnchors()
+    resetW2()
+    Addon.db.anchors = {}
+    Anchors.installed, Anchors.order = {}, {}
+    Anchors.hooked, Anchors.pending = {}, {}
+    Addon._hudAnchors = {}
+end
+
+----------------------------------------------------------------------
+-- GATE ROUTE — the routing table, all four buckets, both surfaces
+----------------------------------------------------------------------
+gate("ROUTE  bucket routing: severity defaults, four choices, both surfaces")
+resetAnchors()
+do  -- THE DEFAULT TABLE, asserted as a table (owner design item 1)
+    local function sev(c, cat, large) return Route.Severity({ kind = "timer", color = c,
+                                                              category = cat, large = large }) end
+    eq(sev(1), "major", "colour class 1 (ADDS) defaults to Major")
+    eq(sev(4), "major", "colour class 4 (INTERRUPT) defaults to Major")
+    eq(sev(7), "major", "colour class 7 (USER) defaults to Major — §4.7 already said so")
+    eq(sev(2), "minor", "class 2 (AoE) is Minor")
+    eq(sev(3), "minor", "class 3 (targeted) is Minor")
+    eq(sev(5), "minor", "class 5 (role) is Minor")
+    eq(sev(6), "minor", "class 6 (stage) is Minor")
+    eq(sev(nil, "pull"), "major", "the pull countdown is Major")
+    eq(sev(nil, "break"), "major", "…and so is the break timer")
+    eq(sev(nil, "berserk"), "major", "…and the berserk timer")
+    eq(sev(5, nil, true), "major", "an explicitly large-flagged bar is Major whatever its colour")
+    eq(Route.Severity({ kind = "warning", tier = "special" }), "major",
+       "a SPECIAL warning is the Major warning bucket")
+    eq(Route.Severity({ kind = "warning", tier = "announce" }), "minor",
+       "…and an announcement is the Minor one")
+    eq(Route.Severity(nil), "minor", "a row with no severity data at all is Minor, not an error")
+end
+do  -- ship-off, and the trap that is not one
+    local desc = { kind = "timer", color = 4 }
+    eq(Route.Default(desc, false), "major", "a shipped-on interrupt row defaults to Major")
+    eq(Route.Default(desc, true), "hidden",
+       "…but a row the encounter ships OFF defaults to Hidden — off and drawn is not both true")
+    Addon.db.mechanics["fix:so"] = {}
+    eq(Route.Of("fix:so", desc, true), "hidden", "the ship-off default survives an empty override row")
+    Addon.db.mechanics["fix:so"] = { masterEnabled = true }
+    eq(Route.Of("fix:so", desc, true), "major",
+       "…and retires the moment the USER switches the row on (enabled-but-invisible is the trap)")
+    Addon.db.mechanics["fix:so"] = { route = "custom" }
+    eq(Route.Of("fix:so", desc, true), "custom", "an explicit route beats every default")
+    Addon.db.mechanics["fix:so"] = { route = "nonsense" }
+    eq(Route.Of("fix:so", desc, false), "major", "…and a garbage route is ignored, not obeyed")
+    Addon.db.mechanics["fix:so"] = nil
+end
+do  -- ALL FOUR CHOICES REACH THE BAR MODEL
+    resetAnchors()
+    local t = Timers.New({ id = "R1", key = "r1", encId = "fix", kind = "cd",
+                           duration = 30, color = 2, text = "Rain" })
+    local row = BM.rows[t:Start().id]
+    eq(row.route, "minor", "an AoE bar routes Minor by default")
+    eq(BM.AnchorOf(row, CLOCK), "small", "…and draws on the Minor list")
+
+    resetAnchors()
+    Addon.db.mechanics["fix:r2"] = { route = "major" }
+    local t2 = Timers.New({ id = "R2", key = "r2", encId = "fix", kind = "cd", duration = 30 })
+    local row2 = BM.rows[t2:Start().id]
+    eq(BM.AnchorOf(row2, CLOCK), "large", "a row routed MAJOR starts on the Major list…")
+    eq(row2.enlarged, true, "…already enlarged, from the first frame")
+
+    resetAnchors()
+    Addon.db.mechanics["fix:r3"] = { route = "hidden" }
+    local t3 = Timers.New({ id = "R3", key = "r3", encId = "fix", kind = "cd", duration = 30 })
+    local row3 = BM.rows[t3:Start().id]
+    eq(BM.AnchorOf(row3, CLOCK), "hidden", "a row routed HIDDEN is not drawn…")
+    local L3 = BM.Layout(CLOCK)
+    eq(#L3.small + #L3.large + #L3.custom, 0, "…on any list…")
+    eq(#L3.hidden, 1, "…while the row itself survives, so the §4.5 broadcast still has it")
+    advance(25)
+    eq(BM.AnchorOf(row3, CLOCK), "hidden", "…and it stays hidden past the promote time")
+
+    resetAnchors()
+    Addon.db.mechanics["fix:r4"] = { route = "custom" }
+    local t4 = Timers.New({ id = "R4", key = "r4", encId = "fix", kind = "cd", duration = 30 })
+    local row4 = BM.rows[t4:Start().id]
+    eq(BM.AnchorOf(row4, CLOCK), "custom", "a row routed CUSTOM lands in its own bucket")
+    eq(row4.optionKey, "fix:r4", "…addressed by the SAME option key the checkbox writes")
+    -- and it does not disturb the sort of the lists it left
+    Timers.New({ id = "R5", key = "r5", encId = "fix", kind = "cd", duration = 50 }):Start()
+    Timers.New({ id = "R6", key = "r6", encId = "fix", kind = "cd", duration = 20 }):Start()
+    local L4 = BM.Layout(CLOCK)
+    eq(#L4.custom, 1, "the Custom bucket holds exactly the custom row")
+    eq(L4.custom[1].slot, 0, "…with NO slot: it is not in a stack, so it has no position in one")
+    eq(#L4.small, 2, "…and the two ordinary bars still stack normally")
+    eq(L4.small[1].timerId .. L4.small[2].timerId, "R6R5", "…in the ordinary sort order")
+    advance(25)
+    eq(BM.AnchorOf(row4, CLOCK), "custom",
+       "…and a Custom row NEVER migrates to a list, however little time is left")
+    eq(BM.EvaluateEnlarge(row4, CLOCK), true, "…though it does enlarge, in place")
+    ck(BM.FlashAlpha(row4, CLOCK) >= 0, "…and pulses, in place")
+end
+do  -- THE WARNING SURFACE, all four
+    resetAnchors()
+    local minorRow = { key = "wmin", tier = "announce", color = 2 }
+    local _, _, b1 = Warn.Emit("fix", minorRow, "ordinary")
+    eq(b1, "minor", "an announcement routes to the Minor warning bucket")
+    eq(Warn.announceStack:Count(), 1, "…and lands on the announcement stack")
+
+    resetAnchors()
+    local majorRow = { key = "wmaj", tier = "special", sound = 2 }
+    local _, _, b2 = Warn.Emit("fix", majorRow, "big")
+    eq(b2, "major", "a special warning routes to the Major warning bucket")
+    eq(Warn.specialStack:Count(), 1, "…and lands on the special stack")
+
+    resetAnchors()
+    Addon.db.mechanics["fix:wpro"] = { route = "major" }
+    local _, _, b3 = Warn.Emit("fix", { key = "wpro", tier = "announce" }, "promoted")
+    eq(b3, "major", "an ANNOUNCEMENT the user routed to Major…")
+    eq(Warn.specialStack:Count(), 1, "…arrives on the special surface")
+    eq(Warn.announceStack:Count(), 0, "…and not on the one it came from")
+
+    resetAnchors()
+    clearSounds()
+    Addon.db.mechanics["fix:whid"] = { route = "hidden" }
+    local idx, _, b4 = Warn.Emit("fix", { key = "whid", tier = "special", sound = 2 }, "quiet")
+    eq(b4, "hidden", "a HIDDEN warning routes nowhere visible")
+    eq(idx, nil, "…pushing onto no stack")
+    eq(Warn.specialStack:Count() + Warn.announceStack:Count(), 0, "…neither of them")
+    ck(lastSound() ~= nil, "…while the SOUND still plays: Hidden means unseen, not muted")
+
+    resetAnchors()
+    Addon.db.mechanics["fix:wcus"] = { route = "custom" }
+    local key, _, b5 = Warn.Emit("fix", { key = "wcus", tier = "announce", color = 3 }, "mine")
+    eq(b5, "custom", "a CUSTOM warning routes to its own place")
+    eq(key, "fix:wcus", "…keyed by its option key")
+    eq(Warn.CustomCount(), 1, "…held as its own single entry, not in a stack")
+    eq(Warn.announceStack:Count() + Warn.specialStack:Count(), 0, "…and on neither tier stack")
+    Warn.Emit("fix", { key = "wcus", tier = "announce", color = 3 }, "mine again")
+    eq(Warn.CustomCount(), 1,
+       "…a second occurrence REPLACES the first (one row owns one spot, it is not a stack)")
+    Warn.Reset()
+    eq(Warn.CustomCount(), 0, "…and Reset clears the custom entries with everything else")
+end
+do  -- routing is decided ONCE and does not bounce mid-fight
+    resetAnchors()
+    local t = Timers.New({ id = "RS", key = "rs", encId = "chroma", kind = "cd",
+                           duration = 60, color = 2, text = "Breath" })
+    local bar = t:Start()
+    eq(BM.rows[bar.id].route, "minor", "a generic Breath bar starts Minor")
+    Bars.Restyle(bar.id, { text = "Frost Burn", color = 4 })
+    eq(BM.rows[bar.id].route, "minor",
+       "…and the Chromaggus recolour to the INTERRUPT class does not move it mid-flight")
+    eq(BM.rows[bar.id].class, 4, "…even though the colour really did change")
+    t:Stop()
+    local bar2 = t:Start()
+    eq(BM.rows[bar2.id].route, "major",
+       "…and the NEXT cast, adopted fresh, starts in the bucket the new colour means")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE ESCALATE — the promote / pulse points as Major-bucket settings
+----------------------------------------------------------------------
+gate("ESCALATE  the promote + pulse points are settings, bounded")
+resetAnchors()
+do  -- the shipped constants are the defaults, so nothing moves for anyone
+    local s = Bars.Settings()
+    s.enlargeAt, s.flashAt = nil, nil
+    eq(BM.PromoteAt(s), 11, "the promote point defaults to §12's 11 s")
+    near(BM.PulseAt(s), 7.75, 0.001, "…and the pulse point to §12's 7.75 s")
+end
+do  -- the clamp lives with the READ, so a hand-edited SavedVariables is bounded too
+    local s = Bars.Settings()
+    s.enlargeAt = 9999;  eq(BM.PromoteAt(s), BM.PROMOTE_MAX, "an absurd promote time clamps to the maximum")
+    s.enlargeAt = -40;   eq(BM.PromoteAt(s), BM.PROMOTE_MIN, "…and a negative one to the minimum")
+    s.enlargeAt = "abc"; eq(BM.PromoteAt(s), 11, "…and a non-number falls back to the shipped default")
+    s.flashAt = 9999;    eq(BM.PulseAt(s), BM.PULSE_MAX, "the pulse point clamps the same way")
+    s.flashAt = "x";     near(BM.PulseAt(s), 7.75, 0.001, "…with the same honest fallback")
+    s.enlargeAt, s.flashAt = 11, 7.75
+end
+do  -- moving the promote point actually moves the promotion
+    resetAnchors()
+    Bars.Settings().enlargeAt = 25
+    local t = Timers.New({ id = "E1", key = "e1", encId = "fix", kind = "cd", duration = 30 })
+    local row = BM.rows[t:Start().id]
+    eq(BM.AnchorOf(row, CLOCK), "small", "a 30 s Minor bar is still Minor at 30 s left")
+    advance(6)
+    eq(BM.AnchorOf(row, CLOCK), "large", "…and promotes at the configured 25 s, not at 11")
+    Bars.Settings().enlargeAt = 11
+end
+do  -- …and the pulse point the pulse
+    resetAnchors()
+    Bars.Settings().flashAt = 20
+    local t = Timers.New({ id = "E2", key = "e2", encId = "fix", kind = "cd", duration = 30 })
+    local row = BM.rows[t:Start().id]
+    row.bornAt = CLOCK
+    eq(BM.FlashAlpha(row, CLOCK), 0, "a 30 s bar does not pulse at 30 s left")
+    advance(11)
+    row.bornAt = CLOCK
+    eq(BM.FlashAlpha(row, CLOCK), 1, "…and pulses at the configured 20 s, not at 7.75")
+    Bars.Settings().flashAt = 7.75
+end
+do  -- a Major row starts large REGARDLESS of the promote point
+    resetAnchors()
+    Bars.Settings().enlargeAt = 0
+    Addon.db.mechanics["fix:e3"] = { route = "major" }
+    local t = Timers.New({ id = "E3", key = "e3", encId = "fix", kind = "cd", duration = 300 })
+    eq(BM.AnchorOf(BM.rows[t:Start().id], CLOCK), "large",
+       "a Major row starts large even with promotion turned off entirely")
+    Bars.Settings().enlargeAt = 11
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE ATTACH — frame attachment and, above all, THE FALLBACK RULE
+----------------------------------------------------------------------
+gate("ATTACH  SetPoint resolution, fallback, late frames, garbage names")
+resetAnchors()
+do  -- the mode table, pure
+    eq(Anchors.ModeFor(nil, nil, false, false), "screen", "no dock and no host: screen")
+    eq(Anchors.ModeFor({}, "#specials", true, false), "dock", "a docked key with a live host docks")
+    eq(Anchors.ModeFor({ detached = true }, "#specials", true, true), "attach",
+       "…and a DETACHED one falls through to its own attachment")
+    eq(Anchors.ModeFor({ detached = true }, "#specials", true, false), "screen",
+       "…or to its own screen position when it has no attachment")
+    eq(Anchors.ModeFor({}, "#specials", false, false), "screen",
+       "a dock whose HOST does not exist falls back too — it never points at nothing")
+end
+do  -- SetPoint resolution against a real host
+    resetAnchors()
+    _G.TargetFrame = testFrame({ cx = 400, cy = 300 })
+    local f = testFrame({ cx = 400, cy = 300 })
+    Addon:SetMechanicPos("#t1", "CENTER", "CENTER", -300, 60)
+    Anchors.SetAttach("#t1", "target")
+    Anchors.Install("#t1", f, { label = "T1" })
+    eq(Anchors.installed["#t1"].mode, "attach", "an anchor attached to a live TargetFrame attaches")
+    eq(f._last.rel, _G.TargetFrame, "…SetPoint'd against that very frame")
+    eq(f._last.p, "CENTER", "…with the stored point")
+
+    -- THE FALLBACK RULE. The target dies; the frame hides; the bar must not vanish
+    -- and must not stay stuck to an invisible frame.
+    _G.TargetFrame:Hide()
+    eq(Anchors.Reapply("#t1"), "screen", "when the attached frame HIDES, the anchor falls back")
+    eq(f._last.rel, _G.UIParent, "…to the screen…")
+    eq(f._last.x, -300, "…at its own stored screen position, not at the frame's last spot")
+    _G.TargetFrame:Show()
+    eq(Anchors.Reapply("#t1"), "attach", "…and re-attaches the moment the frame comes back")
+end
+do  -- garbage frame names are refused SAFELY, not obeyed and not thrown
+    resetAnchors()
+    local f = testFrame()
+    Anchors.SetAttach("#t2", "frame", "ThisFrameDoesNotExist")
+    Anchors.Install("#t2", f, { label = "T2" })
+    eq(Anchors.installed["#t2"].mode, "screen", "a frame name nothing answers to falls back to screen")
+    eq(Anchors.pending["ThisFrameDoesNotExist"], true, "…and is remembered so it can heal later")
+
+    _G.NotAFrameAtAll = "a string"
+    Anchors.SetAttach("#t3", "frame", "NotAFrameAtAll")
+    local g = testFrame()
+    Anchors.Install("#t3", g, { label = "T3" })
+    eq(Anchors.installed["#t3"].mode, "screen", "a global that is NOT a frame is refused")
+    _G.NotAFrameAtAll = function() end
+    eq(Anchors.Reapply("#t3"), "screen", "…and so is one that is a function")
+    _G.NotAFrameAtAll = { SetPoint = 5 }
+    eq(Anchors.Reapply("#t3"), "screen", "…and so is a table that only LOOKS like a frame")
+    _G.NotAFrameAtAll = nil
+
+    eq(Anchors.AttachName({ attach = "frame", frameName = "   " }), nil,
+       "a whitespace-only frame name is no name at all")
+    eq(Anchors.AttachName({ attach = "frame", frameName = 17 }), nil,
+       "…and neither is a number")
+end
+do  -- LATE-CREATED FRAMES (CLIENT_ASYNC_LESSONS class 2 / Raid Prep Brief B)
+    resetAnchors()
+    _G.LateAddonFrame = nil
+    local f = testFrame()
+    Anchors.SetAttach("#t4", "frame", "LateAddonFrame")
+    Anchors.Install("#t4", f, { label = "T4" })
+    eq(Anchors.installed["#t4"].mode, "screen", "an anchor whose frame has not loaded yet sits on screen")
+    _G.LateAddonFrame = testFrame({ cx = 100, cy = 100 })
+    Anchors.ReapplyAll()
+    eq(Anchors.installed["#t4"].mode, "attach",
+       "…and attaches itself the moment that frame appears — no /reload, no re-configure")
+    eq(Anchors.pending["LateAddonFrame"], nil, "…clearing the pending record when it heals")
+    ck(_G.LateAddonFrame._hooks.OnHide ~= nil,
+       "…and hooks the OBJECT's OnShow/OnHide, so a hide re-anchors immediately (class 2)")
+    _G.LateAddonFrame = nil
+end
+do  -- self-attachment is a circular anchor: refused, not errored
+    resetAnchors()
+    _G.SelfFrame = testFrame()
+    Anchors.SetAttach("#t5", "frame", "SelfFrame")
+    eq(Anchors.Place("#t5", _G.SelfFrame), "screen",
+       "a frame told to attach to ITSELF falls back instead of building a circular anchor")
+    _G.SelfFrame = nil
+end
+do  -- dragging: where the drag LANDS depends on the mode
+    resetAnchors()
+    local f = testFrame({ cx = 500, cy = 400 })
+    Anchors.Install("#t6", f, { label = "T6" })
+    f:SetPoint("CENTER", _G.UIParent, "CENTER", 120, -40)
+    eq(Anchors.SaveDrag("#t6", f), "screen", "dragging a free anchor saves a SCREEN position")
+    eq(Addon.db.mechanics["#t6"].pos.x, 120, "…verbatim from GetPoint")
+
+    _G.TargetFrame = testFrame({ cx = 400, cy = 300 })
+    Anchors.SetAttach("#t6", "target")
+    Anchors.Reapply("#t6")
+    eq(Anchors.SaveDrag("#t6", f), "attach", "dragging an ATTACHED anchor saves an OFFSET instead")
+    local rec = Anchors.Peek("#t6")
+    eq(rec.ox, 100, "…measured from the host's centre (500-400)")
+    eq(rec.oy, 100, "…on both axes (400-300)")
+    eq(Addon.db.mechanics["#t6"].pos.x, 120,
+       "…and the stored SCREEN position is left intact, because it is the fallback")
+
+    -- class 3: the offset is converted through the effective scales, not assumed equal
+    local scaled = testFrame({ cx = 250, cy = 200, scale = 2 })
+    local host   = testFrame({ cx = 400, cy = 300, scale = 1 })
+    local ox, oy = Anchors.OffsetBetween(scaled, host)
+    eq(ox, 50, "an offset across DIFFERENT effective scales converts into the anchored frame's space")
+    eq(oy, 50, "…on both axes (class 3: never compare across coordinate spaces)")
+end
+do  -- switching modes invalidates a stale offset, and Reset clears everything
+    resetAnchors()
+    local rec = Anchors.Record("#t7")
+    rec.ox, rec.oy = 99, 99
+    Anchors.SetAttach("#t7", "minimap")
+    eq(Anchors.Peek("#t7").ox, nil,
+       "changing the attach target drops the old offset — 40px from the minimap is not 40px from the target frame")
+    Addon:SetMechanicPos("#t7", "CENTER", "CENTER", 5, 5)
+    Anchors.Reset("#t7")
+    eq(Anchors.Peek("#t7"), nil, "Reset clears the placement record")
+    eq(Addon.db.mechanics["#t7"].pos, nil, "…and the screen position with it")
+    eq(Anchors.GetAttach("#t7"), "screen", "…leaving the anchor back on the screen")
+end
+do  -- reads never litter SavedVariables
+    resetAnchors()
+    Anchors.GetAttach("#never-configured")
+    Anchors.GetSize("#never-configured")
+    Anchors.IsDetached("#never-configured")
+    eq(Addon.db.anchors["#never-configured"], nil,
+       "browsing an anchor's settings creates NO SavedVariables row (peek never writes)")
+end
+do  -- the size multiplier is bounded at both ends
+    resetAnchors()
+    eq(Anchors.GetSize("#t8"), 1, "an unconfigured row is at 100 %")
+    eq(Anchors.SetSize("#t8", 99), Anchors.SIZE_MAX, "an absurd size clamps to the maximum")
+    eq(Anchors.SetSize("#t8", 0), Anchors.SIZE_MIN, "…and zero to the minimum")
+    eq(Anchors.SetSize("#t8", "x"), 1, "…and a non-number is 100 %")
+end
+_G.TargetFrame = nil
+endgate()
+
+----------------------------------------------------------------------
+-- GATE SPECIALS — the placeKey/placeDef seam, and the mods left alone
+----------------------------------------------------------------------
+gate("SPECIALS  the placement seam: docked, detachable, mods untouched")
+resetAnchors()
+-- The five special modules are frame code end to end — they build textures, cooldown
+-- spirals and nameplate parents at Start — so the harness has never loaded them and
+-- correctly cannot. Their SEAM DECLARATION is still assertable, and it is assertable
+-- the same way GATE SYNC-VER's mutation gate asserts the self-disable veto: over the
+-- source. A missing or misspelled declaration reddens this.
+do  -- every placeable special declares the seam; the nameplate one deliberately does not
+    local want = {
+        { "mod_gothik_waves.lua",          "naxxramas:gothik:wavetracker_mod",   "frame" },
+        { "mod_loatheb_healers.lua",       "naxxramas:loatheb:healers_mod",      "container" },
+        { "mod_fourhorsemen_rotation.lua", "naxxramas:fourhorsemen:rotation_mod","bar" },
+        { "mod_fourhorsemen_tracker.lua",  "naxxramas:fourhorsemen:tracker_mod", "frame" },
+        { "thaddius.lua",                  "naxxramas:thaddius:minihealth_mod",  "mh" },
+    }
+    for _, w in ipairs(want) do
+        local rel, key, upvalue = w[1], w[2], w[3]
+        local src = readFile(P(rel)) or ""
+        ck(src:find(key, 1, true) ~= nil, rel .. " still owns its anchor key " .. key)
+        ck(src:find("placeKey", 1, true) ~= nil, rel .. " declares a placeKey…")
+        ck(src:find("placeLabel", 1, true) ~= nil, "…a label for its drag handle…")
+        ck(src:find("placeFrame = function() return " .. upvalue .. " end", 1, true) ~= nil,
+           "…and a live-frame accessor over the upvalue it already had (" .. upvalue .. ")")
+    end
+    local raz = readFile(P("mod_razuvious_understudy.lua")) or ""
+    -- An ASSIGNMENT, not the word: the file explains in prose why it has no seam, and
+    -- a gate that could not tell the explanation from the thing would be worthless.
+    ck(raz:match("placeKey%s*=") == nil,
+       "the Razuvious module declares NO placement seam: its icons live on enemy nameplates")
+    ck(raz:find("DELIBERATELY ABSENT", 1, true) ~= nil,
+       "…and says so in writing, so nobody 'fixes' it by adding one")
+end
+do  -- the seam actually installs, docked to the Specials anchor
+    resetAnchors()
+    local widget = testFrame({ h = 60 })
+    local def = { id = "gate_mod", placeKey = "#gatemod", placeLabel = "Gate mod",
+                  placeFrame = function() return widget end }
+    local host = testFrame()
+    Addon._hudAnchors[Anchors.ANCHOR_SPECIALS] = host
+    eq(Addon:InstallModuleAnchor(def), "#gatemod", "a module declaring the seam installs into the anchor system")
+    eq(Anchors.installed["#gatemod"].dock, Anchors.ANCHOR_SPECIALS, "…docked to the Specials anchor")
+    eq(Anchors.installed["#gatemod"].mode, "dock", "…and resolving as docked")
+    eq(widget._last.rel, host, "…SetPoint against the Specials anchor frame itself")
+
+    -- a second special stacks under the first, one pad apart, deterministically
+    local widget2 = testFrame({ h = 40 })
+    local def2 = { id = "gate_mod2", placeKey = "#gatemod2", placeFrame = function() return widget2 end }
+    Addon:InstallModuleAnchor(def2)
+    local _, dy = Anchors.DockOffset("#gatemod2")
+    eq(dy, -(60 + Anchors.DOCK_PAD), "a second docked special stacks one pad under the first")
+    local _, dy1 = Anchors.DockOffset("#gatemod")
+    eq(dy1, 0, "…and the first one sits on the anchor with no dead band (principle 4)")
+
+    -- DETACH ROUND TRIP: the Custom escape hatch, for a special
+    eq(Anchors.SetDetached("#gatemod", true), true, "a special can be detached to its own place")
+    eq(Anchors.installed["#gatemod"].mode, "screen", "…and then resolves on its own screen position")
+    _G.PlayerFrame = testFrame({ cx = 50, cy = 50 })
+    Anchors.SetAttach("#gatemod", "player")
+    eq(Anchors.installed["#gatemod"].mode, "attach", "…and can attach to a game frame like any anchor")
+    eq(Anchors.SetDetached("#gatemod", false), false, "…and docks again on the way back")
+    eq(Anchors.installed["#gatemod"].mode, "dock", "…exactly where it started")
+    _G.PlayerFrame = nil
+
+    -- a module with no live frame yet must not install a nil
+    local empty = { id = "gate_empty", placeKey = "#gateempty", placeFrame = function() return nil end }
+    eq(Addon:InstallModuleAnchor(empty), nil, "a module whose widget does not exist yet installs nothing")
+    eq(Anchors.installed["#gateempty"], nil, "…and leaves no half-registered anchor behind")
+end
+do  -- THE MODS THEMSELVES ARE UNTOUCHED. Pinned textually, because "we only added
+    -- metadata" is a claim, and a claim in a wave report is not a gate.
+    local mods = { "mod_gothik_waves.lua", "mod_loatheb_healers.lua",
+                   "mod_fourhorsemen_rotation.lua", "mod_fourhorsemen_tracker.lua",
+                   "thaddius.lua", "mod_razuvious_understudy.lua" }
+    for _, rel in ipairs(mods) do
+        local src = readFile(P(rel))
+        ck(src ~= nil, rel .. " is readable")
+        ck(src and src:find("Addon.Anchors", 1, true) == nil,
+           rel .. " never reaches into the anchor system — the SEAM does the work")
+        ck(src and src:find("Addon.Route", 1, true) == nil,
+           rel .. " never reaches into the routing model either")
+    end
+    for _, rel in ipairs({ "mod_gothik_waves.lua", "mod_loatheb_healers.lua",
+                           "mod_fourhorsemen_rotation.lua", "mod_fourhorsemen_tracker.lua",
+                           "thaddius.lua" }) do
+        local src = readFile(P(rel))
+        ck(src and src:find("local function Position", 1, true) ~= nil,
+           rel .. " still owns its original Position() — nothing was rewritten, only declared")
+        ck(src and src:find("placeFrame = function", 1, true) ~= nil,
+           rel .. " declares the seam as a one-line accessor over an upvalue it already had")
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE ROUTE-OPTIONS — the surface reaches the engine, and nothing else moved
+----------------------------------------------------------------------
+gate("ROUTE-OPTIONS  the options surface reaches the engine, continuity intact")
+resetAnchors()
+do  -- the projection carries what the control needs to answer
+    loadNaxx()
+    API.PublishOptionsTree()
+    local boss = Addon:GetBoss("naxxramas", "patchwerk")
+    ck(boss ~= nil, "the projected tree still has Patchwerk")
+    local mech = boss.mechanics[1]
+    ck(type(mech._routeDesc) == "table", "every projected row carries its severity descriptor")
+    eq(type(mech._shipsOff), "boolean", "…and whether the encounter ships it off")
+    -- OPTION KEY CONTINUITY: the string the checkbox writes IS the string the engine reads
+    eq(API.OptionKey(boss.encId, mech.id), Addon:MechKey("naxxramas", "patchwerk", mech.id),
+       "API.OptionKey == Addon:MechKey — the routing control writes the key the engine reads")
+end
+do  -- the dropdown's write reaches the bar model, through the real seam
+    resetAnchors()
+    local key = "naxxramas:patchwerk:hateful"
+    Route.Set(key, "custom")
+    eq(Addon.db.mechanics[key].route, "custom", "the control writes ONE additive field on the existing row")
+    local t = Timers.New({ id = "OK1", key = "hateful", encId = "naxxramas:patchwerk",
+                           kind = "cd", duration = 30 })
+    eq(BM.rows[t:Start().id].route, "custom",
+       "…and the very next bar on that key is drawn in the bucket the user picked")
+    Route.Clear(key)
+    eq(Addon.db.mechanics[key].route, nil, "clearing the override removes the field entirely…")
+    local t2 = Timers.New({ id = "OK2", key = "hateful", encId = "naxxramas:patchwerk",
+                            kind = "cd", duration = 30 })
+    eq(BM.rows[t2:Start().id].route, "minor", "…and the row falls back to its derived default")
+end
+do  -- THE EXISTING TOGGLES ARE UNAFFECTED — routing is a fifth field, not a replacement
+    resetAnchors()
+    local key = "naxxramas:patchwerk:hateful"
+    Addon.db.mechanics[key] = { masterEnabled = false, sound = "raidwarning",
+                                scale = 1.2, route = "major" }
+    local cfg = Addon:GetMechanicConfig(key, { style = "bar" })
+    eq(cfg.masterEnabled, false, "the master enable still reads through GetMechanicConfig")
+    eq(cfg.sound, "raidwarning", "…and the per-row sound")
+    eq(cfg.scale, 1.2, "…and the per-row scale")
+    eq(Route.Of(key, { kind = "timer", color = 2 }, false), "major",
+       "…while the new routing field reads alongside them, not instead of them")
+    -- and the §4.5 per-row bar suppressor is still its own separate thing
+    Addon.db.mechanics[key].bar = false
+    local t = Timers.New({ id = "OK3", key = "hateful", encId = "naxxramas:patchwerk",
+                           kind = "cd", duration = 30 })
+    local row = BM.rows[t:Start().id]
+    eq(row.enabled, false, "the bar-display override still withholds the bar…")
+    eq(row.route, "major", "…without touching which bucket it would have gone to")
+    Addon.db.mechanics[key] = nil
+end
+do  -- SavedVariables stays additive: nothing the rework writes lives outside these three
+    resetAnchors()
+    Route.Set("fix:x", "hidden")
+    Anchors.SetAttach("fix:x", "minimap")
+    Anchors.SetSize("fix:x", 1.4)
+    Addon:SetMechanicPos("fix:x", "CENTER", "CENTER", 10, 20)
+    eq(Addon.db.mechanics["fix:x"].route, "hidden", "the bucket rides db.mechanics[key].route")
+    eq(Addon.db.mechanics["fix:x"].pos.x, 10, "the screen position rides db.mechanics[key].pos, as before")
+    eq(Addon.db.anchors["fix:x"].attach, "minimap", "the attachment rides the new db.anchors[key]")
+    near(Addon.db.anchors["fix:x"].size, 1.4, 0.001, "…with the size multiplier")
+    eq(next(Addon.MIGRATIONS), nil,
+       "…and the migration chain is STILL EMPTY: nothing existing changed shape, so nothing needed converting")
+    local core = readFile(P("core.lua")) or ""
+    ck(core:find("local DB_VERSION = 3", 1, true) ~= nil,
+       "…and DB_VERSION did not move (a bump here would be the tell that the change was not additive)")
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
@@ -8738,7 +9321,12 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "W5-SURFACES  the options panes' own logic: telemetry viewer + sound packs",
                      "W5-RELEASE  the assertable release-gate rows",
                      "W5-DBFIX  the owner's SavedVariables shape survives the upgrade",
-                     "BRIEF-N  roster + talents read when they exist (RM-1, RM-2, RM-3)" }) do
+                     "BRIEF-N  roster + talents read when they exist (RM-1, RM-2, RM-3)",
+                     "ROUTE  bucket routing: severity defaults, four choices, both surfaces",
+                     "ESCALATE  the promote + pulse points are settings, bounded",
+                     "ATTACH  SetPoint resolution, fallback, late frames, garbage names",
+                     "SPECIALS  the placement seam: docked, detachable, mods untouched",
+                     "ROUTE-OPTIONS  the options surface reaches the engine, continuity intact" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

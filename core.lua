@@ -153,6 +153,12 @@ function Addon:Init()
 
     db.mechanics = db.mechanics or {}   -- key -> override table (see GetMechanicConfig)
     db.modules   = db.modules or {}     -- moduleId -> { enabled, ...config } (see modules.lua)
+    -- 2.0 anchor rework: anchorKey -> { attach, frameName, point, relPoint, ox, oy,
+    -- size, detached } (see ui_anchors.lua). PURELY ADDITIVE — the bucket a row routes
+    -- to lives on db.mechanics[key].route and the screen position still lives on
+    -- db.mechanics[key].pos, so DB_VERSION does not move and the migration chain
+    -- stays a no-op. Records are written only when something is actually configured.
+    db.anchors   = db.anchors or {}
     -- Debug log: persisted to SavedVariables (NOT a transient in-memory table) so it
     -- survives /reload and disk-writes automatically on logout, like everything else
     -- here. debugLive = the in-progress current raid sitting; debugSessions = past

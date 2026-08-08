@@ -198,6 +198,14 @@ end
 -- sets BOTH dimensions at creation" applies here too. Positions ride the SAME saved
 -- machinery alerts.lua already uses (db.mechanics[key].pos via SetMechanicPos), so
 -- no new schema and no new migration.
+--
+-- 2.0 ANCHOR REWORK: an anchor's POSITION is no longer set here. Every anchor —
+-- the four buckets, the Specials anchor, and every Custom row's own handle — is
+-- installed into ui_anchors.lua's resolver, which decides between screen / attached
+-- to a named game frame / docked, and re-decides whenever the world changes. This
+-- function still owns the FRAME (size, label, dress, drag); it just no longer owns
+-- where the frame is. Without the resolver (a load-order accident, or a headless
+-- harness with no frames) it falls straight back to the stored screen position.
 Addon._hudAnchors = {}
 
 function Addon:HudAnchor(key, label, defaultPos, w, h)
@@ -206,9 +214,18 @@ function Addon:HudAnchor(key, label, defaultPos, w, h)
     if type(_G.CreateFrame) ~= "function" then return nil end
     a = _G.CreateFrame("Frame", nil, _G.UIParent, "BackdropTemplate")
     a:SetSize(w or 220, h or 22)                       -- BOTH dimensions at creation
-    local pos = Addon:GetAnchorPos(key, defaultPos)
-    a:SetPoint(pos.point or "CENTER", _G.UIParent, pos.relPoint or "CENTER",
-               pos.x or 0, pos.y or 0)
+    Addon._hudAnchors[key] = a                         -- before Install: it looks itself up
+    -- Claimed BEFORE Install, so Anchors.HookDrag does not add a HookScript that the
+    -- explicit SetScript below would then replace (leaving a drag that saves twice, or
+    -- not at all). This frame's drag handler is written here and only here.
+    a._drmAnchorDragHooked = true
+    if Addon.Anchors then
+        Addon.Anchors.Install(key, a, { label = label, defaultPos = defaultPos })
+    else
+        local pos = Addon:GetAnchorPos(key, defaultPos)
+        a:SetPoint(pos.point or "CENTER", _G.UIParent, pos.relPoint or "CENTER",
+                   pos.x or 0, pos.y or 0)
+    end
     a.label = a:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     a.label:SetPoint("CENTER")                         -- principle 3: centred in its panel
     a.label:SetJustifyH("CENTER")
@@ -217,12 +234,18 @@ function Addon:HudAnchor(key, label, defaultPos, w, h)
     a.label:SetText(label or key)
     a:SetMovable(true)
     a:SetScript("OnMouseDown", function(s) s:StartMoving() end)
+    -- Where the drag LANDS depends on the anchor's mode: free anchors store a screen
+    -- position, attached/docked ones store an offset from their host. That decision
+    -- belongs to the resolver, not here.
     a:SetScript("OnMouseUp", function(s)
         s:StopMovingOrSizing()
-        local p, _, rp, x, y = s:GetPoint()
-        Addon:SetMechanicPos(key, p, rp, x, y)
+        if Addon.Anchors then
+            Addon.Anchors.SaveDrag(key, s)
+        else
+            local p, _, rp, x, y = s:GetPoint()
+            Addon:SetMechanicPos(key, p, rp, x, y)
+        end
     end)
-    Addon._hudAnchors[key] = a
     Addon:SetAnchorDressed(a, false)
     return a
 end
