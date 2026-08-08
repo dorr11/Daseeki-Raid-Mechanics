@@ -22,11 +22,19 @@ Daseeki Raid Mechanics is the Daseeki suite's boss-mechanic alert addon for WoW 
 - **Self-auditing timers**: when an ability comes back sooner than expected, the observation is written down rather than announced to your raid. `/drm telemetry` shows which timers have been wrong and by how much
 - **Five bespoke Naxxramas modules**: the Four Horsemen rotation caller and mark tracker, the Gothik wave counter, the Loatheb healer rotation, the Razuvious understudy tracker and the Thaddius polarity watcher, each with its own config panel. The ones that draw a widget dock to a single Boss specials anchor — place it once, every boss's tracker turns up there — and any of them can be detached to its own spot
 - **Sound packs included**: the DBM and NovaWorldBuffs sound packs ship inside the addon, so they work whether or not you have those addons installed, and anything registered with LibSharedMedia is picked up too. Pick a default pack and the picker opens filtered to it
+- **Rehearse any fight out of combat**: every boss page has a **Test this boss** button that runs the whole encounter's display — engage banner, every enabled timer at its real value, the warnings walked out a second apart, the phases stepped, the boss's own tracker switched on — and every ability has **Play** and **Sound** buttons of its own. A test never sends anything to your raid, never touches your kill record, and is dropped instantly if a real pull starts
+- **`/drm layout`** fills every list and both warning tiers with one of everything and **keeps them there** while you drag, so a placement pass never runs out of things to place
+- **`/drm playback <boss>`** replays a scripted fight at 5x — Heigan's dance clock, Noth's teleport cycle, Gothik's eighteen add waves — so a five-minute sequence takes one minute to check
+- **`/drm validate`** checks all 65 encounters against your actual client in one pass: every spell ID, icon, sound file and voice line, listed by boss and ability. Run it after a patch — a renumbered spell ID is an alert that silently stops firing
 - **`/drm demo`** draws the whole display out of combat — one bar of every kind, one line of every warning tier, and labelled draggable anchors — so you can place everything without needing a boss
 
 ## Chat Commands
 - `/drm` — open the Raid Mechanics section in the Daseeki hub
 - `/drm demo` / `/drm demo off` — draw the whole display out of combat
+- `/drm layout` — persistent placement mode: fill every surface and keep it filled
+- `/drm playback <boss> [speed]` — replay a scripted encounter on an accelerated clock
+- `/drm validate` — check every encounter's spell IDs, icons, sounds and voice cues
+- `/drm stop` — end whatever the testing suite is doing
 - `/drm anchors` / `/drm lock` — show or hide the draggable HUD anchors
 - `/drm pull <sec>` / `/drm pull cancel` — start or cancel a raid pull timer
 - `/drm telemetry` — the timer observation report

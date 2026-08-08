@@ -182,6 +182,20 @@ Addon:RegisterModule({
     placeLabel = "Gothik wave tracker",
     placeFrame = function() return frame end,
 
+    -- 2.0 playback seam (modules.lua). Metadata only, and the same shape as the
+    -- placement seam above: a one-line accessor over the WAVES upvalue this file has
+    -- had since it was written. This module's wave clock rides C_Timer, which cannot
+    -- be time-scaled, so compressed playback reads the ORDER from here and schedules
+    -- it on the engine's own clock instead. Nothing below Start/Stop/Test moved.
+    playbackScript = function()
+        local out = {}
+        for i, w in ipairs(WAVES) do
+            out[i] = { at = w.t, label = ("Wave %d: %s"):format(i, w.text) }
+        end
+        out[#out + 1] = { at = PHASE2_T, label = "Phase 2 \226\128\148 Gothik Engaging!" }
+        return out
+    end,
+
     Start = function()
         startTime = GetTime()
         Show(false)

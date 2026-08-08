@@ -22,7 +22,9 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         end
 
     elseif msg == "unlock" or msg == "test" then
-        p("Open " .. W("text", "/drm") .. " options and use the " .. W("text", "Unlock frames") .. " checkbox (top) to drag a boss's frames into place.")
+        p("Placement: " .. W("text", "/drm layout") .. " fills every list and keeps it filled while you drag."
+          .. " Per boss: open " .. W("text", "/drm") .. " options and press " .. W("text", "Test this boss")
+          .. " at the top of its page; " .. W("text", "Play") .. " beside any row fires that row alone.")
 
     elseif msg == "lock" then
         if Addon.LockAll then Addon:LockAll() end
@@ -92,6 +94,73 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         Addon:HideHudAnchors()
         p(("Demo cleared (%d bars stopped)."):format(n))
 
+    -- LAYOUT MODE (testing suite, feature 3). The persistent sibling of `demo`: `demo`
+    -- is the one-shot quick version and stays exactly what it is; this one populates
+    -- EVERYTHING — every colour class in BOTH buckets, both warning tiers, a docked
+    -- special sample — and KEEPS it alive while the anchors are dragged, refreshing as
+    -- placement changes. Typing it again turns it off and restores a clean screen.
+    elseif msg == "layout" or msg == "layout on" or msg == "layout off" then
+        local Tst = Addon.Testing
+        if not Tst then p("The testing suite is not loaded.") return end
+        local want
+        if msg == "layout on" then want = true elseif msg == "layout off" then want = false end
+        local on, why = Tst.Layout(want)
+        if why == "engaged" then
+            p("Layout mode " .. W("danger", "refused") .. " — a boss fight is in progress.")
+        elseif on then
+            p("Layout mode " .. W("ok", "ON") .. " — every bar list, both warning tiers and a"
+              .. " docked special are populated and will stay that way. Drag the labelled"
+              .. " handles; " .. W("text", "/drm layout") .. " again to exit.")
+        else
+            p("Layout mode " .. W("danger", "OFF") .. " — screen restored.")
+        end
+
+    -- COMPRESSED PLAYBACK (testing suite, feature 4). `/drm playback <boss> [speed]`.
+    elseif msg == "playback" or msg:match("^playback%s") then
+        local Tst = Addon.Testing
+        if not Tst then p("The testing suite is not loaded.") return end
+        local rest = msg:match("^playback%s+(.+)$")
+        if not rest then
+            p("usage: " .. W("text", "/drm playback <boss> [speed]")
+              .. " — e.g. " .. W("text", "/drm playback heigan 5") .. ".")
+            return
+        end
+        -- The trailing number is the speed when there is one; everything else is the
+        -- boss reference, so "four horsemen 8" parses the way a person would read it.
+        local ref, spd = rest:match("^(.-)%s+([%d%.]+)$")
+        if not ref then ref, spd = rest, nil end
+        local encId, used = Tst.Playback(ref, tonumber(spd))
+        if not encId then
+            if used == "engaged" then
+                p("Playback " .. W("danger", "refused") .. " — a boss fight is in progress.")
+            else
+                p("No encounter matches " .. W("text", ref) .. ".")
+            end
+        else
+            p(("Playing back %s at %s. %s to end it early."):format(
+                W("text", encId), W("ok", used .. "x"), W("text", "/drm stop")))
+        end
+
+    -- One word that ends whatever the testing suite is doing.
+    elseif msg == "stop" or msg == "test stop" then
+        local Tst = Addon.Testing
+        if Tst and Tst.Stop("slash") then
+            p("Test " .. W("danger", "stopped") .. " — bars swept, warnings cleared.")
+        else
+            p("Nothing to stop.")
+        end
+
+    -- DATA VALIDATION (testing suite, feature 6). Patch-day insurance: every spell id
+    -- in all 65 encounters through the live client, plus icons, sounds and voice cues.
+    elseif msg == "validate" then
+        local Tst = Addon.Testing
+        if not Tst then p("The testing suite is not loaded.") return end
+        local r = Tst.RunValidate()
+        if r.suspects > 0 then
+            p(("%s %d SUSPECT spell id(s) — those rows can never fire on this client."):format(
+                W("danger", "Validation:"), r.suspects))
+        end
+
     -- Just the anchors, no demo content: for nudging a placement mid-session.
     elseif msg == "anchors" then
         if Addon.Bars then Addon.Bars.EnsureAnchors() end
@@ -143,6 +212,6 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         p("Alerts " .. W("danger", "disabled") .. ".")
 
     else
-        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | demo | demo off | anchors | stats | telemetry | telemetry raw | telemetry clear | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
+        p("usage: " .. W("text", "/drm") .. " [options | pull <sec> | pull cancel | demo | demo off | layout | playback <boss> [speed] | stop | validate | anchors | stats | telemetry | telemetry raw | telemetry clear | test | lock | debug | debugonly | log | savelog | clearlog | clearsessions | enable | disable]")
     end
 end

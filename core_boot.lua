@@ -57,6 +57,10 @@ function Addon:InitEngine()
     if Addon.Bars     then Addon.Bars.Init()     end   -- ui_bars.lua
     if Addon.Warnings then Addon.Warnings.Init() end   -- ui_warnings.lua
     if Addon.Callbacks and Addon.Callbacks.Init then Addon.Callbacks.Init() end  -- public_api.lua
+    -- The testing suite goes LAST of the presentation group: it drives the two surfaces
+    -- above through their real paths and must not be able to register a callback ahead
+    -- of the surface it is testing.
+    if Addon.Testing then Addon.Testing.Init() end     -- ui_testing.lua
 
     -- Project the encounter registry into the raid/boss/mechanic tree options.lua
     -- consumes. Runs AFTER svc_era installed the role/class resolvers, because a

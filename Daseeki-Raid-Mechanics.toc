@@ -52,6 +52,11 @@ ui_anchors.lua
 ui_bars.lua
 ui_warnings.lua
 public_api.lua
+# ui_testing.lua is the TESTING SUITE (per-row play/sound, per-boss rehearsal, layout
+# mode, compressed playback, /drm validate). It drives the two surfaces above and the
+# placement model through their REAL paths and owns no rendering of its own, so it must
+# follow all three. It reaches modules.lua and the encounter registry at CALL time only.
+ui_testing.lua
 
 alerts.lua
 dbm_bridge.lua

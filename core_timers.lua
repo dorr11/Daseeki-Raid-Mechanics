@@ -178,7 +178,20 @@ function Timers.ClassifyRefresh(remaining, variance)
     return nil, remaining
 end
 
+-- QUARANTINE RULE 3 (ui_testing.lua). The ring this writes to is the ARBITRATION
+-- INSTRUMENT: `/drm telemetry` reads it to say which shipped timer value is wrong,
+-- with numbers off Drew's own raids. A rehearsal restarts bars on purpose — pressing
+-- the per-row play button twice IS an early refresh — so a test run that wrote here
+-- would poison the dataset with observations of nothing. The refusal is at the WRITE,
+-- not at the eligibility check, because `TripwireEligible` is a semantic rule about
+-- the timer and this is a rule about the situation.
+function Timers.TestQuarantined()
+    local T = Addon.Testing
+    return (T and type(T.IsActive) == "function" and T.IsActive()) and true or false
+end
+
 function Timers.CheckEarlyRefresh(timer, prev, now)
+    if Timers.TestQuarantined() then return nil end
     local remaining = prev.endsAt - now
     local verdict, delta = Timers.ClassifyRefresh(remaining, prev.hasVariance and prev.variance or nil)
     if not verdict then return nil end

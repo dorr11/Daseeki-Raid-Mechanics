@@ -34,7 +34,11 @@ Daseeki Core options hub.
 | Command | Does |
 |---|---|
 | `/drm` | Open the options hub |
-| `/drm demo` / `/drm demo off` | Draw the whole display out of combat |
+| `/drm demo` / `/drm demo off` | Draw the whole display out of combat (one shot) |
+| `/drm layout` | Persistent placement mode: fill every surface and keep it filled |
+| `/drm playback <boss> [speed]` | Replay a scripted encounter on an accelerated test clock (default 5x) |
+| `/drm validate` | Sweep all 65 encounters against the live client: spell IDs, icons, sounds, voice cues |
+| `/drm stop` | End whatever the testing suite is doing |
 | `/drm anchors` / `/drm lock` | Show / hide the draggable HUD anchors |
 | `/drm pull <sec>` / `/drm pull cancel` | Start or cancel a raid pull timer |
 | `/drm telemetry` | Timer observation report (the arbitration table) |
