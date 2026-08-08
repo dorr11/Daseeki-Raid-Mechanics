@@ -790,6 +790,13 @@ Addon:RegisterEncounter({
           } },
         -- The Shaman call is the one call that is EVERYBODY'S problem: the totems have
         -- to die and no single class can do it. Raid-wide, unconditionally.
+        --
+        -- SOUND-TIER AMBIGUITY, FLAGGED (sound-defaults conformance pass, 2026-08-07).
+        -- This row comes from §4.8's PROSE — "the Shaman call additionally plays the
+        -- `attacktotem` voice cue for the whole raid" — and prose carries no tier. The
+        -- voice class is the spec's; the `sound = 1` is ours, matched to Jin'do's two
+        -- `attacktotem` specials (§5.9), which the spec DOES tier at 1. Audibility is
+        -- the sound policy's call, and every special-tier row is loud by default.
         { key = "shamantotems", name = "Kill the totems (Shaman call)", tier = "special",
           sound = 1, voice = "attacktotem", text = "KILL THE TOTEMS",
           trigger = { on = "yell", textFind = "show me what your totems can do" } },

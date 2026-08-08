@@ -2836,8 +2836,20 @@ do  -- §5.5 the voice / sound replacement matrix
     row.voiceVersion = nil
     Warn.Settings().voiceReplacesAnnounce = true
     clearSounds()
-    eq(Warn.DispatchSound("fix", { key = "v2", voice = "breathsoon" }, false), "voice",
+    -- RE-BASED, owner sound directive 2026-08-07 ("by default all abilities dont have
+    -- sound. only 'big' ones liek disrupting shout"). This fixture used to be a bare
+    -- `{ key = "v2", voice = "breathsoon" }` — an announce with no colour at all —
+    -- and it passed because EVERY announce used to make a noise (the `row.sound or 1`
+    -- fallback the sound policy exists to retire). The rule being proven here is
+    -- "the announce replacement switch is independent of the special one", which is
+    -- about the two switches, not about which rows are audible; so the fixture is now
+    -- a COLOUR-4 announce — the Disrupting Shout class, the one the owner named — and
+    -- the rule it proves is unchanged.
+    eq(Warn.DispatchSound("fix", { key = "v2", color = 4, voice = "breathsoon" }, false), "voice",
        "the ANNOUNCE replacement switch is independent of the special one")
+    clearSounds()
+    eq(Warn.DispatchSound("fix", { key = "v3", color = 2, voice = "breathsoon" }, false), nil,
+       "…and it cannot make a colour-2 announce speak: the sound policy is above it")
 end
 do  -- §5.4 the global suppressors
     resetW2()
@@ -2847,7 +2859,12 @@ do  -- §5.4 the global suppressors
     resetW2()
     Warn.Settings().suppressSpecialText = true
     clearSounds()
-    local idx = Warn.ShowSpecial("fix", { key = "z", sound = 2 }, "silent but loud")
+    -- RE-BASED (owner sound directive 2026-08-07): `tier = "special"` is now spelled
+    -- out. The row always WAS a special warning — it is shown through ShowSpecial and
+    -- carries a sound tier — but it never said so, and the sound policy reads the
+    -- declaration. (Arriving on the Major surface would classify it as special
+    -- anyway; the fixture says what it means rather than leaning on that.)
+    local idx = Warn.ShowSpecial("fix", { key = "z", tier = "special", sound = 2 }, "silent but loud")
     eq(idx, nil, "suppressing special TEXT removes the line")
     ck(lastSound() ~= nil, "…while the sound still fires (the suppressors are independent)")
     resetW2()
@@ -9460,9 +9477,21 @@ end
 do  -- FEATURE 5: the cue, through the real sound dispatch
     resetAnchors()
     clearSounds()
-    local played = Tst.RowSound("naxxramas:heigan", "fever")
+    -- RE-BASED (owner sound directive 2026-08-07). The fixture was Heigan's Decrepit
+    -- Fever, a COLOUR-2 announce, and it is now correctly silent by default — which
+    -- is the whole point of the directive, not a regression. The rule this proves is
+    -- "the speaker button goes through the real dispatch", so it now uses the row the
+    -- owner named as the loud exemplar: Razuvious's Disrupting Shout, a colour-4
+    -- announce. The silent case is asserted immediately below, on the old fixture.
+    local played = Tst.RowSound("naxxramas:razuvious", "shoutnow")
     eq(played, "sound", "the speaker button on a warning row plays through the real dispatch")
     ck(lastSound() ~= nil, "…and something audible actually happened")
+
+    clearSounds()
+    local q, qwhy = Tst.RowSound("naxxramas:heigan", "fever")
+    eq(q, nil, "…and on an ordinary colour-2 announce it is HONESTLY SILENT")
+    eq(qwhy, "silent", "…saying so rather than playing a cue the fight will not play")
+    eq(lastSound(), nil, "…having played nothing at all")
 
     -- §5.5's rule that a user-chosen sound beats everything, reached from this button
     clearSounds()
@@ -10391,6 +10420,317 @@ Tst.Stop("gate end")
 endgate()
 
 ----------------------------------------------------------------------
+-- GATE SOUND — the quiet-by-default policy, its overrides, and the preview
+--
+-- OWNER DIRECTIVE, 2026-08-07, verbatim: "can we update the sounds so that by
+-- default all abilities dont have sound. only 'big' ones liek disrupting shout, etc.
+-- maybe check dbms settings".
+--
+-- The conformance half of that pass found the encounter DATA already clean — a row
+-- carries a sound tier exactly where the spec's row does — and the defect in the
+-- DISPATCH: `RowSoundKey` resolved every row through `SOUND_TIER[row.sound or 1]`,
+-- and an announce never carries `row.sound`, so all 327 announce rows were playing a
+-- tier-1 cue the spec never gave them. This gate pins the policy that replaced that
+-- fallback, in four parts: the pure table, one real row per zone through the real
+-- dispatch, the three-state override, and the preview button's honesty.
+----------------------------------------------------------------------
+gate("SOUND  quiet by default: the policy table, the override, the preview")
+local Snd = Addon.Sound
+
+-- Every zone at once — the conformance rows below are the SHIPPING rows, one per
+-- zone, driven through the real dispatch rather than described.
+local function loadAllZones()
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon.zones, Addon.zonesById = {}, {}
+    local allOk = true
+    for _, chunk in ipairs({ NAXX_CHUNK, AQ20_CHUNK, AQ40_CHUNK, BWL_CHUNK,
+                             ZG_CHUNK, MC_CHUNK, ONY_CHUNK, WB_CHUNK }) do
+        local okc = pcall(chunk, ADDON_NAME, Addon)
+        allOk = allOk and okc
+    end
+    return allOk
+end
+
+resetAnchors()
+ck(Snd ~= nil, "the sound policy is published as Addon.Sound")
+
+do  -- PART 1 — THE POLICY TABLE, PURE. Every class, by name, with its verdict.
+    local function cls(row, arriving) return Snd.ClassOf(row, arriving) end
+    local function def(row, arriving) return Snd.DefaultFor(row, arriving) end
+
+    eq(cls({ tier = "special", sound = 1 }), "special",
+       "a SPECIAL warning is the `special` class")
+    eq(def({ tier = "special", sound = 1 }), true,
+       "…and a special warning is LOUD by default: it already owns the screen")
+
+    eq(cls({ tier = "announce", color = 3, loud = true }), "loud",
+       "the encounter data's explicit `loud` marker is its own class")
+    eq(def({ tier = "announce", color = 3, loud = true }), true, "…and it is LOUD")
+
+    -- THE OWNER'S EXEMPLAR, BY NAME. Razuvious's Disrupting Shout (29107) is a
+    -- colour-4 announce — §1.3's "Critical — raid-wide danger or a lethal debuff" —
+    -- and it is the row the directive names. If this line ever goes red the policy
+    -- has stopped doing the one thing it was asked for.
+    local disruptingShout = { key = "shoutnow", tier = "announce", color = 4,
+                              text = "Disrupting Shout" }
+    eq(cls(disruptingShout), "critical",
+       "Disrupting Shout (colour 4) is the CRITICAL class — the owner's named exemplar")
+    eq(def(disruptingShout), true, "…and it stays LOUD by default")
+
+    eq(cls({ tier = "announce", color = 2, role = "HasInterrupt" }), "interrupt",
+       "an announce gated to HasInterrupt is the INTERRUPT class")
+    eq(def({ tier = "announce", color = 2, role = "HasInterrupt" }), true,
+       "…and a kick call you cannot hear is a kick you miss: LOUD")
+
+    eq(cls({ tier = "announce", color = 3 }), "elevated", "colour 3 is ELEVATED")
+    eq(def({ tier = "announce", color = 3 }), false, "…and elevated is SILENT by default")
+    eq(cls({ tier = "announce", color = 2 }), "standard", "colour 2 is STANDARD")
+    eq(def({ tier = "announce", color = 2 }), false, "…and standard is SILENT")
+    eq(cls({ tier = "announce", color = 1 }), "info", "colour 1 is INFORMATIONAL")
+    eq(def({ tier = "announce", color = 1 }), false, "…and informational is SILENT")
+    eq(cls({ tier = "announce" }), "standard",
+       "a row with no colour at all falls to STANDARD, not to a sound")
+    eq(def({ tier = "announce" }), false, "…and is therefore SILENT")
+
+    -- EVERY CLASS IN THE ORDER LIST HAS A VERDICT. A class added without one would
+    -- read as `nil` and silently mean "silent".
+    local missing = 0
+    for _, c in ipairs(Snd.CLASS_ORDER) do
+        if Snd.LOUD[c] == nil then missing = missing + 1 end
+        if Snd.CLASS_LABEL[c] == nil then missing = missing + 1 end
+    end
+    eq(missing, 0, "every class in CLASS_ORDER carries both a verdict and a label")
+    eq(#Snd.CLASS_ORDER, 7, "…and there are exactly seven of them")
+
+    -- ARRIVING ON THE MAJOR SURFACE IS THE SPECIAL CLASS. The route control's hint
+    -- promises a promoted row gets "the tier sound"; the policy has to keep it.
+    eq(cls({ tier = "announce", color = 2 }, true), "special",
+       "an ordinary announce ARRIVING on the Major surface is treated as special")
+    eq(def({ tier = "announce", color = 2 }, true), true, "…so a promoted row is loud")
+
+    -- PURE means pure: no db, no settings, no world.
+    Addon.db.mechanics["fix:pure"] = { soundMode = "off" }
+    eq(def({ key = "pure", tier = "special", sound = 1 }), true,
+       "DefaultFor ignores the user's override entirely — it answers the POLICY question")
+    Addon.db.mechanics["fix:pure"] = nil
+end
+
+do  -- PART 2 — PER-ZONE CONFORMANCE, through the real dispatch.
+    --
+    -- One shipped row per zone on each side of the line, fired through
+    -- Warn.DispatchSound — the same call ShowAnnounce and ShowSpecial make. Nothing
+    -- here is a fixture: every key below is a row in an enc_*.lua file.
+    resetAnchors()
+    ck(loadAllZones(), "all eight zones' encounter data loads together")
+
+    local function rowOf(encId, key)
+        local enc = Addon:GetEncounter(encId)
+        return enc and enc.rowsByKey and enc.rowsByKey[key]
+    end
+    -- Fire it exactly as the surface would: special rows through the special path.
+    local function fires(encId, key)
+        local row = rowOf(encId, key)
+        if not row then return "NO SUCH ROW" end
+        clearSounds()
+        Warn.DispatchSound(encId, row, (row.tier or "announce") == "special")
+        return lastSound() ~= nil
+    end
+
+    -- LOUD: one special per zone, plus the two announce classes that survive.
+    eq(fires("naxxramas:kelthuzad", "fissureyou"), true,
+       "NAXX Shadow Fissure on YOU (special, sound 3) still sounds")
+    eq(fires("naxxramas:razuvious", "shoutnow"), true,
+       "NAXX Disrupting Shout (announce, colour 4) still sounds — the owner's exemplar")
+    eq(fires("naxxramas:razuvious", "unbalancing"), true,
+       "NAXX Unbalancing Strike (the tank swap, colour 4) still sounds")
+    eq(fires("aq20:buru", "pursueyou"), true,
+       "AQ20 Buru pursue-on-YOU (special, sound 4) still sounds")
+    eq(fires("aq20:kurinnaxx", "enrage"), true,
+       "AQ20 Kurinnaxx's HARD ENRAGE still sounds — the `loud` marker, colour 3")
+    eq(fires("aq40:skeram", "arcaneexplosion"), true,
+       "AQ40 interrupt Arcane Explosion (special, kickcast) still sounds")
+    eq(fires("aq40:huhuran", "berserk"), true,
+       "AQ40 Huhuran's Berserk still sounds — `loud`, colour 3")
+    eq(fires("aq40:bugtrio", "heal"), true,
+       "AQ40 Great Heal (announce, HasInterrupt) still sounds — the interrupt class")
+    eq(fires("bwl:vaelastrasz", "adrenaline"), true,
+       "BWL Burning Adrenaline on YOU (special, sound 4) still sounds")
+    eq(fires("zg:mandokir", "gazeyou"), true,
+       "ZG Gaze on YOU (special, sound 3) still sounds")
+    eq(fires("zg:mandokir", "enrage"), true,
+       "ZG Mandokir's Enrage still sounds — `loud`, colour 3")
+    eq(fires("mc:geddon", "livingbombyou"), true,
+       "MC Living Bomb on YOU (special, sound 3) still sounds")
+    eq(fires("mc:geddon", "armageddonwarn"), true,
+       "MC Armageddon still sounds — the spec's 'default special-warning sound'")
+    eq(fires("onyxia:onyxia", "deepbreath"), true,
+       "ONY Deep Breath (special, sound 3) still sounds")
+    eq(fires("world:kazzak", "markyou"), true,
+       "WORLD Mark of Kazzak on YOU (special, sound 1) still sounds")
+
+    -- SILENT: the ordinary announce traffic, which is what the owner was hearing.
+    eq(fires("naxxramas:heigan", "fever"), false,
+       "NAXX Decrepit Fever (colour 2) is now SILENT by default")
+    eq(fires("naxxramas:noth", "cursewarn"), false,
+       "NAXX Noth's curse announce (colour 3) is SILENT — its DISPEL special is not")
+    eq(fires("aq20:kurinnaxx", "mortalwoundon"), false,
+       "AQ20 Mortal Wound on <name> (colour 2) is SILENT")
+    eq(fires("aq40:huhuran", "berserksoon"), false,
+       "AQ40 'Berserk soon' (colour 2) is SILENT — the heads-up is not the event")
+    eq(fires("bwl:chromaggus", "frenzywarn"), false,
+       "BWL Chromaggus Frenzy announce (colour 3) is SILENT — the dispel special is not")
+    eq(fires("zg:venoxis", "renewon"), false,
+       "ZG Renew on Venoxis (colour 3) is SILENT — its dispel special is not")
+    eq(fires("mc:lucifron", "impendingdoomwarn"), false,
+       "MC Impending Doom (colour 2) is SILENT")
+    eq(fires("onyxia:onyxia", "phase2"), false,
+       "ONY the phase-2 line (colour 2) is SILENT — the phase VOICE cue with it")
+    eq(fires("world:azuregos", "frostbreath"), false,
+       "WORLD Azuregos Frost Breath (colour 3) is SILENT")
+
+    -- THE CENSUS. The directive is a proportion as much as a rule: the great
+    -- majority of rows must go quiet, or nothing has changed for the raider.
+    local loudN, silentN, total = 0, 0, 0
+    for _, enc in ipairs(Addon.encounters) do
+        for _, w in ipairs(enc.warnings or {}) do
+            total = total + 1
+            if Snd.DefaultFor(w) then loudN = loudN + 1 else silentN = silentN + 1 end
+        end
+    end
+    ck(total > 400, "the eight zones ship more than 400 warning rows in total")
+    ck(silentN > loudN * 2,
+       ("…and at least twice as many are silent by default as loud (%d silent / %d loud)")
+       :format(silentN, loudN))
+    -- Every special stays loud — the policy never silences the big surface.
+    local quietSpecial = 0
+    for _, enc in ipairs(Addon.encounters) do
+        for _, w in ipairs(enc.warnings or {}) do
+            if (w.tier or "announce") == "special" and not Snd.DefaultFor(w) then
+                quietSpecial = quietSpecial + 1
+            end
+        end
+    end
+    eq(quietSpecial, 0, "NOT ONE special-warning row is silenced by the policy")
+end
+
+do  -- PART 3 — THE THREE-STATE OVERRIDE. User beats policy, both directions.
+    resetAnchors()
+    ck(loadAllZones(), "…zones reloaded for the override rows")
+    local function rowOf(encId, key)
+        local enc = Addon:GetEncounter(encId)
+        return enc and enc.rowsByKey and enc.rowsByKey[key]
+    end
+    local function fires(encId, key)
+        local row = rowOf(encId, key)
+        clearSounds()
+        Warn.DispatchSound(encId, row, (row.tier or "announce") == "special")
+        return lastSound() ~= nil
+    end
+
+    local quiet, quietKey = "naxxramas:heigan", "fever"          -- policy: SILENT
+    local loud,  loudKey  = "naxxramas:kelthuzad", "fissureyou"  -- policy: LOUD
+
+    eq(Snd.ModeOf(quiet .. ":" .. quietKey), "default",
+       "an untouched row reads as Default")
+    eq(fires(quiet, quietKey), false, "…and Default follows the policy (silent here)")
+
+    -- USER ON beats a policy that says silent.
+    Snd.SetMode(quiet .. ":" .. quietKey, "on")
+    eq(Snd.ModeOf(quiet .. ":" .. quietKey), "on", "the user can force a row On…")
+    eq(fires(quiet, quietKey), true, "…and On BEATS a policy verdict of silent")
+
+    -- USER OFF beats a policy that says loud.
+    Snd.SetMode(loud .. ":" .. loudKey, "off")
+    eq(Snd.ModeOf(loud .. ":" .. loudKey), "off", "the user can force a row Off…")
+    eq(fires(loud, loudKey), false, "…and Off BEATS a policy verdict of loud")
+
+    -- BACK TO DEFAULT means back to the policy, both directions.
+    Snd.SetMode(quiet .. ":" .. quietKey, "default")
+    Snd.SetMode(loud .. ":" .. loudKey, "default")
+    eq(Snd.ModeOf(quiet .. ":" .. quietKey), "default", "clearing an override restores Default…")
+    eq(fires(quiet, quietKey), false, "…and the silent row is silent again")
+    eq(fires(loud, loudKey), true, "…and the loud row is loud again")
+
+    -- A GARBAGE MODE IS NOT A MODE.
+    Snd.SetMode(quiet .. ":" .. quietKey, "maybe")
+    eq(Snd.ModeOf(quiet .. ":" .. quietKey), "default",
+       "an unrecognised mode falls back to Default rather than storing itself")
+
+    -- THE CHAIN'S MIDDLE LINK: a user-chosen sound FILE is itself an "I want this".
+    Addon.db.mechanics[quiet .. ":" .. quietKey] = { sound = "raidwarning" }
+    eq(select(2, Snd.Resolve(quiet, rowOf(quiet, quietKey))), "customfile",
+       "a row the user attached their own sound file to resolves on that…")
+    eq(fires(quiet, quietKey), true, "…and plays, policy notwithstanding")
+    Addon.db.mechanics[quiet .. ":" .. quietKey].soundMode = "off"
+    eq(fires(quiet, quietKey), false,
+       "…but an explicit Off is more specific than a file, and wins over it")
+    Addon.db.mechanics[quiet .. ":" .. quietKey] = nil
+
+    -- ADDITIVE STORAGE: the override rides db.mechanics beside route and sound file,
+    -- so DB_VERSION does not move and nothing else in the record is disturbed.
+    Addon.db.mechanics[quiet .. ":" .. quietKey] = { route = "major", enabled = true }
+    Snd.SetMode(quiet .. ":" .. quietKey, "on")
+    local rec = Addon.db.mechanics[quiet .. ":" .. quietKey]
+    eq(rec.route, "major", "setting the sound mode leaves the row's route alone…")
+    eq(rec.enabled, true, "…and its enable flag…")
+    eq(rec.soundMode, "on", "…while storing itself in the same record")
+    Snd.SetMode(quiet .. ":" .. quietKey, "default")
+    eq(rec.soundMode, nil, "…and Default stores NOTHING (it is the absence of an opinion)")
+    Addon.db.mechanics[quiet .. ":" .. quietKey] = nil
+
+    -- THE HINT SAYS WHICH WAY DEFAULT FALLS, in both directions.
+    ck(tostring(Snd.Hint(rowOf(loud, loudKey))):find("ON", 1, true) ~= nil,
+       "the control's hint says Default is ON for a loud row")
+    ck(tostring(Snd.Hint(rowOf(quiet, quietKey))):find("OFF", 1, true) ~= nil,
+       "…and OFF for a silent one")
+end
+
+do  -- PART 4 — PREVIEW HONESTY. The Sound button plays the RESOLVED answer.
+    resetAnchors()
+    ck(loadAllZones(), "…zones reloaded for the preview rows")
+    API.PublishOptionsTree()
+
+    local quietKey = "naxxramas:heigan:fever"
+    -- Default: the button is as silent as the fight will be.
+    clearSounds()
+    local v, why = Tst.RowSound("naxxramas:heigan", "fever")
+    eq(v, nil, "with the row on Default and silent, the preview button plays NOTHING")
+    eq(why, "silent", "…and says so")
+    eq(lastSound(), nil, "…having genuinely played nothing")
+
+    -- On: the button plays.
+    Snd.SetMode(quietKey, "on")
+    clearSounds()
+    eq(Tst.RowSound("naxxramas:heigan", "fever"), "sound",
+       "…switched On, the SAME button plays")
+    ck(lastSound() ~= nil, "…for real")
+
+    -- Off on a loud row: the button goes quiet with it.
+    Snd.SetMode(quietKey, "default")
+    Snd.SetMode("naxxramas:kelthuzad:fissureyou", "off")
+    clearSounds()
+    local v2, why2 = Tst.RowSound("naxxramas:kelthuzad", "fissureyou")
+    eq(v2, nil, "…and a LOUD row switched Off previews silent")
+    eq(why2, "silent", "…saying which")
+    Snd.SetMode("naxxramas:kelthuzad:fissureyou", "default")
+
+    -- THE BOUNDARY, ASSERTED. Timer-attached sounds and the spoken countdown are OUT
+    -- of scope for this directive: a timer row's preview is unchanged, and it does
+    -- not consult the warning policy at all.
+    clearSounds()
+    Addon.db.mechanics["naxxramas:noth:curse"] = { sound = "raidwarning" }
+    eq(Tst.RowSound("naxxramas:noth", "curse"), "sound",
+       "a TIMER row still plays the sound the user attached to it (out of scope)")
+    Addon.db.mechanics["naxxramas:noth:curse"] = nil
+    clearSounds()
+    eq(select(2, Tst.RowSound("naxxramas:noth", "curse")), "silent",
+       "…and an untouched timer row is silent for the reason it always was")
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
@@ -10439,7 +10779,8 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "TEST-LAYOUT  populate everything, keep it alive, exit clean",
                      "TEST-PLAYBACK  the scaled clock, Noth's tail and Gothik's wave order at 5x",
                      "TEST-VALIDATE  every spell id, icon, sound and voice cue in the registry",
-                     "TEST-QUARANTINE  no sync, no stats, no tripwire, and a real pull always wins" }) do
+                     "TEST-QUARANTINE  no sync, no stats, no tripwire, and a real pull always wins",
+                     "SOUND  quiet by default: the policy table, the override, the preview" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

@@ -88,7 +88,13 @@ Addon:RegisterEncounter({
           color = 2, role = "Tank", stacks = true, text = "Mortal Wound %s (%d)",
           triggers = { { on = "SPELL_AURA_APPLIED",      spellId = 25646 },
                        { on = "SPELL_AURA_APPLIED_DOSE", spellId = 25646 } } },
+        -- `loud`: the SOUND POLICY's explicit big-class marker (ui_warnings.lua,
+        -- owner directive 2026-08-07). A HARD ENRAGE is the berserk class the owner
+        -- named, and the spec files it at colour 3 next to ordinary elevated
+        -- announces, so the derived colour rule cannot see it. The colour is the
+        -- spec's, untouched; this flag only says "keep the sound by default".
         { key = "enrage", name = "Enrage", tier = "announce", color = 3, text = "Enrage",
+          loud = true,
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 26527 } },
         { key = "sandtrapyou", name = "Sand Trap on YOU", tier = "special", sound = 1,
           voice = "targetyou", text = "Sand Trap on YOU", yell = "Sand Trap on me!",
@@ -376,6 +382,18 @@ Addon:RegisterEncounter({
 -- REFLECTS ARE READ FROM THE MISS TYPE, NOT FROM A BUFF. The spec is explicit that
 -- the Anubisath reflect buffs are not reliably visible, so the evidence is
 -- REFLECT / DEFLECT on YOUR OWN spell plus the school bitmask of what bounced.
+--
+-- SOUND-TIER AMBIGUITY, FLAGGED (sound-defaults conformance pass, 2026-08-07).
+-- §6.7 is a TRASH table and its columns are Behavior / Trigger — there is no tier
+-- column at all, so the four specials below (plagueyou, explode and the two
+-- reflects) carry a sound tier the spec's capture DOES NOT STATE. §1.3 is clear
+-- that every special warning has one, so the question is WHICH, not WHETHER; the
+-- numbers here are ours, chosen to match the equivalent boss-table rows (a
+-- personal run-away is tier 4 everywhere else in §6/§7; a stop-attacking call is
+-- tier 1 at Majordomo, §2.9). They are recorded here as OUR presentation choice,
+-- not as a spec fact, so a future true-up knows which numbers are load-bearing.
+-- Audibility itself is not decided here — the sound policy (ui_warnings.lua)
+-- answers that, and it makes every special-tier row loud by default.
 Addon:RegisterEncounter({
     id = "aq20:trash", name = "Ruins of Ahn'Qiraj trash", zone = 509,
     legacy = { raidId = "aq20", bossId = "trash" },

@@ -343,7 +343,14 @@ function T.RowSound(encId, rowKey)
 
     if kind == "warning" then
         if not W then return nil, "no_surface" end
-        return W.DispatchSound(encId, row, (row.tier or "announce") == "special")
+        -- THE PREVIEW IS HONEST OR IT IS USELESS (owner directive 2026-08-07). This
+        -- goes through the SAME DispatchSound the fight uses, so the sound policy and
+        -- the row's three-state override are already applied: a row that is silent by
+        -- default is silent here, and one the user switched On is not. The button
+        -- never plays "what this row COULD sound like".
+        local played = W.DispatchSound(encId, row, (row.tier or "announce") == "special")
+        if played then return played end
+        return nil, "silent"
     end
 
     local db = Addon.db

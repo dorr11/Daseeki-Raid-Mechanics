@@ -625,7 +625,12 @@ Addon:RegisterEncounter({
         { key = "frenzywarn", name = "Frenzy", tier = "announce", color = 3,
           role = "Tank|RemoveEnrage|Healer", text = "Frenzy",
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 26051 } },
+        -- `loud`: the SOUND POLICY's big-class marker (ui_warnings.lua, owner
+        -- directive 2026-08-07). Huhuran's Berserk is the hard enrage; the spec
+        -- files it at colour 3, so the derived rule cannot see it. "Berserk SOON"
+        -- below is a heads-up, not the event, and stays silent by default.
         { key = "berserk", name = "Berserk", tier = "announce", color = 3, text = "Berserk",
+          loud = true,
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 26068 } },
         { key = "berserksoon", name = "Berserk soon (35%)", tier = "announce", color = 2,
           text = "Berserk soon", trigger = { on = "health", pct = 35, sync = true } },
@@ -802,7 +807,10 @@ Addon:RegisterEncounter({
         { key = "sweepwarn", name = "Sweep", tier = "announce", color = 2, role = "Tank",
           text = "Sweep",
           trigger = { on = "SPELL_CAST_START", spellId = 26103 } },
+        -- `loud`: the SOUND POLICY's big-class marker — Ouro's hard enrage, same
+        -- terms as Huhuran's above (ui_warnings.lua, owner directive 2026-08-07).
         { key = "berserk", name = "Berserk", tier = "announce", color = 3, text = "Berserk",
+          loud = true,
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 26615 } },
         { key = "berserksoon", name = "Berserk soon (25%)", tier = "announce", color = 2,
           text = "Berserk soon", trigger = { on = "health", pct = 25, sync = true } },
@@ -980,6 +988,15 @@ Addon:RegisterEncounter({
 -- Reflects are read from the MISS TYPE plus the school (extension 16): the reflect
 -- buffs are not reliably visible on Era, and Detect Magic — the one scan that could
 -- read them — gets reflected itself for the Fire/Arcane flavour.
+--
+-- SOUND-TIER AMBIGUITY, FLAGGED (sound-defaults conformance pass, 2026-08-07).
+-- Same finding as §6.7: this is a TRASH table with Alert / Trigger columns and no
+-- tier column, so the five specials below (shadowstorm, plagueyou, explode and the
+-- two reflects) carry sound tiers the spec's capture DOES NOT STATE. Only the VOICE
+-- class is captured, and only for Shadow Storm (`findshelter`). The numbers are
+-- ours, matched to the equivalent boss-table rows, and are recorded as a
+-- presentation choice rather than a spec fact. Audibility is the sound policy's
+-- call (ui_warnings.lua), and it makes every special-tier row loud by default.
 Addon:RegisterEncounter({
     id = "aq40:trash", name = "Temple of Ahn'Qiraj trash", zone = 531,
     legacy = { raidId = "aq40", bossId = "trash" },
