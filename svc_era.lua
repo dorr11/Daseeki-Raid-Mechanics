@@ -255,22 +255,50 @@ function Era.Class()
     return class
 end
 
+-- ── AUDIT RM-1 (Brief N, lesson Class 5: "truthy-zero and sticky calibration") ─
+-- This function used to answer TAB 1 for two completely different worlds: "the
+-- player has spent zero points" (a real answer, and the one §10.23 prescribes) and
+-- "the talent tree could not be read at all" (not an answer). `GetNumTalentTabs()`
+-- answers 0 before the client has the tree, and `points or 0` turned every nil tab
+-- into a legitimate-looking zero.
+--
+-- The victim is the Protection paladin. Tab 1 is HOLY, `PALADIN1` is in
+-- HEALER_SPECS, so a paladin whose tabs read cold at PLAYER_LOGIN boots classified
+-- as a HEALER — and `PublishOptionsTree` then freezes that into every projected
+-- row default. Only a roster change re-derived it, so a solo session never healed.
+--
+-- So the third world gets its own answer: nil, "I do not know yet". Zero points
+-- spent still resolves to tab 1 — the spec rule is intact — but it now requires
+-- the tree to have actually ANSWERED first.
 function Era.SpecTab()
     local n = Era.env.GetNumTalentTabs() or 0
-    local best, bestPoints = 1, -1
+    if n <= 0 then return nil end                 -- the tree is not readable yet
+    local best, bestPoints, answered = 1, -1, false
     for i = 1, n do
         local _, _, _, _, points = Era.env.GetTalentTabInfo(i)
-        points = points or 0
-        if points > bestPoints then best, bestPoints = i, points end
+        if points ~= nil then
+            answered = true
+            if points > bestPoints then best, bestPoints = i, points end
+        end
     end
-    if bestPoints <= 0 then return 1, 0 end
+    if not answered then return nil end           -- every tab refused: still unknown
+    if bestPoints <= 0 then return 1, 0 end       -- §10.23: zero points spent -> tab 1
     return best, bestPoints
 end
 
 function Era.Spec()
     local class = Era.Class()
     if not class then return nil end
-    return class .. tostring((Era.SpecTab()))
+    local tab = Era.SpecTab()
+    if tab == nil then return nil end             -- AUDIT RM-1: unknown, not "tab 1"
+    return class .. tostring(tab)
+end
+
+-- AUDIT RM-1. The one question every refusal below is really asking. Kept as a
+-- named predicate rather than an inline `Era.Spec() ~= nil` so the intent survives
+-- the next edit: "do we have a role at all", not "is the spec string truthy".
+function Era.RoleKnown()
+    return Era.Spec() ~= nil
 end
 
 -- Which CLASS..tab combinations are the tank tree and the healer tree on Era.
@@ -338,10 +366,18 @@ Era.RESPEC_THROTTLE = 2
 local function rederive()
     Era.roleState.tankLatched = false     -- a respec invalidates the session latch
     Era.ClearCache()
-    -- A respec is ALWAYS news, so this fires unconditionally — but it still stamps
-    -- the signature, so the roster path below has a baseline to compare against.
-    if Era.RoleSignature then Era.RoleSignature() end
+    -- AUDIT RM-1 (Brief N). A respec is always news, but "nil" is not the news. If
+    -- the tree is unreadable on this frame there is nothing to broadcast and nothing
+    -- worth stamping as a baseline — arm the warmth ladder and let the answer be
+    -- re-earned. The latch above is still cleared, because a respec really did
+    -- happen and a stale "tank" is the worse of the two lies.
+    if Era.RoleSignature() == nil then
+        Era.roleState.warmthArmed = false
+        Era.ArmRoleWarmth("respec_dark")
+        return false, "role_unknown"
+    end
     Addon:FireEngineEvent("ROLE_CHANGED", Era.Spec(), Era.IsTank(), Era.IsHealer())
+    return true
 end
 Era._rederive = rederive
 
@@ -381,13 +417,30 @@ for _, e in ipairs(Era.ROSTER_EVENTS) do Era.ROSTER_EVENT_SET[e] = true end
 --
 -- So the comparison is against the last answer the addon BROADCAST, and every
 -- derivation point stamps it.
+--
+-- AUDIT RM-1 (Brief N). It also REFUSES. `tostring(Era.Spec())` used to render an
+-- unknown role as the literal string "nil" and stamp it, which made the unknown a
+-- baseline: the first real answer then compared EQUAL-ISH against a fiction, and
+-- the cold-boot answer never counted as a move. Nothing is stamped while the
+-- talent tree is dark, so `roleState.signature` stays nil and the first readable
+-- derivation is the first one on record — which is exactly what makes it fire
+-- ROLE_CHANGED and un-freeze the projected options tree.
 function Era.RoleSignature()
-    local sig = tostring(Era.Spec()) .. "/" .. tostring(Era.IsTank()) .. "/" .. tostring(Era.IsHealer())
+    local spec = Era.Spec()
+    if spec == nil then return nil end
+    local sig = spec .. "/" .. tostring(Era.IsTank()) .. "/" .. tostring(Era.IsHealer())
     Era.roleState.signature = sig
     return sig
 end
 
 local function recheckRole()
+    -- AUDIT RM-1. Refuse BEFORE touching the latch: clearing a session tank latch we
+    -- cannot re-earn (because the tree is unreadable) would demote a real tank on a
+    -- cold read — the same defect pointed the other way.
+    if not Era.RoleKnown() then
+        Era.ArmRoleWarmth("recheck_dark")
+        return false, "role_unknown"
+    end
     local before = Era.roleState.signature
     Era.roleState.tankLatched = false       -- the latch must be re-EARNED, not frozen
     Era.ClearCache()
@@ -400,6 +453,52 @@ Era._recheckRole = recheckRole
 
 function Era.OnRosterChanged()
     S():DelayedCall(Era.ROLE_RECHECK_THROTTLE, recheckRole, Era)
+    return true
+end
+
+-- ── AUDIT RM-1, the re-ask ladder (Brief N, lesson Class 5 + Class 6 discipline) ─
+-- Refusing to answer is only half a fix; something has to ASK AGAIN. The audit
+-- named the missing route: PLAYER_ENTERING_WORLD was already registered on
+-- `Era.frame` and went only to `EvaluateWorldPosition()`, while being precisely the
+-- moment a login or a /reload has finished and the talent tree is about to become
+-- readable. It now also drives the throttled re-check.
+--
+-- That still leaves the player who logs in solo, never zones and never groups, for
+-- whom no further event arrives at all — so a BOUNDED ladder backs it. Three rungs,
+-- once per loading screen, and then it stops: an unknown role that survives ten
+-- seconds is reported as unknown rather than guessed at. The rungs are silent when
+-- they find nothing new (recheckRole compares against the stamped signature), so
+-- the cost of the ladder in the normal warm case is three no-op calls.
+Era.ROLE_WARMTH_AT = { 2, 5, 10 }
+
+-- The ladder needs its OWN function identity. `OnRosterChanged` and `OnWorldEntered`
+-- both reach the re-check through `Sched:DelayedCall`, which is cancel-then-schedule
+-- on (fn, owner) — so scheduling the rungs as `recheckRole` directly would mean the
+-- next GROUP_ROSTER_UPDATE silently DELETED the whole ladder, which is the "one
+-- debounce ate the retry machine" bug in miniature. A one-line shim is the fix.
+local function warmthTask()
+    return recheckRole()
+end
+Era._warmthTask = warmthTask
+
+function Era.ArmRoleWarmth(why)
+    if Era.roleState.warmthArmed then return false, "already_armed" end
+    if Era.RoleKnown() then return false, "role_known" end
+    Era.roleState.warmthArmed = true
+    Era.roleState.warmthReason = why
+    S():Unschedule(warmthTask, Era)          -- a re-arm replaces the ladder, never stacks it
+    for _, at in ipairs(Era.ROLE_WARMTH_AT) do
+        S():Schedule(at, warmthTask, Era)
+    end
+    return true, #Era.ROLE_WARMTH_AT
+end
+
+-- PLAYER_ENTERING_WORLD: a loading screen is both a re-check trigger and a fresh
+-- entitlement to the ladder (the previous session's rungs have long since run).
+function Era.OnWorldEntered()
+    Era.roleState.warmthArmed = false
+    S():DelayedCall(Era.ROLE_RECHECK_THROTTLE, recheckRole, Era)
+    if not Era.RoleKnown() then Era.ArmRoleWarmth("entering_world") end
     return true
 end
 
@@ -828,11 +927,20 @@ function Era.Init()
     Era._inited = true
     Addon.RoleResolver  = Era.ResolveRole
     Addon.ClassResolver = Era.Class
+    -- AUDIT RM-1 (Brief N). The third resolver: "is the answer above worth
+    -- freezing?" `PublishOptionsTree` asks it so a projection made from an unknown
+    -- role is marked provisional instead of silently permanent.
+    Addon.RoleKnown     = Era.RoleKnown
     Era.EvaluateWorldPosition()
     -- Seed the role signature at boot so the first roster re-check has a baseline
     -- to compare against instead of firing on the first GROUP_ROSTER_UPDATE of the
     -- session. This is also the answer PublishOptionsTree is about to freeze.
+    --
+    -- AUDIT RM-1: …unless the talent tree is not readable yet, in which case there
+    -- IS no answer, nothing is stamped, and the ladder below is what earns one.
+    -- Era.Init runs from PLAYER_LOGIN, which is the frame the audit proved cold.
     Era.RoleSignature()
+    Era.ArmRoleWarmth("boot")
 
     if type(_G.CreateFrame) == "function" then
         local f = _G.CreateFrame("Frame")
@@ -852,6 +960,12 @@ function Era.Init()
             else
                 -- §6.3: re-evaluated on every zone change and every loading screen.
                 Era.EvaluateWorldPosition()
+                -- AUDIT RM-1 (Brief N). PLAYER_ENTERING_WORLD was ALREADY subscribed
+                -- here and routed only to the world-position probe. It is also the
+                -- seam at which a login or a /reload has finished and the talent tree
+                -- becomes readable — the one signal a solo player is guaranteed to
+                -- get. Route it to the throttled re-check as well.
+                if event == "PLAYER_ENTERING_WORLD" then Era.OnWorldEntered() end
             end
         end)
         Era.frame = f

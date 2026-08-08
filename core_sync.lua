@@ -128,6 +128,13 @@ Sync.SPAM_PRUNE_AGE       = 8     -- sync-spam table pruning: entries older than
 Sync.BREAK_THROTTLE       = 1     -- break timers: one per sender per second
 Sync.BREAK_MAX            = 3600  -- …and capped at 3600 s (= the §11.4 60-minute maximum)
 Sync.RECOVERY_ASK_AT      = { 7, 10, 13 }   -- §9.1 whisper cascade
+-- AUDIT RM-2 (Brief N, lesson Class 6). Ours, not the spec's: the ONE bounded
+-- re-arm, 5 s past the last rung of the cascade. It exists for the case the spec
+-- never contemplated — the group list still unanswered thirteen seconds after a
+-- reload — and it is a single extra ask, not a second ladder, because the flag it
+-- extends BLINDS combat-start detection while it is held (§9.1 step 3). Worst case
+-- is therefore 18 s + the 5 s reply window, once, instead of 15 s.
+Sync.RECOVERY_REARM_AT    = 18
 Sync.RECOVERY_REPLY_VALID = 5               -- §9.1 "only within 5 s of asking"
 Sync.RECOVERY_REPLY_THROTTLE = 1            -- §7.3 one reply per requester per second
 Sync.VERSION_DEBOUNCE     = 3     -- §7.4 group version reply debounce
@@ -1014,11 +1021,23 @@ end
 -- ══════════════════════════════════════════════════════════════════════════════
 --  §9.1 RELOAD / LATE-JOIN TIMER RECOVERY — the whisper cascade
 -- ══════════════════════════════════════════════════════════════════════════════
-Sync.recovery = { active = false, asked = {}, order = {}, repliedBy = nil, startedAt = nil }
+Sync.recovery = { active = false, asked = {}, order = {}, repliedBy = nil, startedAt = nil,
+                  rearmed = false, rungs = #Sync.RECOVERY_ASK_AT }
 
 -- Step 1: rank the group by version (highest first), then by name for determinism.
 -- Candidates must be connected, a player, not a ghost, and ON THE SAME REALM —
 -- cross-realm WHISPER addon messages silently fail, so they are skipped entirely.
+--
+-- AUDIT RM-3 (Brief N, lesson Class 4). This function's version key was PROVABLY
+-- DEAD while it was called from `BeginRecovery`: `Sync.peers` is fresh-empty after
+-- a /reload (new Lua state), `Sync.SendHello()` goes out on the SAME FRAME one line
+-- before recovery begins, and peers answer `V` on a deliberate 3 s debounce. No
+-- revision could possibly have landed, so every candidate carried `rev = -1`,
+-- `a.rev ~= b.rev` was never true, and the sort collapsed permanently onto the
+-- alphabetical tie-break — while the comment above went on asserting a version
+-- contract. Ranking is now performed AT THE ASK (see `askTask`), by which time the
+-- 7 s rung has given the hello replies four seconds to arrive, so the key means
+-- what it says. RM-3 is fixed by RM-2's fix, exactly as the audit predicted.
 function Sync.RankCandidates()
     local me = Sync.Me()
     local out = {}
@@ -1041,17 +1060,118 @@ function Sync.RankCandidates()
     return out
 end
 
-local function askTask(name, ordinal)
-    if not Sync.recovery.active then return end
-    if Sync.recovery.repliedBy then return end        -- step 4: any reply invalidates the rest
-    Sync.recovery.asked[name] = S():Now()
-    Sync.recovery.order[#Sync.recovery.order + 1] = name
-    Sync.Whisper("RT", name)
+-- Scheduled work is dispatched as `fn(arg1, …)` with no implicit self, and §3.2's
+-- cancellation matches on FUNCTION IDENTITY — so both of these are plain named
+-- locals, forward-declared because they refer to each other.
+local askTask
+
+-- The scheduled expiry of the "recovery in progress" flag. A named function rather
+-- than the closure this used to be, so the re-arm below can Unschedule and re-issue
+-- it (a fresh closure has no identity to cancel on).
+local function expireTask()
+    Sync.recovery.active = false
+end
+
+-- Give up early and hand the detection paths back. Reached only when the ladder has
+-- run to its END with nobody asked — the original code's instinct here was right
+-- ("drop the flag rather than blinding detection for 15 s"), it was just applied on
+-- the wrong frame.
+local function abortRecovery(why)
+    Sync.recovery.active = false
+    Life():SetRecovering(false)
+    S():Unschedule(askTask, Sync)
+    S():Unschedule(expireTask, Sync)
     if Addon.Telemetry then
-        Addon.Telemetry.Write("sync.recovery", { reason = "request", path = name, delay = ordinal })
+        Addon.Telemetry.Write("sync.recovery", { reason = why })
     end
+    return false, why
+end
+
+-- ── AUDIT RM-2 (Brief N, lesson Class 6) — THE ROSTER IS READ AT THE ASK ──────
+-- `BeginRecovery` used to snapshot the candidate list synchronously, on the
+-- PLAYER_ENTERING_WORLD frame, and then schedule one ask per candidate. The
+-- whispers were correctly deferred to +7/10/13 s — the code already knew the login
+-- seam is asynchronous — and then it read the one thing that is not ready yet.
+-- Reload mid-raid: `IsInGroup()` is restored but `GetNumGroupMembers()` still
+-- answers 0, the snapshot is empty, `asked == 0`, the flag is dropped and the
+-- function returns "no_candidates". It has one caller and nothing retries, so the
+-- player rejoins the pull with NO BARS AT ALL, silently — and this feature exists
+-- for precisely that scenario.
+--
+-- Each rung now reads the LIVE roster when it fires. The 7/10/13 s ladder was
+-- always the retry machine; it was just spending three attempts on one stale
+-- answer. Three live reads, each picking the best candidate not already asked.
+function askTask(ordinal)
+    if not Sync.recovery.active then return false, "inactive" end
+    if Sync.recovery.repliedBy then return false, "replied" end   -- step 4
+
+    local last = (ordinal >= (Sync.recovery.rungs or #Sync.RECOVERY_ASK_AT))
+
+    -- Class 6: an unanswered group list is not an empty group. Refuse to conclude
+    -- anything from it, and re-arm instead of treating dark as "nobody is there".
+    if not Life():RosterPopulated() then
+        if Addon.Telemetry then
+            Addon.Telemetry.Write("sync.recovery", { reason = "roster_dark", delay = ordinal })
+        end
+        if Sync.ReArmRecovery("roster_dark") then return false, "roster_dark" end
+        if last and next(Sync.recovery.asked) == nil then return abortRecovery("no_candidates") end
+        return false, "roster_dark"
+    end
+
+    local cands = Sync.RankCandidates()
+    local pick
+    for i = 1, #cands do
+        if not Sync.recovery.asked[cands[i].name] then pick = cands[i] break end
+    end
+    if not pick then
+        -- Nobody NEW to ask. If we have asked somebody already the raid is simply
+        -- exhausted and the reply window is still running; if we have asked nobody
+        -- the list read empty, which on a populated roster is a real answer — but
+        -- still worth one bounded re-arm before giving the flag back.
+        if next(Sync.recovery.asked) ~= nil then return false, "exhausted" end
+        if Sync.ReArmRecovery("no_candidates") then return false, "no_candidates" end
+        if last then return abortRecovery("no_candidates") end
+        return false, "no_candidates"
+    end
+
+    Sync.recovery.asked[pick.name] = S():Now()
+    Sync.recovery.order[#Sync.recovery.order + 1] = pick.name
+    Sync.Whisper("RT", pick.name)
+    if Addon.Telemetry then
+        Addon.Telemetry.Write("sync.recovery", { reason = "request", path = pick.name, delay = ordinal })
+    end
+    return true, pick.name
 end
 Sync._askTask = askTask
+
+-- ONE bounded re-arm (Class 6's "re-ASK on a bounded ladder", the shape Nexus
+-- mesh-friends already uses). If the roster is still dark — or still reads empty —
+-- when a rung fires, add exactly one more ask at RECOVERY_REARM_AT and extend the
+-- suppression window far enough to cover it plus the reply-validity window. The
+-- `rearmed` latch is what makes it bounded: a permanently dark roster costs one
+-- extra ask and 8 s of suppression, not an unbounded ladder.
+function Sync.ReArmRecovery(why)
+    if not Sync.recovery.active then return false, "inactive" end
+    if Sync.recovery.rearmed then return false, "already_rearmed" end
+    Sync.recovery.rearmed = true
+
+    local elapsed = S():Now() - (Sync.recovery.startedAt or S():Now())
+    local delay = Sync.RECOVERY_REARM_AT - elapsed
+    if delay < 0 then delay = 0 end
+    Sync.recovery.rungs = (Sync.recovery.rungs or #Sync.RECOVERY_ASK_AT) + 1
+    S():Schedule(delay, askTask, Sync, Sync.recovery.rungs)
+
+    -- The absolute-deadline recovery flag EXTENDS rather than races (core_lifecycle
+    -- §9.1 step 3), so re-stamping it is the whole extension.
+    local span = delay + Sync.RECOVERY_REPLY_VALID
+    Life():SetRecovering(true, span)
+    S():Unschedule(expireTask, Sync)
+    S():Schedule(span, expireTask, Sync)
+    if Addon.Telemetry then
+        Addon.Telemetry.Write("sync.recovery", { reason = "rearm", path = why, delay = delay })
+    end
+    return true, delay
+end
 
 -- Triggered on login/reload: in a group, not in PvP, and no boss currently engaged.
 function Sync.BeginRecovery(reason)
@@ -1061,30 +1181,19 @@ function Sync.BeginRecovery(reason)
     if Life():AnyEngaged() then return false, "already_engaged" end
 
     Sync.recovery = { active = true, asked = {}, order = {}, repliedBy = nil,
-                      startedAt = S():Now(), reason = reason }
+                      startedAt = S():Now(), reason = reason,
+                      rearmed = false, rungs = #Sync.RECOVERY_ASK_AT }
     -- Step 3: the "recovery in progress" flag, 15 s, held by the LIFECYCLE so the
     -- combat-start paths it gates are the real ones.
     Life():SetRecovering(true)
-    S():Schedule(Life().RECOVERY_SUPPRESS, function()
-        Sync.recovery.active = false
-    end, Sync)
+    S():Schedule(Life().RECOVERY_SUPPRESS, expireTask, Sync)
 
-    local cands = Sync.RankCandidates()
-    local asked = 0
+    -- AUDIT RM-2: rungs are armed, NOT candidates. Nothing about the group is read
+    -- on this frame — see `askTask`.
     for i, at in ipairs(Sync.RECOVERY_ASK_AT) do
-        local c = cands[i]
-        if c then
-            S():Schedule(at, askTask, Sync, c.name, i)
-            asked = asked + 1
-        end
+        S():Schedule(at, askTask, Sync, i)
     end
-    -- Nobody to ask: drop the flag rather than blinding detection for 15 s.
-    if asked == 0 then
-        Sync.recovery.active = false
-        Life():SetRecovering(false)
-        return false, "no_candidates"
-    end
-    return true, asked
+    return true, #Sync.RECOVERY_ASK_AT
 end
 
 function Sync.EndRecovery(by)
@@ -1338,7 +1447,8 @@ function Sync:Reset()
     Sync.tokens, Sync.tokensAt, Sync.draining = Sync.BUCKET_CAP, nil, false
     Sync.sent, Sync.lastSent = 0, nil
     Sync.newestSeen, Sync.newerSenders, Sync.newerCount, Sync.nagged = nil, {}, 0, false
-    Sync.recovery = { active = false, asked = {}, order = {}, repliedBy = nil }
+    Sync.recovery = { active = false, asked = {}, order = {}, repliedBy = nil,
+                      rearmed = false, rungs = #Sync.RECOVERY_ASK_AT }
     Sync.inbound = false
     Sync.forbiddenTxBlocked = 0
     Sync.stats = { received = 0, dropped = 0, corroborated = 0, nagged = 0,

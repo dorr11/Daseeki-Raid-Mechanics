@@ -418,6 +418,16 @@ end
 local function clearWorld()
     W.units, W.group, W.bossUnits, W.nameplates = {}, { "player" }, {}, {}
     W.encounterInProgress = false
+    -- AUDIT RM-2 (SUITE_DATA_HONESTY_AUDIT §5, lesson Class 6). The group world had
+    -- NO cold-roster profile, which is exactly why RM-2 was invisible headless.
+    -- `rosterDark` is the live post-/reload shape, verbatim: `IsInGroup()` already
+    -- answers true — the client has restored the fact that you are in a raid — while
+    -- `GetNumGroupMembers()` still answers 0 and `IsInRaid()` is still false, so the
+    -- shipping iterator would synthesize `party1..N` units that do not exist in a
+    -- 40-man. The default is FALSE (a warm roster) because every pre-existing fixture
+    -- asserts against a populated group; the profile is opted INTO by the fixtures
+    -- that model the login seam.
+    W.rosterDark = false
     -- W3 additions: group shape and identity are now world facts too (the sync layer
     -- reads them). Defaults match what wave 1's injection hard-coded.
     W.inRaid, W.inGroup = true, true
@@ -581,10 +591,17 @@ Life:SetEnv({
     IsEncounterInProgress = function() return W.encounterInProgress end,
     GetInstanceInfo     = _G.GetInstanceInfo,
     IsInInstance        = function() return W.inInstance end,
-    IsInRaid            = function() return W.inRaid ~= false end,
+    -- AUDIT RM-2: under the cold-roster profile the client answers "yes you are in a
+    -- group" and "no you are not in a raid, and it has nobody in it" AT THE SAME
+    -- TIME. That contradiction IS the defect's habitat.
+    IsInRaid            = function() if W.rosterDark then return false end return W.inRaid ~= false end,
     IsInGroup           = function() return W.inGroup ~= false end,
-    GetNumGroupMembers  = function() return #W.group end,
+    GetNumGroupMembers  = function() if W.rosterDark then return 0 end return #W.group end,
     ForEachGroupMember  = function(fn)
+        -- The shipping iterator derives its unit tokens from the two answers above;
+        -- the fixture keeps an explicit list, so a dark roster is modelled by its
+        -- OUTCOME — an empty walk, which is what raid1..raid0 / party1..N produce.
+        if W.rosterDark then return false end
         for _, u in ipairs(W.group) do if fn(u) then return true end end
         return false
     end,
@@ -2254,6 +2271,19 @@ W.auras     = {}     -- spellId -> true (player buffs)
 W.threat    = {}     -- ("unit@mob") -> status number
 W.distance  = {}     -- unit -> exact yards (only consulted where world position exists)
 W.talents   = {}     -- tab index -> points spent
+-- AUDIT RM-1 (SUITE_DATA_HONESTY_AUDIT §5, lesson Class 5). The talent stubs used to
+-- be `GetNumTalentTabs = function() return 3 end` and a `GetTalentTabInfo` that
+-- always answered a number — `n` was always 3, `points` was always a number, and the
+-- COLD-TALENT WORLD SIMPLY DID NOT EXIST here. That hardcode is the single reason
+-- RM-1 was invisible. It is now a profile with two axes, because the client has two
+-- distinct cold shapes and the fix has to survive both:
+--   "none"  GetNumTalentTabs() answers 0            (the tree is not there yet)
+--   "nil"   it answers 3 but every tab returns nil  (the tree is there, unfilled)
+--   "warm"  the spec-behaving profile
+-- The spec-behaving profile is the DEFAULT only because every pre-existing Era
+-- fixture asserts against a readable tree; the cold profiles are what the RM-1 gate
+-- boots a Protection paladin under.
+W.talentProfile = "warm"
 W.class     = "WARRIOR"
 W.form      = 0
 W.mainTank  = false
@@ -2294,8 +2324,17 @@ Era:SetEnv({
         return c.start, c.duration
     end,
     GetShapeshiftFormID = function() return W.form end,
-    GetNumTalentTabs = function() return 3 end,
-    GetTalentTabInfo = function(i) return "tab" .. i, nil, nil, nil, W.talents[i] or 0 end,
+    GetNumTalentTabs = function()
+        if W.talentProfile == "none" then return 0 end
+        return 3
+    end,
+    GetTalentTabInfo = function(i)
+        -- The "nil" profile is the nastier of the two: the tab EXISTS and answers a
+        -- name, and only the points column is absent. That is the read `points or 0`
+        -- turned into a truthy, wrong zero.
+        if W.talentProfile ~= "warm" then return "tab" .. i, nil, nil, nil, nil end
+        return "tab" .. i, nil, nil, nil, W.talents[i] or 0
+    end,
     GetPartyAssignment = function(role) return role == "MAINTANK" and W.mainTank end,
     PlayerHasAura = function(id) return W.auras[id] and true or false end,
 })
@@ -2340,6 +2379,7 @@ Warn:SetEnv({
 -- GATE API deliberately swapped in fixture resolvers.
 Era.Init(); Scan.Init(); Bars.Init(); Warn.Init(); Public.Init()
 Addon.RoleResolver, Addon.ClassResolver = Era.ResolveRole, Era.Class
+Addon.RoleKnown = Era.RoleKnown          -- AUDIT RM-1: the third resolver, same seam
 
 local function resetW2()
     resetLife()
@@ -2362,6 +2402,12 @@ local function resetW2()
     for k in pairs(W.roster)    do W.roster[k]    = nil end
     W.class, W.form, W.mainTank, W.level, W.hasPosition = "WARRIOR", 0, false, 60, true
     W.aliveInZone = nil
+    -- AUDIT RM-1: every fixture starts from the spec-behaving talent profile with no
+    -- role on record, so a gate that wants the cold world has to ask for it and a
+    -- gate that does not cannot inherit one by accident.
+    W.talentProfile = "warm"
+    Era.roleState.signature   = nil
+    Era.roleState.warmthArmed = false
     local bs = Bars.Settings()
     bs.hideAll, bs.hiddenMode, bs.variance, bs.varianceCountdown = false, false, true, false
     bs.animate, bs.enlargeAt, bs.hideAbove = true, 11, 60
@@ -8339,6 +8385,322 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- GATE BRIEF-N — SUITE_DATA_HONESTY_AUDIT Brief N: "read the roster and the
+-- talents when they exist" (RM-1 Class 5, RM-2 Class 6, RM-3 Class 4).
+--
+-- Both defects were invisible headless for one reason each, and the audit named
+-- both: the group world had no cold-roster profile, and `GetNumTalentTabs` was
+-- hardcoded to 3. Those profiles now exist (see `W.rosterDark` / `W.talentProfile`),
+-- so each block below opens with a RED CONTROL — the OLD code's shape, reproduced
+-- and driven on the SAME fixture — and asserts it fails. A gate that passes on both
+-- the old and the new code proves nothing; the red controls are what stop this one
+-- from becoming that.
+----------------------------------------------------------------------
+gate("BRIEF-N  roster + talents read when they exist (RM-1, RM-2, RM-3)")
+
+do  -- RM-2 (a): the populate witness itself
+    resetLife()
+    W.rosterDark = true
+    ck(Life.env.IsInGroup(),
+       "RM-2: on the entering-world frame the client already says you ARE in a group…")
+    eq(Life.env.GetNumGroupMembers(), 0, "…while the group still has no members…")
+    eq(Life.env.IsInRaid(), false, "…and is not yet a raid (so the 40-man walk is party1..N)")
+    ck(not Life:RosterPopulated(),
+       "…so the roster reads UNANSWERED, which is not the same as an empty group (Class 6)")
+    Life:OnEvent("GROUP_ROSTER_UPDATE")
+    ck(Life.rosterSeen, "GROUP_ROSTER_UPDATE is recorded as the populate witness")
+    ck(Life:RosterPopulated(), "…and after it, a read of the group is worth believing")
+    local hasRoster = false
+    for _, e in ipairs(Life.EVENTS) do if e == "GROUP_ROSTER_UPDATE" then hasRoster = true end end
+    ck(hasRoster, "…and the engine's own event list carries it, so the frame really subscribes")
+    resetLife()
+    ck(Life:RosterPopulated(), "a NON-ZERO member count is its own proof — no witness required")
+end
+
+do  -- RM-2 (b): reload mid-raid — dark at entering-world, populated by +7 s
+    resetSync(); makeRaid()
+    W.rosterDark = true
+
+    -- RED CONTROL. The old chain snapshotted the candidates inside BeginRecovery, on
+    -- the PLAYER_ENTERING_WORLD frame, and scheduled one ask per candidate FOUND.
+    -- Reproduced in shape and driven on this fixture it finds nobody, `asked == 0`,
+    -- and the old code then dropped the flag and returned "no_candidates" — no bars
+    -- for the rest of the encounter, silently. If this ever goes green the fixture
+    -- has stopped modelling the client and everything below it is worthless.
+    do
+        local snapshot = Sync.RankCandidates()
+        local wouldAsk = 0
+        for i in ipairs(Sync.RECOVERY_ASK_AT) do if snapshot[i] then wouldAsk = wouldAsk + 1 end end
+        eq(wouldAsk, 0, "RM-2 RED CONTROL: the OLD begin-frame snapshot finds NOBODY to ask")
+    end
+
+    local okr, rungs = Sync.BeginRecovery("reload")
+    eq(okr, true, "…yet recovery BEGINS anyway: nothing about the group is read on this frame")
+    eq(rungs, 3, "…three ask RUNGS are armed, not three named candidates")
+    ck(Life:IsRecovering(), "…and the 15 s suppression flag is held while it waits (§9.1 step 3)")
+
+    advance(2)                        -- the client delivers the roster a beat later
+    W.rosterDark = false
+    Life:OnEvent("GROUP_ROSTER_UPDATE")
+
+    advance(4.9); eq(countOnWire("RT"), 0, "nothing is asked before 7 s (§9.1 cascade unchanged)")
+    advance(0.4); eq(countOnWire("RT"), 1,
+       "RM-2: at 7 s the LIVE roster is read and a raider IS asked — the reload recovers")
+    advance(3);   eq(countOnWire("RT"), 2, "…the 10 s rung reads it again and asks the next")
+    advance(3);   eq(countOnWire("RT"), 3, "…and the 13 s rung the one after that")
+    eq(#Sync.recovery.order, 3, "…three asks on record")
+    ck(Sync.recovery.order[1] ~= Sync.recovery.order[2]
+       and Sync.recovery.order[2] ~= Sync.recovery.order[3]
+       and Sync.recovery.order[1] ~= Sync.recovery.order[3],
+       "…to three DISTINCT raiders — a live re-read never asks the same person twice")
+end
+
+do  -- RM-2 (c): still dark at the first ask -> ONE bounded re-arm
+    resetSync(); makeRaid()
+    W.rosterDark = true
+    Sync.BeginRecovery("reload")
+    advance(7.3)
+    eq(countOnWire("RT"), 0, "a roster STILL dark at the first ask whispers nobody…")
+    ck(Sync.recovery.active,
+       "…and does NOT conclude 'no candidates' and give up — that was the live bug")
+    ck(Sync.recovery.rearmed, "…it RE-ARMS (Class 6: absence of the list is not an empty list)")
+    eq(Sync.recovery.rungs, 4, "…adding exactly ONE more ask rung, not an unbounded ladder")
+    advance(6)                        -- the 10 s and 13 s rungs, both still dark
+    eq(countOnWire("RT"), 0, "…the remaining rungs find it dark too and stay silent")
+    eq(Sync.recovery.rungs, 4, "…without re-arming a second time (the latch is what bounds it)")
+    advance(3)                        -- t ~= 16.3
+    ck(Life:IsRecovering(), "…and the suppression window was EXTENDED to cover the re-armed ask")
+    W.rosterDark = false
+    Life:OnEvent("GROUP_ROSTER_UPDATE")
+    advance(2)                        -- t ~= 18.3
+    eq(countOnWire("RT"), 1, "…so a roster that lands at 16 s is still asked, at 18 s")
+end
+
+do  -- RM-2 (d): a roster that NEVER populates hands the flag back
+    resetSync(); makeRaid()
+    W.rosterDark = true
+    Sync.BeginRecovery("reload")
+    advance(18.3)
+    eq(countOnWire("RT"), 0, "a roster that never populates asks nobody…")
+    ck(not Sync.recovery.active, "…and the cascade ENDS at its last rung rather than hanging")
+    ck(not Life:IsRecovering(),
+       "…releasing the suppression flag: detection is never blinded for nothing")
+    ck(Life:HealthArmed(), "…so health-based pull detection is armed again")
+end
+
+do  -- RM-3: "rank by version" was provably always -1; the ask-time read fixes it
+    resetSync(); makeRaid()
+    ck(next(Sync.peers) == nil,
+       "RM-3: after a /reload the peer table is empty — a new Lua state has no history")
+    do
+        local snap = Sync.RankCandidates()
+        eq(snap[1] and snap[1].rev, -1,
+           "RM-3 RED CONTROL: ranked on the BEGIN frame every candidate's revision is -1…")
+        eq(snap[1] and snap[1].name, "Alpha-Whitemane",
+           "…so 'highest version first' collapses onto the alphabetical tie-break, permanently")
+    end
+
+    Sync.BeginRecovery("reload")
+    advance(3)                        -- the hello replies land on their §7.4 debounce
+    rx("Echo-Whitemane", "V", 30000, Sync.VERSION.release, "2.0.0", 0)
+    eq(Sync.peers["Echo-Whitemane"] and Sync.peers["Echo-Whitemane"].rev, 30000,
+       "…a peer answers our hello three seconds in, well before the 7 s rung")
+    advance(4.3)
+    eq(countOnWire("RT"), 1, "…the 7 s rung asks exactly one raider")
+    do
+        local lastRT
+        for i = 1, #WIRE do
+            if Sync.Split(WIRE[i].payload)[3] == "RT" then lastRT = WIRE[i] end
+        end
+        eq(lastRT and lastRT.target, "Echo-Whitemane",
+           "RM-3: ranked AT THE ASK the version key is alive — the newest peer is asked FIRST")
+        eq(lastRT and lastRT.chatType, "WHISPER", "…still by whisper (§9.1)")
+    end
+end
+
+do  -- RM-1 (a): a cold talent tree is UNKNOWN, not tab 1
+    resetW2()
+    W.class = "PALADIN"
+    W.talents[2] = 31                 -- a PROTECTION paladin: tab 2 is the deepest
+    W.talentProfile = "none"          -- …but the client has not delivered the tree
+    Era.ClearCache()
+
+    -- RED CONTROL: the OLD SpecTab, reproduced line for line in shape.
+    local function oldSpecTab()
+        local n = Era.env.GetNumTalentTabs() or 0
+        local best, bestPoints = 1, -1
+        for i = 1, n do
+            local _, _, _, _, points = Era.env.GetTalentTabInfo(i)
+            points = points or 0
+            if points > bestPoints then best, bestPoints = i, points end
+        end
+        if bestPoints <= 0 then return 1, 0 end
+        return best, bestPoints
+    end
+    eq(oldSpecTab(), 1, "RM-1 RED CONTROL: the OLD SpecTab answers TAB 1 for an unreadable tree")
+    ck(Era.HEALER_SPECS["PALADIN" .. tostring((oldSpecTab()))] == true,
+       "…and PALADIN1 is the HOLY tree — the old code booted a Protection paladin as a HEALER")
+
+    eq(Era.SpecTab(), nil, "RM-1: an unreadable talent tree now answers UNKNOWN, not tab 1")
+    eq(Era.Spec(), nil, "…so there is no spec string to mistake for an answer")
+    eq(Era.RoleKnown(), false, "…and the addon can say so out loud")
+    eq(Era.IsHealer(), false, "…the Protection paladin is NOT classified as a healer")
+    eq(Era.IsTank(), false, "…nor as a tank: unknown refuses in both directions")
+    eq(Era.RoleSignature(), nil, "…no role signature is derived from it")
+    eq(Era.roleState.signature, nil,
+       "…and NOTHING is stamped, so the first readable answer is the first one on record")
+
+    -- The second cold shape: the tabs exist and answer a name, the points do not.
+    W.talentProfile = "nil"
+    Era.ClearCache()
+    eq(Era.env.GetNumTalentTabs(), 3, "…the other cold shape reports THREE tabs…")
+    eq(Era.SpecTab(), nil, "…and is still refused, because every tab returned nil points")
+
+    -- Warm: §10.23's rule is intact, both halves of it.
+    W.talentProfile = "warm"
+    Era.ClearCache()
+    eq(Era.SpecTab(), 2, "…a readable tree answers the tab with the most points spent (§10.23)")
+    eq(Era.Spec(), "PALADIN2", "…identified as CLASS..tabIndex")
+    eq(Era.IsHealer(), false, "…and PALADIN2 is Protection, so still not a healer")
+    W.talents[2] = nil
+    Era.ClearCache()
+    eq(Era.SpecTab(), 1, "…ZERO POINTS SPENT still falls back to tab 1 — the spec rule survives")
+    eq(select(2, Era.SpecTab()), 0, "…reported as zero points spent, which is an ANSWER")
+end
+
+do  -- RM-1 (b): the bounded warmth ladder earns the role back
+    resetW2(); Sched:Flush()
+    W.class = "PALADIN"; W.talents[2] = 31
+    W.talentProfile = "none"
+    Era.ClearCache()
+
+    local fired, lastSpec = 0, nil
+    local cb = function(_, spec) fired = fired + 1; lastSpec = spec end
+    Addon:RegisterEngineCallback("ROLE_CHANGED", cb)
+
+    ck(Era.ArmRoleWarmth("gate"), "RM-1: an unknown role ARMS a bounded re-ask ladder")
+    ck(not Era.ArmRoleWarmth("gate"), "…exactly once — bounded, not a retry storm")
+    eq(#Era.ROLE_WARMTH_AT, 3, "…of three rungs, after which unknown is reported as unknown")
+    advance(2.2)
+    eq(fired, 0, "…a rung that still finds the tree dark announces NOTHING")
+    eq(Era.roleState.signature, nil, "…and stamps nothing")
+
+    W.talentProfile = "warm"          -- the client finally delivers the tree
+    advance(3)
+    eq(fired, 1, "…the first rung that CAN read it derives the role and announces it")
+    eq(lastSpec, "PALADIN2", "…as PALADIN2 — Protection, which is what the player actually is")
+    eq(Era.roleState.signature, "PALADIN2/false/false", "…and THAT is now the answer on record")
+    advance(6)
+    eq(fired, 1, "…the remaining rungs are silent, because nothing moved")
+    Addon:UnregisterEngineCallback("ROLE_CHANGED", cb)
+end
+
+do  -- RM-1 (b2): a roster debounce must not DELETE the warmth ladder
+    resetW2(); Sched:Flush()
+    W.class = "PALADIN"; W.talents[2] = 31
+    W.talentProfile = "none"
+    Era.ClearCache()
+    local fired = 0
+    local cb = function() fired = fired + 1 end
+    Addon:RegisterEngineCallback("ROLE_CHANGED", cb)
+
+    Era.ArmRoleWarmth("gate")
+    Era.OnRosterChanged()             -- a raider joins while the tree is still dark
+    advance(1.2)                      -- the roster debounce fires and refuses
+    eq(fired, 0, "a roster event landing mid-ladder refuses, because the tree is still dark")
+    W.talentProfile = "warm"
+    advance(1.2)                      -- t ~= 2.4 — the ladder's own 2 s rung
+    eq(fired, 1,
+       "RM-1: …and it did NOT delete the ladder — Sched:DelayedCall cancels on (fn, owner), "
+       .. "so the rungs carry their own identity")
+    Addon:UnregisterEngineCallback("ROLE_CHANGED", cb)
+end
+
+do  -- RM-1 (c): a cold read never demotes a real tank
+    resetW2(); Sched:Flush()
+    W.class = "WARRIOR"; W.talents[2] = 31
+    W.form = Era.DEFENSIVE_STANCE_FORM
+    Era.ClearCache()
+    ck(Era.IsTank(), "a Prot warrior in Defensive Stance is a tank…")
+    ck(Era.roleState.tankLatched, "…and the §5.4 session latch is set")
+    W.talentProfile = "none"          -- the tree goes dark (a zone-in, a reload seam)
+    Era.ClearCache()
+    eq(select(2, Era._recheckRole()), "role_unknown",
+       "RM-1: a re-check against an unreadable tree REFUSES…")
+    ck(Era.roleState.tankLatched,
+       "…without clearing a latch it could not re-earn — the fix must not demote a real tank")
+    ck(Era.roleState.warmthArmed, "…and it arms the ladder instead of guessing")
+end
+
+do  -- RM-1 (d): PLAYER_ENTERING_WORLD is routed to the throttled re-check
+    resetW2(); Sched:Flush()
+    W.class = "PALADIN"; W.talents[2] = 31
+    W.talentProfile = "none"
+    Era.ClearCache()
+
+    local fired = 0
+    local cb = function() fired = fired + 1 end
+    Addon:RegisterEngineCallback("ROLE_CHANGED", cb)
+    Era.OnWorldEntered()
+    ck(Era.roleState.warmthArmed,
+       "RM-1: PLAYER_ENTERING_WORLD arms the warmth ladder when the role is unknown")
+    W.talentProfile = "warm"
+    advance(Era.ROLE_RECHECK_THROTTLE + 0.2)
+    eq(fired, 1, "…and its own throttled re-check earns the role a second after the loading screen")
+    Addon:UnregisterEngineCallback("ROLE_CHANGED", cb)
+
+    -- The subscription lives behind `if type(_G.CreateFrame) == "function"`, which is
+    -- false headless, so this half is asserted at the SOURCE — the same discipline
+    -- W5-BRIEF-G applies to the roster events, for the same mutation-tested reason.
+    local src = readFile(P("svc_era.lua")) or ""
+    ck(src:match('event == "PLAYER_ENTERING_WORLD" then Era%.OnWorldEntered') ~= nil,
+       "…and Era.Init's own event handler actually ROUTES it there")
+    ck(src:match("Era%.ArmRoleWarmth%(\"boot\"%)") ~= nil,
+       "…and Era.Init arms the ladder at boot, where the audit proved the tree is cold")
+end
+
+do  -- RM-1 (e): the options tree is not FROZEN on a role nobody gave
+    resetW2(); Sched:Flush()
+    -- Earlier gates deliberately swap in always-true fixture resolvers; this block is
+    -- about the REAL derivation reaching the projection, so put the shipping ones back.
+    local prevRole, prevClass = Addon.RoleResolver, Addon.ClassResolver
+    Addon.RoleResolver, Addon.ClassResolver = Era.ResolveRole, Era.Class
+    Addon.RoleKnown = Era.RoleKnown
+    W.class = "PALADIN"; W.talents[1] = 31      -- genuinely a HOLY paladin: a healer
+    W.talentProfile = "none"
+    Era.ClearCache()
+
+    Addon.zones, Addon.zonesById = {}, {}
+    Addon.encounters, Addon.encountersById = {}, {}
+    Addon.encByCreature, Addon.encByEncounterId, Addon.encByZone = {}, {}, {}
+    Addon:RegisterZone({ id = "brnz", name = "Brief N Zone", order = 1, size = 40 })
+    Addon:RegisterEncounter({
+        id = "brnz:boss", name = "Brief N Boss", zone = 1,
+        creatureId = { 99101 }, legacy = { raidId = "brnz", bossId = "boss" },
+        detect = { mode = "combat" }, combat = {},
+        warnings = { { key = "healonly", text = "Heal thing", role = "Healer" } },
+    })
+
+    API.PublishOptionsTree()
+    eq(Addon._optionsTreeRoleKnown, false,
+       "RM-1: a tree projected while the role is UNREADABLE is marked provisional…")
+    eq(Addon:GetBoss("brnz", "boss").mechanics[1].default, false,
+       "…and its healer-gated row is not switched on by an answer nobody gave")
+
+    API._roleWatchInstalled = nil
+    API.WatchRoleChanges()
+    Era.ArmRoleWarmth("gate")         -- armed while the tree is still dark
+    W.talentProfile = "warm"
+    advance(2.2)
+    eq(Addon._optionsTreeRoleKnown, true,
+       "…and once the tree warms, ROLE_CHANGED re-projects it on a role that was earned")
+    eq(Addon:GetBoss("brnz", "boss").mechanics[1].default, true,
+       "…switching the healer row ON for the Holy paladin it belongs to — no /reload needed")
+    Addon.RoleResolver, Addon.ClassResolver = prevRole, prevClass
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
@@ -8375,7 +8737,8 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "W5-BRIEF-G  determinism + role re-derivation (RM-1, RMS-1, RMS-2, RME-1, RML-1)",
                      "W5-SURFACES  the options panes' own logic: telemetry viewer + sound packs",
                      "W5-RELEASE  the assertable release-gate rows",
-                     "W5-DBFIX  the owner's SavedVariables shape survives the upgrade" }) do
+                     "W5-DBFIX  the owner's SavedVariables shape survives the upgrade",
+                     "BRIEF-N  roster + talents read when they exist (RM-1, RM-2, RM-3)" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

@@ -29,12 +29,16 @@ a fight that starts oddly still arms your timers.
 - **It knows what you are.** Tank-only, healer-only, "you can dispel this" and
   class-specific alerts ship switched on for the people they are for and off for
   everyone else — worked out from your talents, your stance or form, and your raid
-  assignment, and re-worked out when you respec or get promoted mid-raid.
+  assignment, and re-worked out when you respec or get promoted mid-raid. If your
+  talents are not readable yet at login it waits and asks again rather than guessing —
+  a Protection paladin is never filed as a healer because the client was slow.
 - **Raid sync.** Pull timers and break timers are shared with everyone else running
   Raid Mechanics, and a kill or a wipe is confirmed by several people before it counts,
   so one person's disconnect does not end the fight for the raid.
 - **Reload recovery.** Reload or disconnect mid-fight and your bars come back — the raid
-  tells your client what is still running, most-urgent first.
+  tells your client what is still running, most-urgent first. It waits for your raid
+  roster to actually arrive before it asks, and asks again if it has not, so a reload
+  during a pull recovers instead of quietly finding nobody to ask.
 - **DBM pull timers still work.** If someone in your raid pulls with DBM, you get the
   countdown. Raid Mechanics listens to DBM but never transmits on DBM's channel.
 - **Self-auditing timers.** When an ability comes back sooner than the addon expected,
@@ -92,6 +96,50 @@ everything the rebuild added. If you want to go back, keep a copy of your
 These entries are the engineering record of how 2.0.0 was built. They were
 never shipped as releases; everything they describe is folded into the 2.0.0
 block above. Kept because each wave documents why a value is what it is.
+
+### 2.0.0 data-honesty pass, Brief N (cold reads at the login seam — internal)
+Three findings from the suite data-honesty audit, all of them the same shape: the
+code read a client fact on the one frame the client cannot answer it, and could not
+tell "not answered" apart from "answered nothing".
+- **RM-2 — reload recovery read the raid roster too early (the headline).** The
+  cascade correctly deferred its whispers to +7/10/13 s, and then snapshotted the
+  list of people to whisper *synchronously on the `PLAYER_ENTERING_WORLD` frame* —
+  the one thing the client has not populated yet. After a mid-raid `/reload`
+  `IsInGroup()` is already true while `GetNumGroupMembers()` still answers 0, so the
+  snapshot was empty, the code concluded "nobody to ask", dropped its flag and
+  returned. Nothing retried, and the player rejoined the next pull with no bars at
+  all, silently — for a feature that exists solely for that scenario. The snapshot
+  moved to the ask: each rung now reads the LIVE roster when it fires, so the
+  7/10/13 s ladder is three real attempts instead of three copies of one stale
+  answer. On top of that the engine now records `GROUP_ROSTER_UPDATE` as a populate
+  witness and refuses to conclude anything from an unanswered roster, with one
+  bounded re-ask at +18 s if it is still dark — and if it never populates, the
+  suppression flag is handed straight back rather than blinding pull detection for
+  nothing.
+- **RM-3 — "rank the raid by version" could never work, and now does.** The peer
+  table is empty after a reload, the version hello went out on the same frame, and
+  replies land three seconds later — so every candidate carried revision -1 and the
+  documented version ranking collapsed permanently onto alphabetical order. Recovery
+  could whisper a twenty-two-revisions-old client while current ones went unasked.
+  Ranking at the ask fixes it for free.
+- **RM-1 — "no talent points spent" and "talents not loaded" were the same answer.**
+  Both resolved to talent tab 1, which for a paladin is Holy: a Protection paladin
+  whose talents read cold at login booted classified as a **healer**, and the options
+  tree froze that into every role-gated default for the session. Unreadable talents
+  now answer *unknown*: no role is derived from them, no signature is stamped, no
+  projection is treated as final, and a re-check against a dark tree refuses instead
+  of clearing a tank latch it cannot re-earn. The already-registered
+  `PLAYER_ENTERING_WORLD` is routed to the throttled re-check, backed by a bounded
+  three-rung ladder, so the answer is earned when the talents warm — including for a
+  player who logs in solo and never groups. Zero points spent still resolves to tab 1;
+  that rule is unchanged, it just requires the tree to have answered first.
+- **The simulator was unkinded first, because that is why none of this was visible.**
+  The harness hardcoded `GetNumTalentTabs()` to 3 and had no cold-roster world at all.
+  Both are now profiles — a talent tree that is absent, then present-but-unfilled,
+  then readable; a roster that is dark at entering-world and populates a beat later —
+  and every fix is proved by a RED CONTROL that reproduces the old code's shape on the
+  same fixture and fails. One new gate, `BRIEF-N`, 77 assertions — 39 gates and
+  2762 assertions in total, all green.
 
 ### 2.0.0 rebuild, wave 5 (polish, options, scaffold retirement, release prep — internal)
 - **The scaffolding is gone.** `core_boot.lua` existed through waves 1-4 as the place

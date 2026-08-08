@@ -1214,6 +1214,11 @@ function API.OptionKey(encId, rowKey) return tostring(encId) .. ":" .. tostring(
 -- to drive role-gated rows deterministically.
 Addon.RoleResolver  = nil   -- function(gateString) -> boolean   (svc_era.lua)
 Addon.ClassResolver = nil   -- function() -> "WARLOCK" etc.      (svc_era.lua)
+-- AUDIT RM-1 (Brief N). The third one, and the only one that can answer "I do not
+-- know yet": the role resolvers above must give SOME boolean, and a role derived
+-- from a talent tree the client has not delivered is not one. `PublishOptionsTree`
+-- asks this before it records a projection as authoritative.
+Addon.RoleKnown     = nil   -- function() -> boolean             (svc_era.lua)
 
 function API.RowDefault(row)
     if row.default ~= nil then return row.default and true or false end
@@ -2212,6 +2217,16 @@ function API.PublishOptionsTree()
     table.sort(raids, function(a, b) return (a.order or 999) < (b.order or 999) end)
     Addon.raids, Addon.raidsById, Addon.npcIndex = raids, byId, npc
     Addon._optionsTreeRevision = (Addon._optionsTreeRevision or 0) + 1
+    -- AUDIT RM-1 (Brief N, lesson Class 5). `projectRow` FREEZES the role-resolved
+    -- default (see WatchRoleChanges below), and a projection built while the talent
+    -- tree was unreadable freezes an answer nobody actually gave. It is not this
+    -- function's business to delay the projection — options.lua needs a tree to draw
+    -- — so it records WHAT IT KNEW instead: false here means "these role defaults
+    -- are provisional, a ROLE_CHANGED is still owed". svc_era installs the resolver;
+    -- a build with no Era at all is treated as known, because there is no role
+    -- derivation to be cold about.
+    local known = Addon.RoleKnown
+    Addon._optionsTreeRoleKnown = (type(known) ~= "function") or (known() and true or false)
     return raids
 end
 
