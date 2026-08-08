@@ -139,6 +139,11 @@ Addon:RegisterModule({
     desc = "Live health of Stalagg + Feugen (the adds before Thaddius). Drag the header to move.",
     defaults = { enabled = false },
 
+    -- 2.0 placement seam (modules.lua). Metadata only; no logic moved.
+    placeKey   = MH_KEY,
+    placeLabel = "Thaddius add health",
+    placeFrame = function() return mh end,
+
     Start = function()
         wipe(deadAdds)
         ShowMH(false)

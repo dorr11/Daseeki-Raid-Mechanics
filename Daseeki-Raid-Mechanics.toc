@@ -44,6 +44,11 @@ core_sync.lua
 # is loaded AFTER it.
 svc_era.lua
 svc_scan.lua
+# ui_anchors.lua is the PLACEMENT MODEL (bucket routing + the anchor resolver). Both
+# surfaces below route every row through it, and core_api's options projection asks it
+# to describe a row's severity, so it is defined before any of its consumers. It needs
+# only theme.lua (HudAnchor) and core.lua (SetMechanicPos), both far above.
+ui_anchors.lua
 ui_bars.lua
 ui_warnings.lua
 public_api.lua

@@ -175,6 +175,13 @@ Addon:RegisterModule({
     -- characters with a saved enabled=false keep their setting; this is fresh-profile only.
     defaults = { enabled = true },
 
+    -- 2.0 placement seam (modules.lua). Metadata only — the widget, its logic and
+    -- its own drag handler are untouched; the anchor system simply owns where it
+    -- sits from here on, docked to the Specials anchor unless detached.
+    placeKey   = KEY,
+    placeLabel = "Gothik wave tracker",
+    placeFrame = function() return frame end,
+
     Start = function()
         startTime = GetTime()
         Show(false)

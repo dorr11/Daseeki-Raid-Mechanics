@@ -83,7 +83,7 @@ SlashCmdList["DASEEKIRM"] = function(msg)
         Addon:ShowHudAnchors()
         local bars = Addon.Bars and Addon.Bars.Demo() or 0
         local warns = Addon.Warnings and Addon.Warnings.Demo() or 0
-        p(("Demo: %d bars, %d warnings; the four HUD anchors are labelled and draggable. Use %s to clear.")
+        p(("Demo: %d bars, %d warnings; every HUD anchor is labelled and draggable. Use %s to clear.")
             :format(bars, warns, W("text", "/drm demo off")))
 
     elseif msg == "demo off" or msg == "demooff" then

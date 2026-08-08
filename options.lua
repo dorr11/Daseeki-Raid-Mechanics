@@ -58,6 +58,74 @@ local function StyleNames()
     local t = {}; for _, s in ipairs(STYLE_CHOICES) do t[#t + 1] = s.name end; return t
 end
 
+-- ── The 2.0 placement model, as options data ──────────────────────────────────
+-- ONE control per row (Major / Minor / Hidden / Custom) and ONE control per anchor
+-- (Attach to). Both are plain labelled dropdowns over the tables ui_anchors.lua
+-- already publishes — the options surface names nothing the engine does not.
+local ROUTE_NAMES, ROUTE_KEY = {}, {}
+local function routeNames()
+    if #ROUTE_NAMES == 0 and Addon.Route then
+        for _, k in ipairs(Addon.Route.ORDER) do
+            local label = Addon.Route.LABEL[k]
+            ROUTE_NAMES[#ROUTE_NAMES + 1] = label
+            ROUTE_KEY[label] = k
+        end
+    end
+    return ROUTE_NAMES
+end
+
+local ATTACH_NAMES = {}
+local function attachNames()
+    if #ATTACH_NAMES == 0 and Addon.Anchors then
+        for _, k in ipairs(Addon.Anchors.ATTACH_ORDER) do
+            ATTACH_NAMES[#ATTACH_NAMES + 1] = Addon.Anchors.ATTACH[k].label
+        end
+    end
+    return ATTACH_NAMES
+end
+
+-- THE FALLBACK RULE, said once, in the place the user is making the decision.
+-- It is the single most surprising thing about attaching to a unit frame, and a
+-- raider who does not know it will assume a bar "disappeared".
+local ATTACH_HINT =
+    "Attached content falls back to its own screen position whenever that frame is "
+    .. "hidden or missing \226\128\148 nothing vanishes when your target dies."
+
+-- One "Attach to" row + its frame-name field, over whatever anchor key `keyOf()`
+-- answers. Used by the five HUD anchors, every Custom row and every special, so all
+-- of them behave identically and are described identically.
+local function attachRow(flow, keyOf, refs)
+    local A = Addon.Anchors
+    refs = refs or {}
+    if not A then return refs end
+    local r = flow:AddRow()
+    refs.attachDD = r:Dropdown({
+        label = "Attach to", width = 165, choices = attachNames(),
+        get = function()
+            local k = keyOf(); if not k then return A.ATTACH.screen.label end
+            local mode = A.GetAttach(k)
+            return (A.ATTACH[mode] or A.ATTACH.screen).label
+        end,
+        set = function(name)
+            local k = keyOf(); if not k then return end
+            A.SetAttach(k, A.ATTACH_LABEL_TO_KEY[name] or "screen")
+            if refs.nameBox and refs.nameBox.Refresh then refs.nameBox.Refresh() end
+        end,
+    })
+    refs.nameBox = r:EditBox({
+        label = "Frame name (for \"Custom frame\")", width = 190,
+        get = function()
+            local k = keyOf(); if not k then return "" end
+            local _, n = A.GetAttach(k); return n or ""
+        end,
+        set = function(v)
+            local k = keyOf(); if not k then return end
+            A.SetFrameName(k, v)
+        end,
+    })
+    return refs
+end
+
 local function rowGap() return (UI.Token and UI.Token("rowGap")) or 10 end
 
 -- Set a DaseekiUI button's caption (MakeButton exposes the FontString as _label).
@@ -266,6 +334,72 @@ BuildMechDetail = function(panel)
 
     d.title = flow:Label("")
     d.title._label:SetFontObject(UI.fonts.header)
+
+    -- ── Sub-section 0: PLACEMENT — the one control that decides where this row's
+    -- timer bar / warning goes. Everything below it is about what the row SAYS;
+    -- this is about where it appears, so it comes first and it is one control.
+    flow:AddSeparator()
+    local pll = flow:Label("Placement")
+    pll._label:SetFontObject(UI.fonts.accent)
+    d.routeDD = flow:Dropdown({
+        label = "Show this as", width = 180, choices = routeNames(),
+        get = function()
+            local key, mech = CurKey(panel), CurDef(panel)
+            local R = Addon.Route
+            if not (key and R) then return (R and R.LABEL.minor) or "Minor" end
+            return R.LABEL[R.Of(key, mech and mech._routeDesc, mech and mech._shipsOff)]
+        end,
+        set = function(name)
+            local key = CurKey(panel)
+            if not (key and Addon.Route) then return end
+            Addon.Route.Set(key, ROUTE_KEY[name])
+            PopulateDetail(panel)
+        end,
+    })
+    -- The bucket's own one-liner PLUS what this row would do if left alone. A user
+    -- who has overridden a row needs to be able to see what they overrode.
+    d.routeHint = flow:Hint("")
+
+    -- The Custom group: a Custom row gets its OWN placement record — position,
+    -- optional frame attachment, size — and none of it means anything for a row
+    -- that is in one of the two lists, so it collapses away for those.
+    d._routeGroup = {}
+    d.routeAttach = attachRow(flow, function() return CurKey(panel) end)
+    addTo(d._routeGroup, lastHandle(flow))
+    flow:Hint(ATTACH_HINT); addTo(d._routeGroup, lastHandle(flow))
+    d.routeSize = flow:Slider({
+        label = "Size", width = 180,
+        min = (Addon.Anchors and Addon.Anchors.SIZE_MIN) or 0.5,
+        max = (Addon.Anchors and Addon.Anchors.SIZE_MAX) or 2.5, step = 0.05,
+        get = function()
+            local k = CurKey(panel)
+            return (k and Addon.Anchors) and Addon.Anchors.GetSize(k) or 1
+        end,
+        set = function(v)
+            if panel._pop then return end
+            local k = CurKey(panel)
+            if k and Addon.Anchors then Addon.Anchors.SetSize(k, v) end
+        end,
+        format = function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end,
+    }); addTo(d._routeGroup, lastHandle(flow))
+    local prow = flow:AddRow(); addTo(d._routeGroup, lastHandle(flow))
+    -- The place/drag affordance, and it is the SAME one `/drm anchors` uses: this
+    -- row's own labelled handle, dressed and draggable alongside the four buckets.
+    prow:Button({ text = "Place", width = 110, onClick = function()
+        local key, mech = CurKey(panel), CurDef(panel)
+        if not key then return end
+        if Addon.Bars then
+            Addon.Bars.EnsureAnchors()
+            Addon.Bars.RowAnchor(key, (mech and mech.name) or key)
+        end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        Addon:ShowHudAnchors()
+    end })
+    prow:Button({ text = "Reset placement", width = 140, onClick = function()
+        local key = CurKey(panel)
+        if key and Addon.Anchors then Addon.Anchors.Reset(key) end
+        PopulateDetail(panel)
+    end })
 
     -- ── Sub-section 1: Ability Tracker (always shown for a selected mechanic) ──
     flow:AddSeparator()
@@ -541,6 +675,27 @@ PopulateDetail = function(panel)
 
     panel._pop = true   -- suppress slider setters while syncing values
     d.title._label:SetText(mech.name)
+
+    -- Placement first: read the routed bucket, say what it means, and show the
+    -- Custom sub-group only when the row is actually Custom.
+    local R = Addon.Route
+    local bucket = R and R.Of(panel.selMechKey, mech._routeDesc, mech._shipsOff) or "minor"
+    if d.routeDD then d.routeDD.Refresh() end
+    if d.routeHint then
+        local derived = R and R.Default(mech._routeDesc, mech._shipsOff) or "minor"
+        local line = (R and R.HINT[bucket]) or ""
+        if bucket ~= derived and R then
+            line = line .. "  (this row's default is " .. (R.LABEL[derived] or derived) .. ")"
+        end
+        d.routeHint._label:SetText(line)
+    end
+    groupShown(d._routeGroup, bucket == "custom")
+    if bucket == "custom" then
+        if d.routeAttach and d.routeAttach.attachDD then d.routeAttach.attachDD.Refresh() end
+        if d.routeAttach and d.routeAttach.nameBox then d.routeAttach.nameBox.Refresh() end
+        if d.routeSize then d.routeSize.Refresh() end
+    end
+
     d.enable:Refresh()
     d.styleDD.Refresh()
     d.scale.Refresh(); d.opacity.Refresh(); d.glowS.Refresh()
@@ -608,6 +763,49 @@ BuildModuleDetail = function(panel)
         if def.Test then def:Test()
         elseif Addon:IsModuleActive(def.id) then Addon:StopModule(def)
         else Addon:StartModule(def) end
+        -- A module's own Test/Show re-runs its Position(), which points at the screen.
+        -- Re-install so the previewed widget is where it will actually be in the fight.
+        Addon:InstallModuleAnchor(def)
+    end })
+
+    -- ── PLACEMENT (2.0 anchor rework) ──
+    -- A special that declares the placement seam is DOCKED to the Specials anchor by
+    -- default and can be detached to its own spot — the same Custom escape hatch a
+    -- timer row gets, through the same resolver. A module with no placeable frame
+    -- (Razuvious's nameplate icons) declares no seam and this whole group collapses.
+    local function modKey()
+        local def = panel.selModule
+        return def and def.placeKey or nil
+    end
+    m._placeGroup = {}
+    local ms1, ms2 = subHeader(flow, "Placement"); addTo(m._placeGroup, ms1, ms2)
+    m.modDetach = flow:Checkbox({
+        label = "Give this its own place (detach from the Specials anchor)",
+        get = function()
+            local k = modKey()
+            return (k and Addon.Anchors) and Addon.Anchors.IsDetached(k) or false
+        end,
+        set = function(v)
+            local k = modKey()
+            if k and Addon.Anchors then Addon.Anchors.SetDetached(k, v) end
+            PopulateModuleDetail(panel)
+        end,
+    }); addTo(m._placeGroup, lastHandle(flow))
+    m.modAttach = attachRow(flow, modKey)
+    m._hAttachRow = lastHandle(flow); addTo(m._placeGroup, m._hAttachRow)
+    flow:Hint(ATTACH_HINT)
+    m._hAttachHint = lastHandle(flow); addTo(m._placeGroup, m._hAttachHint)
+    local mpr = flow:AddRow(); addTo(m._placeGroup, lastHandle(flow))
+    mpr:Button({ text = "Show anchors", width = 130, onClick = function()
+        if Addon.Bars then Addon.Bars.EnsureAnchors() end
+        if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+        local def = panel.selModule
+        if def and def.SetPreview then def:SetPreview(true); Addon:InstallModuleAnchor(def) end
+        Addon:ShowHudAnchors()
+    end })
+    mpr:Button({ text = "Reset placement", width = 140, onClick = function()
+        local k = modKey()
+        if k and Addon.Anchors then Addon.Anchors.Reset(k) end
     end })
 
     -- Host block for a module's own BuildConfig frame (built lazily per module).
@@ -629,6 +827,20 @@ PopulateModuleDetail = function(panel)
     m.title._label:SetText(def.name)
     m.desc._label:SetText(def.desc or "")
     m.enable:Refresh()
+
+    -- The placement group exists only for a module that declared the seam.
+    local placeable = (def.placeKey ~= nil) and (Addon.Anchors ~= nil)
+    groupShown(m._placeGroup, placeable)
+    if placeable then
+        m.modDetach:Refresh()
+        local detached = Addon.Anchors.IsDetached(def.placeKey)
+        if m.modAttach.attachDD then m.modAttach.attachDD.Refresh() end
+        if m.modAttach.nameBox then m.modAttach.nameBox.Refresh() end
+        -- An attach target only means anything once the widget is off the dock;
+        -- while it is docked it follows the Specials anchor, which has its own.
+        setShown(m._hAttachRow, detached)
+        setShown(m._hAttachHint, detached)
+    end
 
     -- Per-module config frame (built once, lazily, hosted under the buttons). The
     -- module's BuildConfig lays out its own controls into cf with its private
@@ -1067,6 +1279,7 @@ function Addon:BuildGeneralOptions(flow)
 
     Addon:BuildBarOptions(flow, panel)
     Addon:BuildWarningOptions(flow, panel)
+    Addon:BuildAttachOptions(flow, panel)
     Addon:BuildSoundOptions(flow, panel)
     Addon:BuildTelemetryOptions(flow, panel)
 end
@@ -1087,9 +1300,11 @@ function Addon:BuildBarOptions(flow, panel)
     local function S() return B.Settings() end
 
     local sec = flow:AddSection("Timer Bars")
-    sec:Hint("Countdown bars for boss abilities. Two lists: SMALL is the normal stack, "
-        .. "LARGE holds the bars the encounter marked important (and the pull timer). "
-        .. "Use Show anchors below to drag either list where you want it.")
+    sec:Hint("Countdown bars for boss abilities. Two lists: MINOR is the normal stack, "
+        .. "MAJOR holds the important ones \226\128\148 adds, interrupts and the pull timer "
+        .. "\226\128\148 and a Minor bar is promoted into it as its time runs down. Each "
+        .. "ability's own page decides which bucket it lands in. Use Show anchors below "
+        .. "to drag either list where you want it.")
 
     sec:Checkbox({
         label = "Hide all timer bars",
@@ -1120,12 +1335,27 @@ function Addon:BuildBarOptions(flow, panel)
         get = function() return S().pad or 2 end,
         set = function(v) S().pad = math.floor(v + 0.5) end,
     })
-    padRow:Slider({
-        label = "Enlarge below", width = SLIDER_W, min = 0, max = 30, step = 1,
-        format = function(v) return v > 0 and ("%ds left"):format(v) or "off" end,
-        get = function() return S().enlargeAt or 0 end,
+    -- THE TWO ESCALATION POINTS (owner design item 2). Both used to be fixed §12
+    -- constants; both keep those constants as their defaults, and both are bounded
+    -- by the model, not by the slider, so a hand-edited SavedVariables is bounded too.
+    local escRow = sec:AddRow()
+    escRow:Slider({
+        label = "Promote to Major at", width = SLIDER_W,
+        min = B.Model.PROMOTE_MIN, max = B.Model.PROMOTE_MAX, step = 1,
+        format = function(v) return v > 0 and ("%ds left"):format(v) or "never" end,
+        get = function() return B.Model.PromoteAt(S()) end,
         set = function(v) S().enlargeAt = math.floor(v + 0.5) end,
     })
+    escRow:Slider({
+        label = "Pulse under", width = SLIDER_W,
+        min = B.Model.PULSE_MIN, max = B.Model.PULSE_MAX, step = 0.25,
+        format = function(v) return v > 0 and ("%.2fs left"):format(v) or "never" end,
+        get = function() return B.Model.PulseAt(S()) end,
+        set = function(v) S().flashAt = v end,
+    })
+    sec:Hint("A Minor bar moves to the Major list when it drops under the promote time; "
+        .. "a Major bar starts there and never leaves. A Custom bar does neither \226\128\148 "
+        .. "it grows and pulses where you put it.")
 
     -- ONE GRID for the two anchors (principle 5): each list gets a titled block with
     -- the SAME two controls in the SAME order, so the two blocks read as one grid.
@@ -1162,8 +1392,8 @@ function Addon:BuildBarOptions(flow, panel)
             end,
         })
     end
-    anchorBlock("Small bars \226\128\148 the normal stack", "small", "DOWN")
-    anchorBlock("Large bars \226\128\148 important abilities and the pull timer", "large", "UP")
+    anchorBlock("Minor bars \226\128\148 the normal stack", "small", "DOWN")
+    anchorBlock("Major bars \226\128\148 adds, interrupts and the pull timer", "large", "UP")
 
     sec:AddSeparator()
     sec:Checkbox({
@@ -1218,6 +1448,44 @@ function Addon:BuildBarOptions(flow, panel)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
+--  W5 + ANCHOR REWORK — ATTACHMENT (the five HUD anchors)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- Every anchor in the addon can hang off a game frame instead of off the screen.
+-- The five that always exist get their control here; a Custom row's and a special's
+-- live on their own page, next to the thing they place (principle 2).
+--
+-- ONE GRID (principle 5): each anchor is a titled block with the SAME two controls
+-- in the SAME order, so five blocks read as one table rather than five paragraphs.
+function Addon:BuildAttachOptions(flow, panel)
+    local A = Addon.Anchors
+    if not A then return end
+    local B, W = Addon.Bars, Addon.Warnings
+    if not (B and W) then return end
+
+    local sec = flow:AddSection("Attachment")
+    sec:Hint("Anchors normally sit at a fixed place on your screen. Any of them can "
+        .. "instead ride a game frame \226\128\148 your target frame, your player frame, "
+        .. "the minimap, or any frame you can name. " .. ATTACH_HINT)
+
+    local blocks = {
+        { key = B.ANCHOR_SMALL, title = "Minor bars" },
+        { key = B.ANCHOR_LARGE, title = "Major bars" },
+        { key = W.ANCHOR_ANNOUNCE, title = "Announcements (Minor warnings)" },
+        { key = W.ANCHOR_SPECIAL,  title = "Special warnings (Major warnings)" },
+        { key = A.ANCHOR_SPECIALS, title = A.SPECIALS_LABEL
+                                          .. " \226\128\148 boss trackers dock here" },
+    }
+    for i, blk in ipairs(blocks) do
+        if i > 1 then sec:AddSeparator() end
+        sec:Label(blk.title)
+        attachRow(sec, function() return blk.key end)
+        sec:Button({ text = "Reset placement", width = 140, onClick = function()
+            A.Reset(blk.key)
+        end })
+    end
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  W5 — WARNINGS
 -- ══════════════════════════════════════════════════════════════════════════════
 -- ui_warnings.lua's §5.4 suppressors, one checkbox each, grouped by the tier they
@@ -1229,9 +1497,11 @@ function Addon:BuildWarningOptions(flow, panel)
     local function S() return W.Settings() end
 
     local sec = flow:AddSection("Warnings")
-    sec:Hint("Text warnings above the bars. ANNOUNCEMENTS are the ordinary line stack; "
-        .. "SPECIAL WARNINGS are the big centred text with the screen flash, used for "
-        .. "the things that kill you. Drag either with Show anchors under Timer Bars.")
+    sec:Hint("Text warnings above the bars. ANNOUNCEMENTS are the ordinary line stack "
+        .. "(the Minor bucket); SPECIAL WARNINGS are the big centred text with the screen "
+        .. "flash (the Major bucket), used for the things that kill you. Each ability's "
+        .. "own page can move its warning between the two. Drag either with Show anchors "
+        .. "under Timer Bars.")
 
     sec:Checkbox({
         label = "Hide all warnings",

@@ -229,6 +229,11 @@ def = Addon:RegisterModule({
     desc = "Raid healers with a 60s ready-cooldown each, ordered for the rotation. Drag the list header to position it.",
     defaults = { enabled = false },
 
+    -- 2.0 placement seam (modules.lua). Metadata only; no logic moved.
+    placeKey   = KEY,
+    placeLabel = "Loatheb healer tracker",
+    placeFrame = function() return container end,
+
     Start = function()
         wipe(cd)
         EnsureContainer(); Position(container); container:Show()

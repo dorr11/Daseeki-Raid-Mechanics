@@ -767,8 +767,14 @@ function Addon:UnlockBoss(raidId, bossId)
             local mcfg = Addon:GetMechanicConfig(mk, mech)
             -- masterEnabled gates the WHOLE mechanic — nothing under it previews if off.
             if mcfg.masterEnabled then
+                -- A row routed to CUSTOM already has its own labelled drag handle (the
+                -- HUD-anchor pattern), and both address the same saved position. Showing
+                -- a second draggable stand-in for the same key would put two things on
+                -- screen fighting over one coordinate.
+                local routed = Addon.Route
+                    and Addon.Route.Of(mk, mech._routeDesc, mech._shipsOff) or nil
                 -- "enabled" here is the Ability Tracker's own toggle.
-                if mcfg.enabled then
+                if mcfg.enabled and routed ~= "custom" then
                     Addon:ShowPlacement(mk, mech, n * 34); n = n + 1
                 end
                 if mech.reminder and Addon:GetMechanicConfig(mk .. "#rem", mech.reminder).enabled then
@@ -795,13 +801,23 @@ function Addon:UnlockBoss(raidId, bossId)
             end
         end
     end
+    -- MODULES: the REAL widget wins over a stand-in.
+    --
+    -- This used to prefer `placeKey` (a synthetic icon preview) over `SetPreview` (the
+    -- module's own widget, live). No shipped module declared a placeKey, so the branch
+    -- was dead — and the 2.0 anchor rework lights it up on all five specials at once.
+    -- Preferring the stand-in would have silently REPLACED five WYSIWYG previews with
+    -- five identical grey icons. A module that can show itself, shows itself; the
+    -- anchor system is then handed that same frame, so the thing being dragged during
+    -- a placement pass is the thing that will be on screen during the fight.
     for _, def in ipairs(Addon:GetBossModules(raidId, bossId)) do
         if Addon:IsModuleEnabled(def.id, def) then
-            if def.placeKey then
+            if def.SetPreview then
+                def:SetPreview(true)
+                Addon:InstallModuleAnchor(def)
+            elseif def.placeKey then
                 Addon:ShowPlacement(def.placeKey, def.placeDef or { name = def.name, style = "icon" }, n * 34)
                 n = n + 1
-            elseif def.SetPreview then
-                def:SetPreview(true)
             end
         end
     end

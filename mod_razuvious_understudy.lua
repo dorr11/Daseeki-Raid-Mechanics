@@ -86,6 +86,13 @@ Addon:RegisterModule({
     desc = "Shows each understudy's Mind Exhaustion countdown on their nameplate (hidden while they have Shield Wall) — i.e. when they can be re-controlled. Requires enemy nameplates enabled.",
     defaults = { enabled = false },
 
+    -- 2.0 placement seam (modules.lua): DELIBERATELY ABSENT. These icons are parented
+    -- to the understudies' NAMEPLATES, one per unit, created and released as plates
+    -- come and go. There is no single frame to place and no placement that would mean
+    -- anything — the game decides where a nameplate is. Declaring a placeKey here so
+    -- the module "appears in the anchor list" would put a control on screen that
+    -- cannot do anything, which is worse than its absence.
+
     Start = function()
         ev = ev or CreateFrame("Frame")
         ev:SetScript("OnEvent", function(_, event, unit)
