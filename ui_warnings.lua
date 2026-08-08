@@ -109,6 +109,155 @@ Warn.SOUND_TIER = {
 Warn.BUILTIN_TIERS = { [1] = true, [2] = true, [3] = true, [4] = true }
 
 -- ══════════════════════════════════════════════════════════════════════════════
+--  THE SOUND POLICY (owner directive, 2026-08-07)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- OWNER, VERBATIM: "can we update the sounds so that by default all abilities dont
+-- have sound. only 'big' ones liek disrupting shout, etc."
+--
+-- WHAT WAS WRONG. `Warn.RowSoundKey` resolves a row's cue as
+-- `SOUND_TIER[row.sound or 1]`, and an ANNOUNCE row never carries `row.sound` —
+-- §1.3 of the encounters spec gives ordinary announces a COLOUR tier and nothing
+-- else; only special warnings carry a sound tier. So the `or 1` fallback was giving
+-- all 327 announce rows the tier-1 sound the spec never assigned them. Every
+-- Decrepit Fever, every "Rain of Fire", every phase line beeped. That is the noise
+-- the owner is describing, and it was a DISPATCH defect, not a data one: the
+-- encounter files are already conformant (they carry a sound only where the spec's
+-- row does).
+--
+-- WHY THIS IS A POLICY AND NOT A DATA EDIT. The spec's sound tier is a FACT about
+-- the reference behaviour and the conformance audit has to stay able to check it.
+-- So the data keeps saying what the spec says, and this table decides whether the
+-- row's cue PLAYS when the user has expressed no opinion. Turning the volume back
+-- up on a class is one line here, not a sweep through eight encounter files.
+--
+-- THE CLASSES, and why each is where it is:
+--
+--   special     tier == "special". A special warning IS the big centre-screen
+--               treatment — flash, headline face, the lot. If it is loud enough to
+--               take over the screen it is loud enough to make a noise. LOUD.
+--   loud        `loud = true` in the encounter data. The explicit escape hatch, and
+--               it exists for exactly one class the derived rules cannot see: the
+--               HARD ENRAGE / BERSERK announce, which the spec files at colour 3
+--               alongside ordinary elevated announces. Four rows carry it.  LOUD.
+--   critical    an announce at colour tier 4. §1.3: "Critical — raid-wide danger or
+--               a lethal debuff." THIS IS THE DISRUPTING SHOUT CLASS — Razuvious's
+--               Disrupting Shout (29107) is a colour-4 announce, and it is the row
+--               the owner named. Tank swaps (Unbalancing Strike) live here too. LOUD.
+--   interrupt   an announce gated to `HasInterrupt`. A cast you are being asked to
+--               kick is a two-second window; a silent one is a missed one.    LOUD.
+--   elevated    colour 3. "Elevated — needs a reaction from someone."      SILENT.
+--   standard    colour 2. "Standard."                                      SILENT.
+--   info        colour 1. "Informational / low-value."                     SILENT.
+--
+-- SILENT IS NOT HIDDEN. Every one of these rows still draws its line, still
+-- colours its names, still lands on whatever surface the user routed it to. The
+-- policy decides one thing: whether a speaker moves. And every row is one control
+-- away from loud (Sound: On, in the row's own block).
+--
+-- OUT OF SCOPE, deliberately: timer-attached sounds and the spoken countdown. The
+-- directive is about ability WARNING sounds. Pull/break sounds, countdown voice
+-- numbers and per-row user sound files on TIMER rows are untouched.
+local Sound = {}
+Addon.Sound = Sound
+
+Sound.CLASS_ORDER = { "special", "loud", "critical", "interrupt", "elevated", "standard", "info" }
+Sound.LOUD = {
+    special  = true,  loud     = true,  critical = true,  interrupt = true,
+    elevated = false, standard = false, info     = false,
+}
+Sound.CLASS_LABEL = {
+    special  = "Special warning", loud     = "Marked big",  critical = "Critical (colour 4)",
+    interrupt = "Interrupt call", elevated = "Elevated (colour 3)",
+    standard = "Standard (colour 2)", info = "Informational (colour 1)",
+}
+
+-- PURE. The one function the harness asserts the policy table against: a row in,
+-- a class name out, no db, no settings, no world.
+--
+-- `arriving` is the bucket the warning is ACTUALLY being shown in, passed down by
+-- the dispatch. It matters because the routing model lets a user promote an ordinary
+-- announcement to the Major surface, and the route control's own hint promises that
+-- doing so "gives it the full special-warning treatment — the big face, the screen
+-- flash, THE TIER SOUND". A promoted row that then stayed silent would make that
+-- hint a lie, so arriving-as-special IS the special class.
+function Sound.ClassOf(row, arriving)
+    if type(row) ~= "table" then return (arriving == true) and "special" or "standard" end
+    if arriving == true then return "special" end
+    if (row.tier or "announce") == "special" then return "special" end
+    if row.loud == true then return "loud" end
+    if row.color == 4 then return "critical" end
+    if type(row.role) == "string" and row.role:find("HasInterrupt", 1, true) then
+        return "interrupt"
+    end
+    local c = row.color or 2
+    if c == 3 then return "elevated" end
+    if c == 1 then return "info" end
+    return "standard"
+end
+
+-- PURE. "Would this row make a noise if the user never touched it?"
+function Sound.DefaultFor(row, arriving)
+    return Sound.LOUD[Sound.ClassOf(row, arriving)] == true
+end
+
+-- ── The per-row three-state override ─────────────────────────────────────────
+-- Default (follow the policy) / On / Off, stored per option key. ADDITIVE: it rides
+-- `db.mechanics[key]`, the table the route and the custom sound file already ride,
+-- so DB_VERSION does not move.
+Sound.MODES       = { "default", "on", "off" }
+Sound.MODE_LABEL  = { default = "Default", on = "On", off = "Off" }
+Sound.LABEL_MODE  = { Default = "default", On = "on", Off = "off" }
+Sound.VALID_MODE  = { on = true, off = true }
+
+function Sound.ModeOf(key)
+    local db = Addon.db
+    if type(db) ~= "table" or type(db.mechanics) ~= "table" then return "default" end
+    local o = db.mechanics[key]
+    if type(o) ~= "table" then return "default" end
+    return Sound.VALID_MODE[o.soundMode] and o.soundMode or "default"
+end
+
+function Sound.SetMode(key, mode)
+    if not key then return nil end
+    Addon:SetMechanicOption(key, "soundMode", Sound.VALID_MODE[mode] and mode or nil)
+    return Sound.ModeOf(key)
+end
+
+-- Has the user attached their OWN sound file to this row? That is an explicit
+-- "I want to hear this" — a user who picks a file and then hears nothing has been
+-- lied to by the control. It ranks BELOW an explicit Off (which is more specific)
+-- and ABOVE the policy.
+function Sound.HasCustomFile(key)
+    local db = Addon.db
+    if type(db) ~= "table" or type(db.mechanics) ~= "table" then return false end
+    local o = db.mechanics[key]
+    return (type(o) == "table" and o.sound and o.sound ~= "none") and true or false
+end
+
+-- THE CHAIN, in one place: user override -> user sound file -> policy -> silent.
+-- Returns `plays` (boolean) and WHY, because the options hint and the harness both
+-- need to say which link answered.
+function Sound.Resolve(encId, row, arriving)
+    row = row or {}
+    local key  = tostring(encId) .. ":" .. tostring(row.key)
+    local mode = Sound.ModeOf(key)
+    if mode == "on"  then return true,  "user" end
+    if mode == "off" then return false, "user" end
+    if Sound.HasCustomFile(key) then return true, "customfile" end
+    return Sound.DefaultFor(row, arriving), "policy"
+end
+
+-- What the control says under itself, so "Default" is never a mystery.
+function Sound.Hint(row)
+    local class = Sound.ClassOf(row)
+    local label = Sound.CLASS_LABEL[class] or class
+    if Sound.LOUD[class] then
+        return ("Default for this row is ON \226\128\148 %s. On/Off overrides it."):format(label)
+    end
+    return ("Default for this row is OFF \226\128\148 %s. Pick On to hear it anyway."):format(label)
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
 --  SETTINGS — additive, lazily defaulted (same house pattern as the bar surface)
 -- ══════════════════════════════════════════════════════════════════════════════
 local SETTING_DEFAULTS = {
@@ -430,9 +579,16 @@ end
 
 -- Returns what was played: "voice" | "sound" | nil. The decision table is the whole
 -- of §5.5's replacement rules, in one place, so it can be asserted as a table.
+--
+-- THE SOUND POLICY SITS AT THE TOP OF THIS FUNCTION (owner directive 2026-08-07),
+-- above the voice pack and above the tier lookup, because "this row is silent by
+-- default" has to silence the VOICE LINE too — a raider who turned the announce
+-- replacement switch on and then heard every colour-2 announce speak would have the
+-- same complaint back. Everything below this line is unchanged §5.5.
 function Warn.DispatchSound(encId, row, special)
     local s = Warn.Settings()
     if special and s.suppressSpecialSound then return nil end
+    if not Sound.Resolve(encId, row, special == true) then return nil end
     local voiceOk = Warn.VoiceAllowed(row)
     local key, custom = Warn.RowSoundKey(encId, row)
     if voiceOk then

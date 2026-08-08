@@ -223,8 +223,11 @@ Addon:RegisterEncounter({
           stop  = { on = "SPELL_AURA_REMOVED", spellId = 16856 } },
     },
     warnings = {
+        -- `loud`: the SOUND POLICY's big-class marker (ui_warnings.lua, owner
+        -- directive 2026-08-07). Mandokir's Enrage is the hard enrage the tanks and
+        -- healers are gated to; the spec files it at colour 3.
         { key = "enrage", name = "Enrage", tier = "announce", color = 3,
-          role = "Tank|Healer", text = "Enrage",
+          role = "Tank|Healer", text = "Enrage", loud = true,
           icon = ICON .. "Spell_Shadow_UnholyFrenzy",
           trigger = { on = "SPELL_AURA_APPLIED", spellId = 24318 } },
         -- Yell FIRST (primary), combat log SECOND (fallback). Both throttled per name.

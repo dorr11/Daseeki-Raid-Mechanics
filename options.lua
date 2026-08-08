@@ -78,6 +78,32 @@ local function routeNames()
     return ROUTE_NAMES
 end
 
+-- THE SOUND POLICY's three-state per-row control (owner directive 2026-08-07).
+-- Default / On / Off over the table ui_warnings.lua publishes, exactly the way the
+-- route control sits over Route.ORDER — the options surface names nothing the engine
+-- does not, and "Default" is spelled out under the control by Sound.Hint.
+local SOUND_NAMES = {}
+local function soundModeNames()
+    if #SOUND_NAMES == 0 and Addon.Sound then
+        for _, k in ipairs(Addon.Sound.MODES) do
+            SOUND_NAMES[#SOUND_NAMES + 1] = Addon.Sound.MODE_LABEL[k]
+        end
+    end
+    return SOUND_NAMES
+end
+
+-- The ENCOUNTER-DATA row behind the selected options row. The sound policy is a pure
+-- function of the row's own declaration (tier / colour / role gate / the `loud`
+-- marker), and the projected mechanic carries none of those — so read the real row,
+-- the same way the two testing buttons address it, rather than projecting a copy that
+-- can go stale.
+local function CurWarnRow(encId, rowKey)
+    if not (encId and rowKey) then return nil end
+    local enc = Addon.GetEncounter and Addon:GetEncounter(encId)
+    local row = enc and enc.rowsByKey and enc.rowsByKey[rowKey]
+    return row
+end
+
 local ATTACH_NAMES = {}
 local function attachNames()
     if #ATTACH_NAMES == 0 and Addon.Anchors then
@@ -370,9 +396,13 @@ BuildMechDetail = function(panel)
     -- (principle 2 — the affordance sits with the thing it exercises). Both buttons
     -- drive ui_testing.lua, which fires the row through the REAL dispatch, so what they
     -- produce is routed by the dropdown beside them without any special casing.
+    -- WIDTHS. Four controls share this row now (the sound switch joined it), so the
+    -- two dropdowns and the two buttons are sized to fit the narrowest detail column
+    -- the drill-down produces rather than to their own comfort: 150 + 64 + 64 + 100
+    -- plus three 8 px gaps is 402, and the detail column is `width - 320 - 16`.
     local rr = flow:AddRow()
     d.routeDD = rr:Dropdown({
-        label = "Show this as", width = 180, choices = routeNames(),
+        label = "Show this as", width = 150, choices = routeNames(),
         get = function()
             local key, mech = CurKey(panel), CurDef(panel)
             local R = Addon.Route
@@ -389,23 +419,50 @@ BuildMechDetail = function(panel)
     -- Text captions rather than glyphs: the client's default face has no reliable play
     -- symbol, and a control that renders as an empty box is an unlabelled control
     -- (principle 6).
-    d.rowPlay = rr:Button({ text = "Play", width = 72, onClick = function()
+    d.rowPlay = rr:Button({ text = "Play", width = 64, onClick = function()
         local Tst, enc, rowKey = Addon.Testing, CurEncId(panel), CurRowKey(panel)
         if not (Tst and enc and rowKey) then return end
         Tst.Row(enc, rowKey)
     end })
-    d.rowSound = rr:Button({ text = "Sound", width = 72, onClick = function()
+    -- "Cue", not "Sound": the SWITCH beside it is what the word Sound now means in
+    -- this row, and two controls with one name is one control with extra steps.
+    d.rowSound = rr:Button({ text = "Cue", width = 64, onClick = function()
         local Tst, enc, rowKey = Addon.Testing, CurEncId(panel), CurRowKey(panel)
         if not (Tst and enc and rowKey) then return end
         Tst.RowSound(enc, rowKey)
     end })
+    -- THE PER-ROW SOUND SWITCH (owner directive 2026-08-07). Three states, and it
+    -- sits in THIS row rather than down in the Sounds section because the question
+    -- "does this one alert make a noise" is asked about a row, not about the addon —
+    -- and because the Sound button beside it is how you check your answer. The
+    -- button plays what the CHAIN currently resolves to, so pressing it after
+    -- picking Off is silent and after picking On is not.
+    d.rowSoundMode = rr:Dropdown({
+        label = "Sound", width = 100, choices = soundModeNames(),
+        get = function()
+            local S, key = Addon.Sound, CurKey(panel)
+            if not (S and key) then return "Default" end
+            return S.MODE_LABEL[S.ModeOf(key)] or "Default"
+        end,
+        set = function(name)
+            local S, key = Addon.Sound, CurKey(panel)
+            if not (S and key) then return end
+            S.SetMode(key, S.LABEL_MODE[name])
+            PopulateDetail(panel)
+        end,
+    })
     -- The bucket's own one-liner PLUS what this row would do if left alone. A user
     -- who has overridden a row needs to be able to see what they overrode. It comes
     -- FIRST because the dropdown is the primary control of the row above it.
     d.routeHint = flow:Hint("")
+    -- What "Default" means FOR THIS ROW, in words, filled in by PopulateDetail. It
+    -- collapses for a timer row, which has no warning-sound policy to describe.
+    d.soundHint = flow:Hint("")
+    d._soundHintH = lastHandle(flow)
     d.rowHint = flow:Hint("\"Play\" fires this one row exactly as the fight will \226\128\148 "
         .. "real duration, real placement, real sound. Press it again to restart it. "
-        .. "\"Sound\" plays just the cue.")
+        .. "\"Cue\" plays just the sound \226\128\148 whatever this row resolves to right "
+        .. "now, which is nothing at all when it is silent.")
 
     -- The Custom group: a Custom row gets its OWN placement record — position,
     -- optional frame attachment, size — and none of it means anything for a row
@@ -736,6 +793,36 @@ PopulateDetail = function(panel)
         end
         d.routeHint._label:SetText(line)
     end
+    -- THE SOUND SWITCH. Only WARNING rows have a warning-sound policy: a timer row's
+    -- audible cue is the sound the user attached to it or its spoken countdown, both
+    -- of which the directive left alone, so the control collapses rather than
+    -- offering a choice that would do nothing.
+    do
+        local S = Addon.Sound
+        local row = CurWarnRow(CurEncId(panel), CurRowKey(panel))
+        local isWarn = (S ~= nil) and (row ~= nil) and (mech._rowKind == "warning")
+        -- A DaseekiUI dropdown is a Frame wrapping a Button; the Button is the part
+        -- that takes an enabled state, and `.button` is the handle MakeDropdown
+        -- publishes for exactly this. Guarded, the same way the two testing buttons
+        -- above guard their own SetEnabled.
+        if d.rowSoundMode then
+            if isWarn then d.rowSoundMode.Refresh() end
+            local b = d.rowSoundMode.button
+            if b and b.SetEnabled then b:SetEnabled(isWarn) end
+        end
+        if d._soundHintH then setShown(d._soundHintH, isWarn) end
+        if d.soundHint and isWarn then
+            local mode = S.ModeOf(panel.selMechKey)
+            local line = S.Hint(row)
+            if mode ~= "default" then
+                line = ("Forced %s here.  "):format(S.MODE_LABEL[mode]) .. line
+            end
+            d.soundHint._label:SetText(line)
+        elseif d.soundHint then
+            d.soundHint._label:SetText("")
+        end
+    end
+
     -- The two testing buttons are live only for a row the ENGINE can actually fire. A
     -- reminder pseudo-row is a sub-setting of its parent, not a registry row, so the
     -- buttons go quiet rather than doing nothing when pressed.
@@ -748,7 +835,8 @@ PopulateDetail = function(panel)
             d.rowHint._label:SetText(firable
                 and ("\"Play\" fires this one row exactly as the fight will \226\128\148 real "
                      .. "duration, real placement, real sound. Press it again to restart it. "
-                     .. "\"Sound\" plays just the cue.")
+                     .. "\"Cue\" plays just the sound \226\128\148 whatever this row resolves "
+                     .. "to right now, which is nothing at all when it is silent.")
                 or "This is a sub-setting of the mechanic above it, so there is nothing "
                    .. "separate to fire.")
         end

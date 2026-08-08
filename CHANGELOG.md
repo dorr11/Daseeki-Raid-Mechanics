@@ -49,6 +49,23 @@ a fight that starts oddly still arms your timers.
 - **Warnings in tiers.** Ordinary announcements stack quietly; the things that kill you
   get big centred text with a screen flash and a sound. Both are separately placeable and
   separately silenceable.
+- **Quiet by default — loud where it matters.** Sixty-five bosses' worth of alerts is a
+  lot of noise if every one of them beeps, so by default **most abilities are seen and
+  not heard**. What still makes a sound is the short list you would have written
+  yourself: every big centred special warning, every critical raid-wide call (Disrupting
+  Shout, a tank swap, a lethal debuff landing on someone), every interrupt call, and
+  every hard enrage. Everything else draws its line and says nothing.
+
+  **Any ability is one click from loud.** Each ability's page now has a **Sound** switch
+  beside its placement control with three settings — **Default**, **On** and **Off** —
+  and the line underneath it tells you which way Default falls for that specific
+  ability and why. Turn one alert on, turn one off, and everything you never touched
+  keeps behaving sensibly. The **Cue** button next to it plays exactly what that ability
+  will play in the fight, so what you hear when you press it is the truth, including
+  when the truth is silence.
+
+  Countdown voices, pull and break sounds and the sounds you attach to a timer yourself
+  are **not affected** — this is about ability warnings only.
 - **It knows what you are.** Tank-only, healer-only, "you can dispel this" and
   class-specific alerts ship switched on for the people they are for and off for
   everyone else — worked out from your talents, your stance or form, and your raid
@@ -82,10 +99,12 @@ a fight that starts oddly still arms your timers.
   registered with LibSharedMedia is picked up too. Pick a default pack and the sound
   picker opens filtered to it, instead of dropping you into a thousand-entry list.
 - **You can rehearse any fight, out of combat.** Every boss page has a **Test this
-  boss** button, and every ability on it has **Play** and **Sound** buttons of its own.
+  boss** button, and every ability on it has **Play** and **Cue** buttons of its own.
   - **Play** fires that one ability exactly the way the fight will — its real duration,
     its real uncertainty window, in the place you routed it to, with the sound you
-    chose. Press it again and it restarts. **Sound** plays just the cue.
+    chose. Press it again and it restarts. **Cue** plays just the sound, and plays it
+    honestly: whatever that ability resolves to right now, which is nothing at all when
+    it is set to be silent.
   - **Test this boss** is the whole rehearsal: the engage banner, every enabled timer
     started at its real value all at once (so you see the screen you will actually
     have), the warnings walked out about a second apart so you can read them, the
@@ -134,6 +153,10 @@ Three things to know:
   waiting to be promoted with 11 seconds left. If you preferred them in the normal
   stack, set that ability's placement to Minor — the control is on its own page, and it
   is remembered per ability.
+- **A lot of alerts got quieter.** Ordinary announcements no longer make a sound unless
+  you ask them to — the big centred warnings, the critical calls, the interrupt calls
+  and the hard enrages still do. If there is one you want back, its **Sound** switch is
+  on its own page, next to its placement control, and it is one click.
 - **Everyone in the raid should be on 2.0.0** for pull-timer sharing and kill
   confirmation to work between you. Mixed versions degrade quietly rather than erroring,
   and Raid Mechanics will never disable itself for being out of date.
