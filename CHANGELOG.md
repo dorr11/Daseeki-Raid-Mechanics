@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.0
+## 2.0.0 — 2026-08-08
 
 **Raid Mechanics has been rebuilt from the ground up, and it now covers every raid in
 Classic Era — all eight zones, all 65 boss fights.**
