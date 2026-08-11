@@ -108,6 +108,26 @@ end
 -- db.mechanics) rather than empty them — data stays recoverable. Never wipe.
 Addon.MIGRATIONS = {}
 
+-- ── PROFILE ADOPTERS (additive, version-free) ────────────────────────────────────
+-- A MIGRATIONS step is for a CONFIG-MODEL change: the shape of the db moved, so the
+-- version has to move with it. This list is for the other thing — a setting that used
+-- to live somewhere ELSE in a shape the current model already understands, and now
+-- has a proper home. Nothing changes shape, nothing is destroyed, and DB_VERSION does
+-- not move; the old fields are left exactly where they are so the change is
+-- recoverable, and each adopter marks the record it read so a second login is a no-op.
+--
+-- The first (2.1.1): thaddius.lua's polarity-change alert. Its four settings lived on
+-- the POLARITY SHIFT row's record as `pcEnabled` / `pcText` / `pcSound` / `pcSoundKey`
+-- because the alert was a sub-section of that row's options page. The alert is its own
+-- row now, so those four become that row's ordinary enable / route / sound-mode /
+-- sound-file fields. The adopter is registered by the file that owns the alert.
+--
+-- Each entry is `function(db)`; they run in registration order, AFTER the ensures
+-- below (so `db.mechanics` exists) and never before Init. Failures are the caller's
+-- to notice: nothing here is pcall-wrapped, because a silent half-adopted profile is
+-- worse than a visible error.
+Addon.PROFILE_ADOPTERS = {}
+
 -- Migrate db in place. Returns true when it is safe to proceed onto seeding.
 --   absent/unknown dbVersion -> stamp to current, convert nothing (ensures fill gaps)
 --   dbVersion NEWER than this build -> leave EXACTLY as-is (never downgrade), report
@@ -174,6 +194,9 @@ function Addon:Init()
     db.stats = db.stats or {}
     db.settings.locked = true           -- unlock is a transient positioning mode; never start unlocked
     Addon.db = db
+    -- Additive adoptions, last: they read and write db.mechanics, which is ensured
+    -- above, and they need Addon.db set because they go through the ordinary writers.
+    for _, adopt in ipairs(Addon.PROFILE_ADOPTERS) do adopt(db) end
 end
 
 -- ── Mechanic config (data-file defaults merged with per-key DB overrides) ───────

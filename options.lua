@@ -31,6 +31,13 @@
          with its Placement control (Major / Minor / Custom / Hidden), the follow
          rule is stated at the control, and the Custom block opens with a hint that
          explains the escape hatch before showing its controls.
+      3b "is there a notification on Thaddius that triggers only when your polarity
+         debuff swaps?" (2026-08-10, same conversation) — there was, and it was
+         unfindable: a "Polarity Change Alert" sub-section that appeared only while the
+         Polarity Shift row was selected. That sub-section is GONE from this file and
+         the alert is a first-class row of the encounter, so it wears the SAME controls
+         every other row wears. The only addition here is `d.mechHint`: a row may
+         declare one sentence of its own rule, shown last in the block.
       3  "no way to choose sounds for a given mechanic" — a per-row sound picker sits
          beside the three-state mode switch. It stores the pre-existing per-row
          `sound` key, which the shipped resolution chain (Sound.Resolve →
@@ -407,16 +414,14 @@ local function HasDamageWarning(mech)
     return t ~= nil and (t.spellID ~= nil or t.spellIDs ~= nil)
 end
 
--- Polarity-change accessors (charge FLIP watch). Read/write raw mechanic overrides
--- so the defaults surface without creating db entries just by browsing.
-local function pcGet(panel, field, def)
-    local o = panel.selMechKey and Addon.db.mechanics[panel.selMechKey]
-    if o and o[field] ~= nil then return o[field] end
-    return def
-end
-local function pcSet(panel, field, v)
-    if panel.selMechKey then Addon:SetMechanicOption(panel.selMechKey, field, v) end
-end
+-- THE POLARITY-CHANGE SUB-SECTION IS GONE (owner, 2026-08-10), and the accessors that
+-- fed it with it. It was three checkboxes and a sound button that appeared only while
+-- the Polarity Shift row was selected — a row with a near-identical sibling one line
+-- below it — and the owner, who asked for the feature, could not find it. Thaddius's
+-- flip alert is a ROW now (`naxxramas:thaddius:polaritychanged`), so its enable, its
+-- placement, its sound switch and its sound picker are the ordinary per-row controls
+-- built below, and there is nothing left here for it to hide behind. thaddius.lua
+-- carries the 2.1.0 settings onto the new row at Init.
 
 -- Read-only timing reference (CD from start / CD) — these are hardcoded addon data
 -- (mech.firstCast / mech.cooldown), not user-adjustable, so just display them.
@@ -546,6 +551,16 @@ BuildMechDetail = function(panel)
         .. "real duration, real placement, real sound. Press it again to restart it. "
         .. "\"Cue\" plays just the sound \226\128\148 whatever this row resolves to right "
         .. "now, which is nothing at all when it is silent.")
+    -- THE ROW'S OWN RULE, for the rows that have one worth stating. Most are
+    -- self-evident from their name; the one that proved some are not is Thaddius's
+    -- flip alert — the owner asked whether the feature existed at all, because
+    -- nothing on the page said what it keys off. A row declares `hint` in the
+    -- encounter data (carried here verbatim by the `row.options` passthrough), and it
+    -- lands LAST in this block: Placement, the two rehearsal buttons, the sound pair,
+    -- then one sentence about the row itself. It collapses for a row that declares
+    -- none, so no page grows an empty line.
+    d.mechHint = flow:Hint("")
+    d._mechHintH = lastHandle(flow)
 
     -- THE CUSTOM BLOCK — the escape hatch, explaining itself (directive 2). A
     -- Custom row gets its OWN placement record — position, optional frame
@@ -698,34 +713,6 @@ BuildMechDetail = function(panel)
         format = function(v) return string.format("%ds", v) end,
     }); addTo(d._remGroup, lastHandle(flow))
     flow:Hint("Enabled? Select its row in the list to set icon/scale/sound/position."); addTo(d._remGroup, lastHandle(flow))
-
-    -- ── Polarity-change group (mechanics flagged polarityWatch) ──
-    d._pcGroup = {}
-    local p1, p2 = subHeader(flow, "Polarity Change Alert"); addTo(d._pcGroup, p1, p2)
-    flow:Hint("Fires when your charge FLIPS (+ <-> -), not on refresh."); addTo(d._pcGroup, lastHandle(flow))
-    d.pcEnable = flow:Checkbox({
-        label = "Enable polarity-change alert",
-        get = function() return pcGet(panel, "pcEnabled", false) end,
-        set = function(v) pcSet(panel, "pcEnabled", v and true or false) end,
-    }); addTo(d._pcGroup, lastHandle(flow))
-    d.pcText = flow:Checkbox({
-        label = "Center-screen text",
-        get = function() return pcGet(panel, "pcText", true) end,
-        set = function(v) pcSet(panel, "pcText", v and true or false) end,
-    }); addTo(d._pcGroup, lastHandle(flow))
-    d.pcSound = flow:Checkbox({
-        label = "Play sound",
-        get = function() return pcGet(panel, "pcSound", true) end,
-        set = function(v) pcSet(panel, "pcSound", v and true or false) end,
-    }); addTo(d._pcGroup, lastHandle(flow))
-    local pcr = flow:AddRow(); addTo(d._pcGroup, lastHandle(flow))
-    pcr:Label("Sound")
-    d.pcSoundBtn = pcr:Button({ text = "None", width = 150, onClick = function()
-        if not panel.selMechKey then return end
-        Addon:ShowSoundPicker(pcGet(panel, "pcSoundKey", "raidwarning"), function(key)
-            pcSet(panel, "pcSoundKey", key); btnText(d.pcSoundBtn, Addon:GetSoundName(key))
-        end, d.pcSoundBtn)
-    end })
 
     -- ── On Cast Notification group (mechanics that fire on a detectable event) ──
     d._ocGroup = {}
@@ -946,6 +933,13 @@ PopulateDetail = function(panel)
         end
     end
 
+    -- The row's own declared rule, shown only when the data supplies one.
+    do
+        local line = (type(mech.hint) == "string" and mech.hint ~= "") and mech.hint or nil
+        if d._mechHintH then setShown(d._mechHintH, line ~= nil) end
+        if d.mechHint then d.mechHint._label:SetText(line or "") end
+    end
+
     groupShown(d._routeGroup, bucket == "custom")
     if bucket == "custom" then
         if d.routeAttach and d.routeAttach.attachDD then d.routeAttach.attachDD.Refresh() end
@@ -965,13 +959,6 @@ PopulateDetail = function(panel)
     groupShown(d._remGroup, hasRem)
     if isCd then d.winWarn:Refresh(); d.winSound:Refresh() end
     if hasRem then d.remEnable:Refresh(); d.remLead.Refresh() end
-
-    local isPolarity = mech.polarityWatch and true or false
-    groupShown(d._pcGroup, isPolarity)
-    if isPolarity then
-        d.pcEnable:Refresh(); d.pcText:Refresh(); d.pcSound:Refresh()
-        btnText(d.pcSoundBtn, Addon:GetSoundName(pcGet(panel, "pcSoundKey", "raidwarning")))
-    end
 
     local ocShown = HasOnCast(mech)
     groupShown(d._ocGroup, ocShown)

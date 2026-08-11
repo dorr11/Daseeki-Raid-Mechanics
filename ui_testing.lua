@@ -265,9 +265,41 @@ function T.WarnText(row, target)
     return text
 end
 
+-- ── THE MODULE-OWNED ROW SEAM ─────────────────────────────────────────────────
+-- Almost every warning row is fired by the engine off a combat-log trigger, so
+-- rehearsing one means calling the dispatch with the row's declared text. A handful
+-- cannot work that way: nothing in the combat log says "your polarity debuff swapped",
+-- so a special module does the detecting and emits the row itself.
+--
+-- For those, the module PUBLISHES its own rehearsal here — one function that produces
+-- the real thing (Thaddius's is a simulated flip through the same renderer the fight
+-- uses). Without it, Play on such a row would show a generic reconstruction of an
+-- output the module never actually produces, which is the exact class of lie the
+-- preview rules forbid. It is the same shape as `placeFrame` and `playbackScript`: a
+-- one-line declaration from the module, no logic moved.
+--
+-- Registered by option key, so a preview can never be picked up by the wrong row.
+T.rowPreviews = {}
+
+function T.RegisterRowPreview(encId, rowKey, fn)
+    if not (encId and rowKey) or type(fn) ~= "function" then return nil end
+    local key = tostring(encId) .. ":" .. tostring(rowKey)
+    T.rowPreviews[key] = fn
+    return key
+end
+
+function T.RowPreview(encId, rowKey)
+    return T.rowPreviews[tostring(encId) .. ":" .. tostring(rowKey)]
+end
+
 -- Fire one warning row through the real dispatch seam — the very calls `Runtime:Act`
 -- makes, so batching, routing, name colouring, the flash and the sound all apply.
+-- A row whose output belongs to a module is produced BY that module (see above), and
+-- this is the one place that decision is made, so Play and the per-boss rehearsal
+-- cannot disagree about what a row looks like.
 function T.FireWarning(encId, row)
+    local own = row and row.key and T.RowPreview(encId, row.key)
+    if own then return own(encId, row) end
     local target = T.SampleName()
     local text   = T.WarnText(row, target)
     if (row.tier or "announce") == "special" then

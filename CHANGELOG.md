@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Thaddius: "Polarity CHANGED" is its own alert now
+
+- **The notification that fires only when your charge actually swaps is a row of its
+  own.** It always existed — it reads your debuff icon and stays quiet on a refresh,
+  which is exactly the behaviour you want — but it lived as a "Polarity Change Alert"
+  sub-section that only appeared once you clicked the *Polarity Shift* row, directly
+  above a near-identical row called *Polarity Shift (cast)*. It is now
+  **Polarity CHANGED (your debuff)** in Thaddius's ability list, sitting with the
+  other polarity rows, with the rule printed on its own page: *fires only when your
+  charge actually FLIPS (+ ↔ −), never on a refresh.*
+- Being a row means it gets everything a row gets: a **Placement** control that
+  really works (Major, Minor, Custom or Hidden — it used to share one saved position
+  with the Polarity Shift timer bar, so it could not be moved on its own at all),
+  the **Sound** switch and the per-mechanic **sound picker**, and **Play** / **Cue**,
+  where Play shows you a simulated flip rather than a mock-up of one.
+- **Your existing settings come with it.** Whatever you had set — on or off, text on
+  or off, sound on or off, and which sound — lands on the new row unchanged the first
+  time you log in. Text turned off becomes *Hidden*, which is the same thing said in
+  the new vocabulary: nothing drawn, sound still plays. The old values are left in
+  place, untouched, and the Polarity Shift bar's own settings are not affected.
+
 ### Your engine log is a log again
 
 - **Fixed: other addons' chat traffic was filling the engine log and pushing your own
