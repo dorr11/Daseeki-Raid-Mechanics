@@ -33,7 +33,7 @@
           API.OptionKey(encId, rowKey) == Addon:MechKey("naxxramas", boss, rowKey)
     and the option a player ticks in the raid section is the same SavedVariables entry
     the engine reads. It is also why the shipped specials keep working untouched:
-    thaddius.lua's polarity panel lives under `naxxramas:thaddius:polarity`, and the
+    thaddius.lua's flip alert lives under `naxxramas:thaddius:polaritychanged`, and the
     Four Horsemen tracker reads the Mark count from `naxxramas:fourhorsemen:markcd`.
     Both of those keys are rows in this file.
 
@@ -60,10 +60,14 @@
       razuvious_understudy  — the understudy nameplate icons. This file declares the
                               understudy TIMERS (taunt / shield wall / mind
                               exhaustion), which are bars, not nameplate icons.
-      thaddius (minihealth  — Stalagg/Feugen health frame, and the polarity-FLIP
-       + polarity watcher)    alert. This file declares the polarity SHIFT bar and
-                              its cast/pre warnings, and owns the option key the
-                              watcher's sub-panel hangs from.
+      thaddius (minihealth  — Stalagg/Feugen health frame, and the DETECTION behind
+       + polarity watcher)    the polarity-FLIP alert (the debuff-icon read). This
+                              file declares the polarity SHIFT bar, its cast/pre
+                              warnings, AND — since 2.1.1 — the flip alert's own
+                              first-class row (`polaritychanged`), which the watcher
+                              emits through. The split is detection vs presentation:
+                              only the module can know your charge, and only a row
+                              can be placed, sounded and switched off like any other.
 --]]
 
 local _, Addon = ...
@@ -804,10 +808,12 @@ Addon:RegisterEncounter({
 -- §8.13 Thaddius. Detection is the ADDS-phase yell: the encounter begins at Stalagg
 -- and Feugen. The adds are tracked through their emotes (synced), and phase 1.5
 -- begins when BOTH are simultaneously dead — a compound state test, not a counter.
--- THE POLARITY FLIP ALERT IS thaddius.lua's (it reads the debuff ICONS, 135768 /
--- 135769, which is the only Era-correct way to know your charge); this file owns the
--- shift bar, the cast bar, the pre-warning, and the option key that sub-panel hangs
--- from. The Stalagg/Feugen health frame is the same file's module.
+-- THE POLARITY FLIP DETECTION IS thaddius.lua's (it reads the debuff ICONS, 135768 /
+-- 135769, which is the only Era-correct way to know your charge). Its PRESENTATION is
+-- the `polaritychanged` row below: 2.1.1 promoted the flip alert out of a sub-panel
+-- under the shift bar and into a row of its own, so it places, sounds and switches off
+-- exactly like every other warning. This file owns the shift bar, the cast bar, the
+-- pre-warning and that row; the Stalagg/Feugen health frame is the module's.
 Addon:RegisterEncounter({
     id = "naxxramas:thaddius", name = "Thaddius", zone = 533,
     creatureId = { 15928, 15929, 15930 }, encounterId = { 1120 },
@@ -831,7 +837,11 @@ Addon:RegisterEncounter({
         { key = "polarity", name = "Polarity Shift", kind = "cd", spellId = 28089, color = 4,
           icon = ICON .. "Spell_Nature_Lightning",
           pull = 11.3, phaseDuration = { [2] = "v25.9-35.7" },
-          options = { polarityWatch = true },   -- reaches thaddius.lua's flip sub-panel
+          -- `polarityWatch` USED TO LIVE HERE: the passthrough that made the options
+          -- detail editor grow a "Polarity Change Alert" sub-section under this row.
+          -- The flip alert is its own row now (`polaritychanged`, below), so the flag
+          -- has no consumer and is gone rather than left as dead data pointing at a
+          -- panel that no longer exists.
           start = { on = "stage", stage = 2 },
           restart = { on = "SPELL_CAST_START", spellId = 28089 } },
         { key = "polaritycast", name = "Polarity Shift (cast)", kind = "cast", spellId = 28089,
@@ -881,6 +891,31 @@ Addon:RegisterEncounter({
         { key = "polaritysoon", name = "Polarity Shift soon", tier = "announce", color = 3,
           text = "Polarity Shift soon",
           trigger = { on = "SPELL_CAST_START", spellId = 28089, delay = 20 } },
+        -- PROMOTED — owner 2026-08-10: "is there a notification on Thaddius that
+        -- triggers only when your polarity debuff swaps?" There was, and he could not
+        -- find it, because it was a sub-section that only appeared when the Polarity
+        -- Shift row was selected — next to a near-identical sibling called Polarity
+        -- Shift (cast). It is a ROW now, named the way he asked about it, and it sits
+        -- with the other polarity rows.
+        --
+        -- NO TRIGGER, DELIBERATELY. Nothing in the combat log says "your charge
+        -- flipped": the only Era-correct read is the player's own debuff ICON, and
+        -- that is thaddius.lua's watcher. So this row declares WHAT the alert is
+        -- (name, colour, sound tier, default) and the watcher declares WHEN — it
+        -- emits through this row's key, so placement, the sound policy, the per-row
+        -- sound picker, Play and Cue all reach it like any other warning row. The
+        -- engine never fires it, which is why there is no double-render.
+        --
+        -- The three declarations, and what each preserves from the 2.1.0 sub-panel:
+        --   default = false   the sub-panel's "Enable polarity-change alert", off
+        --   color   = 4       critical class -> LOUD by default (its "Play sound", on)
+        --   sound   = 2       tier 2 = "raidwarning" (its default sound key)
+        { key = "polaritychanged", name = "Polarity CHANGED (your debuff)",
+          tier = "announce", color = 4, sound = 2, default = false,
+          text = "Polarity CHANGED",
+          icon = ICON .. "Spell_Nature_Lightning",
+          options = { hint = "Fires only when your charge actually FLIPS (+ <-> -), "
+                          .. "never on a refresh." } },
         -- RESTORED — owner 2026-08-07: two more 1.x rows the W4d port dropped, back under
         -- their 1.x option keys (`powersurge`, `balllightning`), spell ids from the
         -- parked data_naxxramas.lua. Both field-verified 2026-07-26: Power Surge 28134

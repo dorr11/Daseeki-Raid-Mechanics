@@ -2097,7 +2097,7 @@ end
 --  when the encounter id is "<raidId>:<bossId>". So a checkbox options.lua writes is
 --  the same SavedVariables entry `API.IsRowEnabled` reads, with no adapter between
 --  them, and the shipped specials that hard-code a mechanic key (thaddius.lua's
---  "naxxramas:thaddius:polarity", the Four Horsemen tracker's
+--  "naxxramas:thaddius:polaritychanged", the Four Horsemen tracker's
 --  "naxxramas:fourhorsemen:markcd") keep working untouched.
 Addon.zones     = Addon.zones or {}      -- ordered array of zone descriptors
 Addon.zonesById = Addon.zonesById or {}
@@ -2166,8 +2166,10 @@ end
 
 -- One row of the encounter grammar becomes one row of the options tree. `row.options`
 -- is a verbatim passthrough for the legacy mechDef fields the detail editor reads
--- (icon/style/sound/colour, and `polarityWatch`, which is how thaddius.lua's
--- polarity sub-panel is reached).
+-- (icon/style/sound/colour, and `hint`, the one sentence a row may say about its own
+-- rule under the Placement block). It used to carry `polarityWatch` too — the flag
+-- that grew a polarity sub-panel under Thaddius's shift bar; 2.1.1 promoted that
+-- alert to a row of its own and the flag went with the panel.
 local function projectRow(row, kind)
     local m = {
         id      = row.key,

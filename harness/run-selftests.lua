@@ -382,6 +382,18 @@ local function newFrame()
     local f = { scripts = {}, events = {}, shown = false, points = {} }
     function f:RegisterEvent(e) self.events[e] = true end
     function f:UnregisterEvent(e) self.events[e] = nil end
+    -- Unit-filtered registration is the same registration with a filter the sim has no
+    -- second unit to exercise; recorded so a caller can be asserted to have asked for
+    -- it. thaddius.lua's polarity watcher registers UNIT_AURA this way at file scope,
+    -- which is what made the file unloadable headless before.
+    function f:RegisterUnitEvent(e, u1, u2)
+        self.events[e] = true
+        self.unitEvents = self.unitEvents or {}
+        self.unitEvents[e] = { u1, u2 }
+    end
+    function f:UnregisterAllEvents()
+        for e in pairs(self.events) do self.events[e] = nil end
+    end
     function f:SetScript(k, fn) self.scripts[k] = fn end
     function f:GetScript(k) return self.scripts[k] end
     -- CLASS 9. Show/Hide DISPATCH OnShow/OnHide from inside the call, on the visibility
@@ -583,6 +595,15 @@ local ONY_CHUNK = loadfile(P("enc_onyxia.lua"))
 if not ONY_CHUNK then realprint("  FAIL  loadfile enc_onyxia.lua"); os.exit(2) end
 local WB_CHUNK = loadfile(P("enc_worldbosses.lua"))
 if not WB_CHUNK then realprint("  FAIL  loadfile enc_worldbosses.lua"); os.exit(2) end
+-- 2.1.1: thaddius.lua. THE ONE SPECIAL THIS HARNESS CAN LOAD. The other five build
+-- textures, cooldown spirals and nameplate parents at load or at Start (see GATE
+-- SPECIALS, which asserts their seams over the source instead); thaddius.lua creates
+-- exactly one bare event frame at file scope and everything else lazily, so the
+-- polarity watcher — which now emits a real encounter row — is drivable for real.
+-- LOADED BY GATE POLARITY, not here: executing it registers a module, and the gates
+-- above assert module registries they populate themselves.
+local THAD_CHUNK = loadfile(P("thaddius.lua"))
+if not THAD_CHUNK then realprint("  FAIL  loadfile thaddius.lua"); os.exit(2) end
 
 _G.DaseekiRaidMechanicsDB = {}
 Addon:Init()
@@ -4741,12 +4762,21 @@ do
         eq(raid and #raid.bosses, 16, "…with all sixteen entries")
         local boss = Addon:GetBoss("naxxramas", "thaddius")
         ck(boss and #boss.mechanics > 0, "…every boss carrying its mechanic rows")
-        local pol
-        for _, m in ipairs(boss and boss.mechanics or {}) do if m.id == "polarity" then pol = m end end
+        local pol, flip
+        for _, m in ipairs(boss and boss.mechanics or {}) do
+            if m.id == "polarity" then pol = m end
+            if m.id == "polaritychanged" then flip = m end
+        end
         ck(pol ~= nil, "…including Thaddius's `polarity` row")
-        ck(pol and pol.polarityWatch == true,
-           "…with the polarityWatch passthrough thaddius.lua's sub-panel is reached by")
-        eq(Addon:MechKey("naxxramas", "thaddius", "polarity"), "naxxramas:thaddius:polarity",
+        -- 2.1.1: the flip alert left the sub-panel, and the passthrough that reached
+        -- that panel left with it. A flag with no consumer is data that lies.
+        eq(pol and pol.polarityWatch, nil,
+           "…carrying NO polarityWatch passthrough any more (the sub-panel is gone)")
+        ck(flip ~= nil, "…and a FIRST-CLASS `polaritychanged` row beside it")
+        eq(flip and flip.name, "Polarity CHANGED (your debuff)",
+           "…named the way the owner asked about it")
+        eq(Addon:MechKey("naxxramas", "thaddius", "polaritychanged"),
+           "naxxramas:thaddius:polaritychanged",
            "…at the EXACT key thaddius.lua hard-codes")
         ck(Addon:GetBossByNpcID(15990) ~= nil, "…and the npc index resolves Kel'Thuzad")
         -- the 1.x path stays refused
@@ -4783,9 +4813,17 @@ do
            "Four Horsemen declares NO per-horse cooldown radials — the tracker renders those")
         ck(fh.rowsByKey["markcd"] ~= nil,
            "…but DOES declare markcd, which the tracker reads its Mark count from")
+        -- THADDIUS IS THE ONE SPLIT, and 2.1.1 moved where the line falls. The data
+        -- used to declare no flip alert at all, because thaddius.lua rendered one
+        -- itself. It declares the ROW now — but no TRIGGER, so the engine still never
+        -- fires it and there is still exactly one renderer. The split is detection
+        -- (the module's debuff-icon read) vs presentation (this row).
         local th = Addon:GetEncounter("naxxramas:thaddius")
-        ck(th.rowsByKey["polaritychanged"] == nil,
-           "Thaddius declares NO polarity-FLIP alert — thaddius.lua's icon watcher ships it")
+        local flip = th.rowsByKey["polaritychanged"]
+        ck(flip ~= nil, "Thaddius DECLARES the polarity-FLIP alert as a row of its own")
+        eq(flip and flip.trigger, nil,
+           "…with no trigger: thaddius.lua's icon watcher is still the only thing that fires it")
+        eq(flip and #(flip.triggers or {}), 0, "…and no trigger list either")
     end
 
     do  -- the spec's own wave script, asserted against the module that ships it
@@ -4809,8 +4847,15 @@ do
         local src = readFile(P("thaddius.lua")) or ""
         ck(src:find("135768", 1, true) and src:find("135769", 1, true),
            "THADDIUS: the shipping watcher reads the debuff ICONS 135768/135769 (Era rule)")
-        ck(src:find("naxxramas:thaddius:polarity", 1, true) ~= nil,
-           "…under the same option key the encounter row publishes")
+        -- The key it emits under is the FLIP ROW's, assembled from the encounter id and
+        -- the row key rather than written out, so the two can never drift apart.
+        ck(src:find('ENC_ID   = "naxxramas:thaddius"', 1, true) ~= nil
+           and src:find('FLIP_ROW = "polaritychanged"', 1, true) ~= nil,
+           "…and emits under the encounter row it publishes, built from id + row key")
+        -- …and it still knows where 2.1.0 kept the settings, which is the only reason
+        -- the adoption can find them.
+        ck(src:find('OLD_KEY  = "naxxramas:thaddius:polarity"', 1, true) ~= nil,
+           "…while still naming the 2.1.0 record it adopts the old settings from")
     end
 end
 endgate()
@@ -11639,6 +11684,312 @@ end
 endgate()
 
 ----------------------------------------------------------------------
+-- GATE POLARITY — the owner's 2026-08-10 question, answered as a ROW
+--
+-- OWNER, VERBATIM: "is there a notification on Thaddius that triggers only when your
+-- polarity debuff swaps?" There was — and he could not find it, because it was a
+-- sub-section called "Polarity Change Alert" that appeared only while the "Polarity
+-- Shift" row was selected, one line above a row called "Polarity Shift (cast)".
+--
+-- The answer was to promote it, and this gate is that promotion, driven end to end:
+-- the row exists and is ordered on the page, the flip-only rule is unchanged, the
+-- Placement model genuinely applies (all four buckets, driven, not described), the cue
+-- resolves through the pinned sound chain, Play drives the real watcher inside the
+-- quarantine, and a 2.1.0 profile's four sub-panel settings land on the new row with
+-- nothing invented and nothing destroyed.
+--
+-- THIS IS THE ONE GATE THAT LOADS A SPECIAL. The other five build textures, cooldown
+-- spirals and nameplate parents (GATE SPECIALS asserts their seams over the source
+-- instead); thaddius.lua creates one bare event frame at file scope, so its watcher is
+-- drivable for real — and now that the watcher emits a real encounter row, driving it
+-- is the only honest way to assert any of this.
+----------------------------------------------------------------------
+gate("POLARITY  Thaddius's flip alert is a row: ordered, placed, sounded, adopted")
+do
+    local ENC, ROW = "naxxramas:thaddius", "polaritychanged"
+    local KEY = ENC .. ":" .. ROW
+    local saved = Addon.db
+
+    resetAnchors()
+    ck(loadNaxx(), "the Naxxramas data loads for the flip row")
+    API.PublishOptionsTree()
+
+    local okT, errT = pcall(THAD_CHUNK, ADDON_NAME, Addon)
+    ck(okT, "thaddius.lua loads headless (" .. tostring(errT) .. ")")
+
+    -- The SHIPPING watcher's own frame, found by the registration it makes rather than
+    -- by a handle the file was made to expose for the test.
+    local polEv
+    for i = #FRAMES, 1, -1 do
+        local f = FRAMES[i]
+        if f.unitEvents and f.unitEvents["UNIT_AURA"] then polEv = f break end
+    end
+    ck(polEv ~= nil, "…registering UNIT_AURA on the player, as it always has")
+    ck(polEv and polEv.events["PLAYER_REGEN_ENABLED"] == true,
+       "…and PLAYER_REGEN_ENABLED, which is its between-pulls reset")
+
+    -- The debuff world: one charge at a time, read by ICON — 135768 / 135769 — because
+    -- on Era there is no other way to know your own charge.
+    local charge
+    _G.UnitDebuff = function(_, i)
+        if i ~= 1 or not charge then return nil end
+        return "Polarity Charge", (charge == "pos") and 135769 or 135768
+    end
+    local function aura(c)
+        charge = c
+        polEv:GetScript("OnEvent")(polEv, "UNIT_AURA")
+    end
+    local function combatEnd() polEv:GetScript("OnEvent")(polEv, "PLAYER_REGEN_ENABLED") end
+    -- Settle on negative, clear the surfaces, then flip ONCE — so every count below is
+    -- the count of that one flip and nothing else.
+    local function flip()
+        aura("neg")
+        Warn.Reset(); clearSounds()
+        aura("pos")
+    end
+    local function drawn()
+        return Warn.announceStack:Count() + Warn.specialStack:Count() + Warn.CustomCount()
+    end
+
+    do  -- 1. THE ROW, on the page, where a raider looking for it will look
+        local boss = Addon:GetBoss("naxxramas", "thaddius")
+        local at, mech = {}, nil
+        for i, m in ipairs(boss.mechanics) do
+            at[m.id] = i
+            if m.id == ROW then mech = m end
+        end
+        ck(mech ~= nil, "the flip alert is a FIRST-CLASS row on the Thaddius page")
+        eq(at[ROW], (at.polaritysoon or 0) + 1,
+           "…ordered with the other polarity rows, right after 'Polarity Shift soon'")
+        eq(mech and mech.name, "Polarity CHANGED (your debuff)",
+           "…named the way the owner asks about it, with the page's parenthetical voice")
+        eq(mech and mech._rowKind, "warning",
+           "…projected as a WARNING row, which is what gives it the sound line at all")
+        eq(mech and mech.default, false, "…shipped OFF, exactly as `pcEnabled` defaulted")
+        eq(mech and mech.hint,
+           "Fires only when your charge actually FLIPS (+ <-> -), never on a refresh.",
+           "…and carrying the RULE as its own hint, declared in the encounter data")
+        eq(Addon:GetMechanicConfig(KEY, mech).masterEnabled, false,
+           "…so its list checkbox reads unchecked with no override present")
+    end
+
+    do  -- 2. THE PAGE: the mandated control order, and the sub-section that is gone
+        local opts = readFile(P("options.lua")) or ""
+        -- THE CONSTRUCTION, not the words. The file explains in prose why the
+        -- sub-section went away, and a gate that could not tell the explanation from
+        -- the thing would be worthless (same rule GATE SPECIALS applies to Razuvious's
+        -- deliberately-absent placement seam).
+        ck(opts:find('subHeader(flow, "Polarity Change Alert")', 1, true) == nil,
+           "the 'Polarity Change Alert' sub-section is GONE from the options page")
+        ck(opts:find("d._pcGroup", 1, true) == nil, "…along with its collapse group")
+        ck(opts:find("pcEnabled", 1, true) == nil and opts:find("pcSoundKey", 1, true) == nil,
+           "…and every pc* accessor with it")
+        ck(opts:find("unfindable", 1, true) ~= nil,
+           "…and the file says WHY, so nobody restores it as a kindness")
+        ck(opts:find("polarityWatch", 1, true) == nil,
+           "…and the passthrough that used to summon it")
+        local pos = {
+            { "Placement",   opts:find('label = "Placement"', 1, true) },
+            { "Play",        opts:find('text = "Play"', 1, true) },
+            { "Cue",         opts:find('text = "Cue"', 1, true) },
+            { "sound mode",  opts:find('label = "Sound", width = 100', 1, true) },
+            { "sound pick",  opts:find('text = "Sound: Default"', 1, true) },
+            { "row hint",    opts:find("d.mechHint = flow:Hint", 1, true) },
+            { "the tracker", opts:find('"Ability Tracker"', 1, true) },
+        }
+        local missing, outOfOrder = 0, 0
+        for i, p in ipairs(pos) do
+            if not p[2] then missing = missing + 1
+            elseif i > 1 and pos[i - 1][2] and p[2] < pos[i - 1][2] then outOfOrder = outOfOrder + 1 end
+        end
+        eq(missing, 0, "every control of the reworked row layout is built")
+        eq(outOfOrder, 0,
+           "…in the mandated order: Placement, Play/Cue, the sound switch + picker, the hint")
+    end
+
+    do  -- 3. FLIP-ONLY — the rule the owner actually asked about, unchanged
+        resetAnchors()
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+        Warn.Reset()
+        aura("neg")
+        eq(drawn(), 0, "the FIRST charge of a pull is not a flip — there is nothing to compare")
+        aura("pos")
+        eq(Warn.announceStack:Count(), 1, "neg -> pos IS a flip, and it announces")
+        local line = tostring(Warn.announceStack.slots[1] and Warn.announceStack.slots[1].text)
+        ck(line:find("Polarity CHANGED", 1, true) ~= nil, "…saying so in the watcher's own words")
+        ck(line:find("Positive", 1, true) ~= nil, "…naming the charge you now carry")
+        ck(line:find("|cff", 1, true) ~= nil,
+           "…with the per-charge colouring kept, now inside the line the surface tints")
+        aura("pos")
+        eq(Warn.announceStack:Count(), 1,
+           "…and a REFRESH of the SAME charge announces nothing (the entire point of the feature)")
+        aura("neg")
+        eq(Warn.announceStack:Count(), 2, "pos -> neg flips back, and announces again")
+        ck(tostring(Warn.announceStack.slots[2].text):find("Negative", 1, true) ~= nil,
+           "…naming the other charge")
+
+        combatEnd()
+        Warn.Reset()
+        aura("neg")
+        eq(drawn(), 0, "PLAYER_REGEN_ENABLED resets the watcher, so the next pull starts clean")
+
+        Addon:SetMechanicOption(KEY, "masterEnabled", false)
+        Warn.Reset(); aura("pos"); aura("neg")
+        eq(drawn(), 0, "the row's own checkbox switches the whole alert off (what `pcEnabled` did)")
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+    end
+
+    do  -- 4. PLACEMENT — the routing model applies for real, all four buckets driven
+        -- THE VERDICT THIS PINS: 2.1.0 rendered the alert through `Addon:ShowWarning`,
+        -- the 1.x centre-text surface, which has no bucket at all — it draws at a
+        -- per-key saved position, and the key it used was the polarity BAR's, so the
+        -- alert and the bar shared one placement record. A Placement dropdown over that
+        -- would have been a dead control. The watcher emits through the engine's own
+        -- warning seam now, so the FULL four-way choice is honest, and here it is.
+        resetAnchors()
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+
+        Route.Clear(KEY)
+        flip()
+        eq(Warn.announceStack:Count(), 1, "MINOR by default: the flip lands on the announcements")
+        eq(Warn.specialStack:Count(), 0, "…and on nothing else")
+
+        Route.Set(KEY, "major")
+        flip()
+        eq(Warn.specialStack:Count(), 1, "routed MAJOR, the same flip arrives as a special warning")
+        eq(Warn.announceStack:Count(), 0, "…leaving the announcement stack alone")
+
+        Route.Set(KEY, "custom")
+        flip()
+        eq(Warn.CustomCount(), 1, "routed CUSTOM, it takes its own place on screen")
+        eq(Warn.announceStack:Count() + Warn.specialStack:Count(), 0, "…and neither list")
+
+        Route.Set(KEY, "hidden")
+        flip()
+        eq(drawn(), 0, "routed HIDDEN, nothing is drawn…")
+        ck(lastSound() ~= nil, "…and the sound still plays, because hidden is not mute")
+        Route.Clear(KEY)
+    end
+
+    do  -- 5. THE CUE — the pinned resolution chain, on this row
+        resetAnchors()
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+        local row = Addon:GetEncounter(ENC).rowsByKey[ROW]
+        eq(Snd.ClassOf(row), "critical",
+           "the flip alert is the CRITICAL class, so the 2.1.0 'Play sound' default (ON) survives")
+        eq(Snd.DefaultFor(row), true, "…LOUD by default, with no user opinion needed")
+        eq(Warn.RowSoundKey(ENC, row), "raidwarning",
+           "…and its tier-2 key IS the sub-panel's default sound key")
+        clearSounds()
+        eq(Tst.RowSound(ENC, ROW), "sound", "Cue plays it through the real dispatch")
+        ck(lastSound() ~= nil, "…for real")
+        Addon:SetRowSound(KEY, "pk:DBM-Core/AirHorn.ogg")
+        eq(Warn.RowSoundKey(ENC, row), "pk:DBM-Core/AirHorn.ogg",
+           "a per-row sound override beats the tier default")
+        Snd.SetMode(KEY, "off")
+        clearSounds()
+        eq(select(2, Tst.RowSound(ENC, ROW)), "silent",
+           "…and an explicit Off beats the override — the pinned chain, unchanged")
+        eq(lastSound(), nil, "…having played nothing at all")
+        Snd.SetMode(KEY, "default")
+        Addon:SetRowSound(KEY, nil)
+    end
+
+    do  -- 6. PLAY drives the REAL watcher, inside the quarantine
+        resetAnchors()
+        Warn.Reset()
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+        local kind, text = Tst.Row(ENC, ROW)
+        eq(kind, "warning", "Play on the flip row fires a warning")
+        eq(Tst.IsActive(), true, "…with the testing quarantine up (no stats, no sync, no tripwire)")
+        text = tostring(text)
+        ck(text:find("Polarity CHANGED", 1, true) ~= nil,
+           "…and it is the WATCHER's own line, not a generic reconstruction of the row")
+        ck(text:find("Positive", 1, true) or text:find("Negative", 1, true),
+           "…carrying a simulated CHARGE, which is the only thing this alert ever says")
+        local again = tostring(select(2, Tst.Row(ENC, ROW)))
+        ck(again ~= text, "…and pressing it again shows the OTHER charge: a flip, not a repeat")
+        -- …and it ignores the checkbox, exactly as `T.Row` does for every other row
+        Addon:SetMechanicOption(KEY, "masterEnabled", false)
+        ck(select(2, Tst.Row(ENC, ROW)) ~= nil,
+           "Play works on a row that is switched off — pressing it is an explicit request")
+        Addon:SetMechanicOption(KEY, "masterEnabled", true)
+        Tst.Stop("polarity gate")
+    end
+
+    do  -- 7. THE RED CONTROL: the 2.1.0 blob, through the new code, values identical
+        resetAnchors()
+        _G.DaseekiRaidMechanicsDB = {
+            dbVersion = 3,
+            mechanics = {
+                -- ONE RECORD, TWO THINGS: the Polarity Shift BAR's own settings and the
+                -- four sub-panel fields that were parked on it because the alert had no
+                -- record of its own. Both are in this fixture on purpose.
+                ["naxxramas:thaddius:polarity"] = {
+                    masterEnabled = true, route = "major", sound = "raidwarning",
+                    pcEnabled = true, pcText = true, pcSound = true,
+                    pcSoundKey = "pk:DBM-VPVEM/polarityshift.ogg",
+                },
+            },
+        }
+        Addon:Init()
+        local old = Addon.db.mechanics["naxxramas:thaddius:polarity"]
+        local new = Addon.db.mechanics[KEY]
+        ck(new ~= nil, "a 2.1.0 profile's polarity-alert settings arrive on the NEW row")
+        eq(new and new.masterEnabled, true, "…the alert is still ON")
+        eq(new and new.route, nil,
+           "…'Center-screen text' was on, so the row simply follows its own placement")
+        eq(new and new.soundMode, "on", "…'Play sound' was on, and stays an explicit On")
+        eq(new and new.sound, "pk:DBM-VPVEM/polarityshift.ogg",
+           "…on the exact sound key the player had chosen")
+        eq(Warn.RowSoundKey(ENC, Addon:GetEncounter(ENC).rowsByKey[ROW]),
+           "pk:DBM-VPVEM/polarityshift.ogg", "…which is the key the fight will actually play")
+        -- ADDITIVE: nothing is destroyed, and the BAR's own record is untouched
+        eq(old.pcEnabled, true, "the old fields are left where they are — the change is readable")
+        eq(old.pcSoundKey, "pk:DBM-VPVEM/polarityshift.ogg", "…every one of them")
+        eq(old.masterEnabled, true, "…and the Polarity Shift BAR's own settings are untouched")
+        eq(old.route, "major", "…including its placement")
+        eq(old.sound, "raidwarning", "…and its own sound file")
+        eq(Addon.db.dbVersion, 3,
+           "…with NO DB_VERSION bump: this moves values, it does not change the model")
+        -- IDEMPOTENT: a second login must not undo a choice made since
+        Addon:SetMechanicOption(KEY, "masterEnabled", false)
+        Addon:Init()
+        eq(Addon.db.mechanics[KEY].masterEnabled, false,
+           "a second login does NOT re-apply it over a choice the player has since made")
+        eq(old.pcAdopted, true, "…because the record it read is marked adopted")
+    end
+
+    do  -- the sound-only shape, and the profile that never touched the sub-panel
+        _G.DaseekiRaidMechanicsDB = { dbVersion = 3, mechanics = {
+            ["naxxramas:thaddius:polarity"] = { pcEnabled = true, pcText = false, pcSound = false },
+        } }
+        Addon:Init()
+        local new = Addon.db.mechanics[KEY]
+        eq(new and new.route, "hidden",
+           "text OFF adopts as HIDDEN — 'not drawn, sounds and voice still play', verbatim")
+        eq(new and new.soundMode, "off", "…and sound OFF adopts as an explicit Off")
+        eq(new and new.sound, "raidwarning",
+           "…with the 2.1.0 default key, because an absent field means the default they heard")
+
+        _G.DaseekiRaidMechanicsDB = { dbVersion = 3, mechanics = {
+            ["naxxramas:thaddius:polarity"] = { masterEnabled = false },
+        } }
+        Addon:Init()
+        eq(Addon.db.mechanics[KEY], nil,
+           "a profile that never touched the sub-panel gets no record invented for it")
+    end
+
+    _G.DaseekiRaidMechanicsDB = {}
+    Addon:Init()
+    Addon.db = saved
+    Addon.db.mechanics[KEY] = nil
+    _G.UnitDebuff = nil
+    resetAnchors()
+end
+endgate()
+
+----------------------------------------------------------------------
 gate("GLYPH  every glyph the rework can display is ASCII or cmap-verified")
 do
     -- THE TOFU LESSON. Display strings in this addon carry non-ASCII only as
@@ -11683,6 +12034,10 @@ do
     checkFile("options.lua")
     checkFile("ui_testing.lua")
     checkFile("ui_anchors.lua")
+    -- 2.1.1: thaddius.lua joins the list. Its flip alert is a display string now
+    -- (it goes out through the warning surface, not a module's own font string), so
+    -- the same rule has to hold for it.
+    checkFile("thaddius.lua")
 
     -- cmap verification against the shipped face, when reachable. Read BINARY:
     -- the shared readFile opens in text mode, and on Windows that truncates a TTF
@@ -11811,6 +12166,7 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "ROW-FIRST  the ability page leads with Placement, and Custom explains itself",
                      "ROW-SOUND  choose the sound per mechanic: override wins where the mode permits",
                      "MIG-2.0  a 2.0.0 profile through the reworked panel \226\128\148 nothing lost",
+                     "POLARITY  Thaddius's flip alert is a row: ordered, placed, sounded, adopted",
                      "GLYPH  every glyph the rework can display is ASCII or cmap-verified" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
