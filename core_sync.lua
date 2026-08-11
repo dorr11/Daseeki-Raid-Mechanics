@@ -952,10 +952,17 @@ function Addon:StartPullTimer(seconds, source, target)
         end
     end
 
-    local t = ensurePullTimer()
-    t:Start(seconds)
+    -- ATTRIBUTION IS ARMED BEFORE THE START, not after it (CLIENT_ASYNC_LESSONS.md
+    -- class 9: "any latch/echo/guard armed at or after the first client call of a
+    -- sequence is armed too late"). `t:Start` publishes TIMER_START to every engine
+    -- consumer and puts a bar on screen; a consumer that asks WHOSE pull this is must
+    -- not be answered with the PREVIOUS pull's source because these two lines happened
+    -- to come after. Nothing reads it synchronously today; the ordering is the point,
+    -- and GATE C9 pins it with a red control that reads "layout" when it is undone.
     Addon.pullSource = source
     Addon.pullTarget = target
+    local t = ensurePullTimer()
+    t:Start(seconds)
     -- §11.4: "If the sender is targeting something that is not a group member, the
     -- announcement names that target."
     local text = ("Pull in %d"):format(math.floor(seconds + 0.5))
@@ -1023,10 +1030,12 @@ function Addon:StartBreakTimer(seconds, source, silent)
     if seconds < 0 then return nil, "negative" end
     if seconds > Sync.BREAK_MAX then seconds = Sync.BREAK_MAX end    -- §11.4 60-minute maximum
 
-    local t = ensureBreakTimer()
-    t:Start(seconds)
+    -- Same ordering rule as the pull timer above: the break's own facts are true
+    -- BEFORE the bar exists, not two lines after it.
     Sync.breakStartedAt = Sync.env.Time()
     Sync.breakDuration  = seconds
+    local t = ensureBreakTimer()
+    t:Start(seconds)
 
     -- §9.2: persisted to disk as duration / wallclock-at-start.
     if Addon.db then

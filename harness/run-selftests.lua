@@ -384,8 +384,29 @@ local function newFrame()
     function f:UnregisterEvent(e) self.events[e] = nil end
     function f:SetScript(k, fn) self.scripts[k] = fn end
     function f:GetScript(k) return self.scripts[k] end
-    function f:Show() self.shown = true end
-    function f:Hide() self.shown = false end
+    -- CLASS 9. Show/Hide DISPATCH OnShow/OnHide from inside the call, on the visibility
+    -- CHANGE, exactly as the client does — a script and every HookScript, in registration
+    -- order. This sim used to flip a boolean and return, which made every OnShow/OnHide
+    -- consequence unreachable: ui_anchors.lua hooks OnShow/OnHide on every host frame it
+    -- resolves and answers with `Anchors.ReapplyAll()`, so "does re-applying placement
+    -- cause the visibility event that asked for it?" was a question the harness could not
+    -- even pose.
+    local function dispatch(self, which)
+        local s = self.scripts[which]
+        if s then s(self) end
+        local hooks = self.hooks and self.hooks[which]
+        if hooks then for i = 1, #hooks do hooks[i](self) end end
+    end
+    function f:Show()
+        if self.shown then return end
+        self.shown = true
+        dispatch(self, "OnShow")
+    end
+    function f:Hide()
+        if not self.shown then return end
+        self.shown = false
+        dispatch(self, "OnHide")
+    end
     function f:IsShown() return self.shown end
     function f:SetSize(w, h) self.w, self.h = w, h end
     function f:SetPoint(p, rel, rp, x, y)
@@ -625,7 +646,18 @@ local REGISTERED = {}       -- every prefix registered for RECEIVE
 -- core_sync.lua and dbm_bridge.lua create at Boot — not by calling `Sync.Receive`
 -- directly, so the frame handler, its argument order and the fact that BOTH files
 -- listen to the same event are all part of what is under test.
+-- THE WHOLE SUITE runs under the default posture; `DRM_DISPATCH=async|silent` runs the
+-- whole suite under a named variant instead, so "both postures run" is a command and not
+-- a promise. GATE C9's own legs borrow a posture explicitly and always hand it back, so
+-- they assert the same things whichever way the suite was started.
 local DISPATCH = { posture = "sync", delivered = 0, depth = 0, maxDepth = 0 }
+DISPATCH.DEFAULT = DISPATCH.posture      -- the doctrine's default, before any override
+do
+    local want = os.getenv("DRM_DISPATCH")
+    if want == "async" or want == "silent" or want == "sync" then DISPATCH.posture = want end
+    DISPATCH.startPosture = DISPATCH.posture
+    realprint(("-- dispatch posture: %s --"):format(DISPATCH.posture))
+end
 
 local ADDON_MSG_FRAMES, ADDON_MSG_SEEN = {}, -1
 local function addonMsgFrames()
@@ -710,6 +742,27 @@ Sync:SetEnv({
     Time   = function() return W.wallClock or 1700000000 end,
     DateAt = function() return "20:15" end,
 })
+
+-- CLASS 9, the secondary blind spot: "an absent API is a kinder client", and the sim
+-- must stub EVERY setter the code under test calls "including the ones it only calls to
+-- clear a leftover". media.lua's voice countdown rides C_Timer, and
+-- `Addon:StopVoiceCountdown` — which `Addon:CancelPullTimer` calls on EVERY cancel — is
+-- exactly such a call. With C_Timer absent, `PlayVoiceCountdown` could not run at all, so
+-- the clearing path was only ever walked over an empty list and could not have been wrong.
+-- The handles ride the ENGINE scheduler here (one drivable clock, not two), which is a
+-- deviation in domain and not in behaviour: what is under test is start, hand back,
+-- cancel, and stay silent.
+local CT_OWNER = {}
+_G.C_Timer = {
+    NewTimer = function(delay, fn)
+        local h = { cancelled = false }
+        local function fire() if not h.cancelled then fn() end end
+        function h:Cancel() self.cancelled = true; Sched:Unschedule(fire, CT_OWNER) end
+        Sched:Schedule(delay, fire, CT_OWNER)
+        return h
+    end,
+    After = function(delay, fn) return Sched:Schedule(delay, fn, CT_OWNER) end,
+}
 
 Life:SetEnv({
     UnitExists          = function(u) return unit(u) ~= nil end,
@@ -3978,10 +4031,10 @@ local function sendAndWatch(sub, ...)
 end
 
 do  -- (A) THE POSTURE IS LIVE, AND IT IS THE DEFAULT
-    eq(DISPATCH.posture, "sync",
+    eq(DISPATCH.DEFAULT, "sync",
        "the simulator's DEFAULT dispatch posture is SYNCHRONOUS IN-CALL (doctrine, not an option)")
     resetC9()
-    eq(sendAndWatch("BT", 300), true,
+    eq(withPosture("sync", sendAndWatch, "BT", 300), true,
        "…so our own group broadcast is handed back to our own CHAT_MSG_ADDON handler BEFORE SendAddonMessage returns")
     ck(DISPATCH.delivered >= 1, "…through the shipped registration seam, not by calling Sync.Receive behind its back")
 
@@ -3996,7 +4049,7 @@ do  -- (A) THE POSTURE IS LIVE, AND IT IS THE DEFAULT
     eq(Sync.stats.selfEcho, 0, "…which is what made every consequence below invisible headless")
 end
 
-do  -- (B) THE MANDATED LEG: DSKR0 SELF-DELIVERY, END TO END
+withPosture("sync", function()  -- (B) THE MANDATED LEG: DSKR0 SELF-DELIVERY, END TO END
     resetC9()
     Addon:SetEventRecording(true); Addon:ClearEventLog()
     Addon:StartPullTimer(10, "manual")
@@ -4020,6 +4073,28 @@ do  -- (B) THE MANDATED LEG: DSKR0 SELF-DELIVERY, END TO END
        "RED CONTROL: our own echo is NOT published on SYNC_RECV (shipped: it was — with our own "
        .. "name as sender, ahead of every handler's self-check, and OUTSIDE the echo latch)")
     Addon:SetEventRecording(false)
+end)
+
+do  -- (B2) ARM-ORDERING: attribution is true BEFORE the call that publishes the bar
+    -- The class-9 rule stated as a test: any state a synchronous consumer of a client
+    -- call could need must be armed BEFORE that call, not on the lines after it.
+    resetC9()
+    Addon:StartPullTimer(30, "layout")          -- a previous pull, so "stale" is visible
+    advance(0.4)
+    local sawSource, sawTarget
+    local function onTimer(_, bar)
+        if bar and bar.timerId == "engine:pull" then
+            sawSource, sawTarget = Addon.pullSource, Addon.pullTarget
+        end
+    end
+    Addon:RegisterEngineCallback("TIMER_START", onTimer, "c9")
+    Addon:StartPullTimer(10, "manual", "Onyxia")
+    Addon:UnregisterEngineCallback("TIMER_START", onTimer)
+    advance(0.4)
+    eq(sawSource, "manual",
+       "RED CONTROL: a TIMER_START consumer sees THIS pull's source (shipped: armed two lines "
+       .. "after t:Start, so a synchronous consumer read the PREVIOUS pull's attribution)")
+    eq(sawTarget, "Onyxia", "…and this pull's target, for the same reason")
 end
 
 do  -- (C) THE LATCH COVERS THE WHOLE INBOUND SEQUENCE, NOT ONE HANDLER
@@ -4092,12 +4167,14 @@ do  -- (E) THE RING IS FORENSICS, NOT WEATHER  (owner's live finding, raid 2026-
        "a MALFORMED message on OUR OWN prefix is a peer running a broken build — recorded EVERY time")
 
     -- The same flood from the other direction: class 9's own echo.
-    resetC9(); Tele.Clear()
-    for _ = 1, 20 do Sync.Send("BT", 300) end
-    advance(4)
-    ck(Sync.stats.selfEcho >= 10, "…20 of our own broadcasts really do echo back in-call…")
-    ck(Tele.Count() <= 1,
-       "…and they add at most ONE ring entry too — the class-9 flood the async-only sim could never show")
+    withPosture("sync", function()
+        resetC9(); Tele.Clear()
+        for _ = 1, 20 do Sync.Send("BT", 300) end
+        advance(4)
+        ck(Sync.stats.selfEcho >= 10, "…20 of our own broadcasts really do echo back in-call…")
+        ck(Tele.Count() <= 1,
+           "…and they add at most ONE ring entry too — the class-9 flood the async-only sim could never show")
+    end)
 end
 
 do  -- (F) THE COMPOSED LEG, UNDER BOTH POSTURES
@@ -4136,8 +4213,53 @@ do  -- (F) THE COMPOSED LEG, UNDER BOTH POSTURES
        .. "at the mechanism' means (any disagreement here is a latent, never a reason to revert)")
 end
 
+do  -- (G) THE OTHER IN-CALL DISPATCH: OnShow/OnHide, and the anchors' answer to it
+    -- ui_anchors.lua hooks OnShow/OnHide on every host frame it resolves and answers
+    -- with `Anchors.ReapplyAll()` — a handler that touches the client. The class-9
+    -- question is whether that touch can cause the event that woke it. It cannot, and
+    -- the reason is a property of `Anchors.Place`: it is ClearAllPoints + SetPoint and
+    -- nothing else, so re-applying placement can never show or hide anything. This
+    -- pins that property rather than trusting it.
+    local host = _G.CreateFrame("Frame", nil, _G.UIParent)
+    local calls = 0
+    local realReapplyAll = Addon.Anchors.ReapplyAll
+    Addon.Anchors.ReapplyAll = function(...) calls = calls + 1; return realReapplyAll(...) end
+    ck(Addon.Anchors.HookHost("#c9host", host), "a resolved host gets its OnShow/OnHide hooked once")
+    eq(Addon.Anchors.HookHost("#c9host", host), false,
+       "…once, and the hooked latch is armed BEFORE the two HookScript calls, not after")
+    local dock = _G.CreateFrame("Frame", nil, _G.UIParent)
+    Addon.Anchors.Install("#c9docked", dock, { label = "c9", defaultPos = { point = "CENTER" } })
+    calls = 0
+    host:Show()
+    eq(calls, 1,
+       "showing a hooked host re-applies placement EXACTLY ONCE — the reapply is SetPoint only, "
+       .. "so it cannot cause the visibility event that woke it")
+    calls = 0
+    host:Hide()
+    eq(calls, 1, "…and hiding it, likewise")
+    Addon.Anchors.ReapplyAll = realReapplyAll
+    Addon.Anchors.Forget("#c9docked")
+    Addon.Anchors.hooked["#c9host"] = nil
+end
+
+do  -- (H) THE LEFTOVER-CLEARING SETTER, now that the API it needs is present
+    resetC9()
+    Addon.db.settings.soundEnabled = true
+    clearSounds()
+    ck(Addon:PlayVoiceCountdown(5) ~= false,
+       "the voice countdown really runs now that C_Timer is stubbed…")
+    ck(#Addon._voiceTimers > 0, "…leaving real pending handles behind, as it does live")
+    Addon:CancelPullTimer("manual")
+    eq(#Addon._voiceTimers, 0,
+       "…and CancelPullTimer's StopVoiceCountdown — the 'clear a leftover' call — really clears them")
+    local n = #SOUNDS
+    advance(6)
+    eq(#SOUNDS, n, "…so no stray number is spoken after the cancel")
+end
+
 do  -- the posture is handed back, always
-    eq(DISPATCH.posture, "sync", "every named-variant leg restores the unkind default")
+    eq(DISPATCH.posture, DISPATCH.startPosture,
+       "every named-variant leg hands the suite's posture back exactly as it found it")
 end
 endgate()
 
