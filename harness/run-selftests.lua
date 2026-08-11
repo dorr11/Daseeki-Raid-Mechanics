@@ -598,9 +598,101 @@ end
 local WIRE       = {}       -- every message that reached the (fake) wire
 local REGISTERED = {}       -- every prefix registered for RECEIVE
 
+----------------------------------------------------------------------
+-- CLASS 9 — THE DISPATCH POSTURE (CLIENT_ASYNC_LESSONS.md, 2026-08-10)
+----------------------------------------------------------------------
+-- Simulator doctrine, verbatim: "a sim for anything that mutates client state
+-- defaults to SYNCHRONOUS IN-CALL dispatch, with async retained only as a named
+-- variant, and it stubs EVERY setter the code under test calls."
+--
+-- THE BLIND SPOT THIS CLOSES. Until now `SendAddonMessage` recorded the payload and
+-- returned. The sender's own message was never delivered back to it AT ALL — kinder
+-- than async, kinder than anything a client does — so every self-delivery consequence
+-- in core_sync.lua was untested by construction: the hoisted self gate, the echo
+-- latch's scope, the SYNC_RECV fan-out on our own traffic, the drop bookkeeping, and
+-- the re-entrancy of `Sync.Drain`'s own loop, which is the frame the delivery lands
+-- inside on this client family.
+--
+--   sync    (DEFAULT) the client dispatches CHAT_MSG_ADDON to the SENDER'S OWN
+--           handlers from INSIDE the SendAddonMessage call, before it returns.
+--   async   the echo arrives on a later scheduler pass (a 0-delay task), i.e. with
+--           every latch already up. This is the posture that tested the FIX and never
+--           the HAZARD; it is kept, and it is named.
+--   silent  no self-delivery at all. The pre-2026-08-10 posture, retained ONLY so a
+--           gate can state explicitly that it is asserting against a kinder client.
+--
+-- Delivery goes through the SHIPPED registration seam — the CHAT_MSG_ADDON frames
+-- core_sync.lua and dbm_bridge.lua create at Boot — not by calling `Sync.Receive`
+-- directly, so the frame handler, its argument order and the fact that BOTH files
+-- listen to the same event are all part of what is under test.
+local DISPATCH = { posture = "sync", delivered = 0, depth = 0, maxDepth = 0 }
+
+local ADDON_MSG_FRAMES, ADDON_MSG_SEEN = {}, -1
+local function addonMsgFrames()
+    if ADDON_MSG_SEEN ~= #FRAMES then
+        ADDON_MSG_SEEN = #FRAMES
+        for i = #ADDON_MSG_FRAMES, 1, -1 do ADDON_MSG_FRAMES[i] = nil end
+        for i = 1, #FRAMES do
+            local f = FRAMES[i]
+            if f.events and f.events["CHAT_MSG_ADDON"] and f.scripts and f.scripts.OnEvent then
+                ADDON_MSG_FRAMES[#ADDON_MSG_FRAMES + 1] = f
+            end
+        end
+    end
+    return ADDON_MSG_FRAMES
+end
+
+-- One CHAT_MSG_ADDON delivery into this client. Deliberately NOT gated on our own
+-- REGISTERED table: in the live client the event fires for every prefix registered by
+-- ANY addon in the session, which is exactly why this addon's telemetry ring came back
+-- from a raid night full of a world-buff addon's prefix.
+local function clientDeliver(prefix, payload, channel, sender)
+    local frames = addonMsgFrames()
+    DISPATCH.depth = DISPATCH.depth + 1
+    if DISPATCH.depth > DISPATCH.maxDepth then DISPATCH.maxDepth = DISPATCH.depth end
+    for i = 1, #frames do
+        local f = frames[i]
+        f.scripts.OnEvent(f, "CHAT_MSG_ADDON", prefix, payload, channel, sender)
+    end
+    DISPATCH.depth = DISPATCH.depth - 1
+    DISPATCH.delivered = DISPATCH.delivered + 1
+    return #frames
+end
+
+-- Traffic from OTHER addons: inbound only, never echoed, always synchronous — this is
+-- an ordinary client event, not a consequence of anything we called.
+local function foreignTraffic(prefix, payload, n)
+    for _ = 1, (n or 1) do clientDeliver(prefix, payload or "x", "RAID", "Somebody-Whitemane") end
+    return n or 1
+end
+
+-- Does the client hand this message back to us? A GROUP channel does (we are in the
+-- group). A whisper does only when we whispered ourselves.
+local GROUP_ECHO = { RAID = true, PARTY = true, INSTANCE_CHAT = true }
+local function echoesToSelf(chatType, target)
+    if GROUP_ECHO[chatType] then return true end
+    if chatType == "WHISPER" then return target ~= nil and target == Sync.Me() end
+    return false
+end
+
+local function deliverEcho(rec)
+    return clientDeliver(rec.prefix, rec.payload, rec.chatType, Sync.Me())
+end
+
 Sync:SetEnv({
     SendAddonMessage = function(prefix, msg, chatType, target)
-        WIRE[#WIRE + 1] = { prefix = prefix, payload = msg, chatType = chatType, target = target }
+        local rec = { prefix = prefix, payload = msg, chatType = chatType, target = target }
+        WIRE[#WIRE + 1] = rec
+        if DISPATCH.posture ~= "silent" and echoesToSelf(chatType, target) then
+            if DISPATCH.posture == "sync" then
+                -- IN-CALL. Everything the handler does happens before this returns —
+                -- inside `Sync.Drain`'s own send loop, or inside whatever engine call
+                -- asked for the broadcast.
+                deliverEcho(rec)
+            else
+                Sched:Schedule(0, deliverEcho, DISPATCH, rec)
+            end
+        end
         return 0
     end,
     RegisterAddonMessagePrefix = function(p) REGISTERED[p] = true return true end,
@@ -2057,10 +2149,23 @@ do
     end
 end
 
+-- Run `fn` under a named dispatch posture and put the shipped default back, whatever
+-- happens. The DEFAULT IS `sync` and nothing restores anything else: a posture is
+-- borrowed for one leg, never installed.
+local function withPosture(posture, fn, ...)
+    local prev = DISPATCH.posture
+    DISPATCH.posture = posture
+    local packed = { pcall(fn, ...) }
+    DISPATCH.posture = prev
+    if not packed[1] then error(packed[2], 0) end
+    return unpack(packed, 2, #packed)
+end
+
 local function resetSync()
     resetLife()
     Sync:Reset()
     Bridge:Reset()
+    DISPATCH.delivered, DISPATCH.depth, DISPATCH.maxDepth = 0, 0, 0
     for i = #WIRE, 1, -1 do WIRE[i] = nil end
     W.latencyMs, W.leader, W.flashed = 0, true, 0
     W.instanceGroup = false
@@ -2177,10 +2282,17 @@ do  -- §7.1 channel selection, incl. the solo loopback
     eq(Sync.Channel(), "PARTY", "…else PARTY")
     W.inGroup = false
     eq(Sync.Channel(), nil, "…else solo")
-    local before = Sync.stats.received
+    local before, beforeSelf = Sync.stats.received, Sync.stats.selfEcho
     local _, how = Sync.Send("BT", 300)
     eq(how, "loopback", "solo LOOPS the message back into the local handler rather than sending (§7.1)")
-    eq(Sync.stats.received, before + 1, "…the local handler really saw it")
+    -- CLASS 9. The loop-back really reaches the receive path — and is recognised THERE
+    -- as our own echo, by the hoisted self gate, exactly as a RAID broadcast is when the
+    -- client delivers it back into our own CHAT_MSG_ADDON handler inside the send call.
+    -- It is NOT an inbound peer message and must never be counted as one: `received`
+    -- would otherwise read as (real inbound + everything we sent), which is the
+    -- accounting lie the async-only simulator could not see.
+    eq(Sync.stats.selfEcho, beforeSelf + 1, "…the local handler really saw it — as OUR OWN ECHO")
+    eq(Sync.stats.received, before, "…so the inbound counter does not count our own traffic")
     eq(#WIRE, 0, "…and nothing reached the wire")
     W.inInstance, W.inGroup, W.inRaid = true, true, true
 end
@@ -3806,6 +3918,226 @@ do
        "…and both names resolve at runtime")
     ck(type(Addon.StartBreakTimer) == "function" and type(Addon.CancelBreakTimer) == "function",
        "…and the break timer the spec pairs them with exists too (§11.4)")
+end
+endgate()
+
+----------------------------------------------------------------------
+-- GATE C9 — CLASS 9: SYNCHRONOUS IN-CALL EVENT DISPATCH
+----------------------------------------------------------------------
+-- CLIENT_ASYNC_LESSONS.md class 9, applied to this addon's own risk surface. The
+-- lesson's blind spot, named: "every headless suite passed. The sims delivered events
+-- AFTER the setter returned … so the async posture tested the fix and never the
+-- hazard." This gate asserts the hazard.
+--
+-- THIS REPO'S OVERFLOW-EQUIVALENT is the addon channel. `SendAddonMessage` on a group
+-- channel can dispatch CHAT_MSG_ADDON to the SENDER'S OWN handler before it returns —
+-- inside `Sync.Drain`'s send loop, or inside whatever engine call asked for the
+-- broadcast — so every message this addon sends is also a message it receives, and a
+-- handler that answered by sending would re-enter the call that woke it.
+gate("C9  in-call dispatch: self-delivery, latch scope, depth fuse, ring noise")
+
+local C9ENC
+do
+    local errs
+    C9ENC, errs = Addon:RegisterEncounter({
+        id = "c9boss", name = "Class 9 Fixture", zone = 533,
+        creatureId = { 91009 }, encounterId = { 9109 },
+        combat = { minCombatTime = 30 },
+        timers   = { { key = "c9cd", kind = "cd", duration = 30, start = { on = "pull" } } },
+        schedule = { { key = "c9wave", at = { 3 } } },
+        warnings = {
+            { key = "c9warn", tier = "special", sound = 3, text = "Wave incoming",
+              trigger = { on = "schedule", fromKey = "c9wave" } },
+        },
+    })
+    ck(C9ENC ~= nil, "the class-9 composed fixture registers: " .. table.concat(errs or {}, "; "))
+end
+
+local function resetC9()
+    resetW2()
+    Sync:Reset(); Bridge:Reset()
+    for i = #WIRE, 1, -1 do WIRE[i] = nil end
+    DISPATCH.delivered, DISPATCH.depth, DISPATCH.maxDepth = 0, 0, 0
+    makeRaid()
+    W.latencyMs, W.leader = 0, true
+end
+
+-- Send one group message and report whether the echo landed INSIDE the client call.
+-- The probe wraps the SHIPPED env function, so what it measures is the real ordering.
+local function sendAndWatch(sub, ...)
+    local inCall, real = false, Sync.env.SendAddonMessage
+    Sync:SetEnv({ SendAddonMessage = function(...)
+        local before = Sync.stats.selfEcho
+        real(...)
+        if Sync.stats.selfEcho > before then inCall = true end
+    end })
+    Sync.Send(sub, ...)
+    advance(0.4)
+    Sync:SetEnv({ SendAddonMessage = real })
+    return inCall
+end
+
+do  -- (A) THE POSTURE IS LIVE, AND IT IS THE DEFAULT
+    eq(DISPATCH.posture, "sync",
+       "the simulator's DEFAULT dispatch posture is SYNCHRONOUS IN-CALL (doctrine, not an option)")
+    resetC9()
+    eq(sendAndWatch("BT", 300), true,
+       "…so our own group broadcast is handed back to our own CHAT_MSG_ADDON handler BEFORE SendAddonMessage returns")
+    ck(DISPATCH.delivered >= 1, "…through the shipped registration seam, not by calling Sync.Receive behind its back")
+
+    resetC9()
+    eq(withPosture("async", sendAndWatch, "BT", 300), false,
+       "ASYNC VARIANT (named, retained): the same echo arrives with every latch already up…")
+    eq(Sync.stats.selfEcho, 1, "…and it does still arrive — async is a different WHEN, not a kinder client")
+
+    resetC9()
+    eq(withPosture("silent", sendAndWatch, "BT", 300), false,
+       "SILENT (the pre-2026-08-10 posture, kept only to be named): no self-delivery at all…")
+    eq(Sync.stats.selfEcho, 0, "…which is what made every consequence below invisible headless")
+end
+
+do  -- (B) THE MANDATED LEG: DSKR0 SELF-DELIVERY, END TO END
+    resetC9()
+    Addon:SetEventRecording(true); Addon:ClearEventLog()
+    Addon:StartPullTimer(10, "manual")
+    advance(0.4)
+    eq(countOnWire("PT"), 1, "a manual pull puts exactly ONE PT on the wire…")
+    ck(DISPATCH.delivered >= 1, "…the client delivers it straight back into this client, in-call…")
+    eq(Sync.stats.selfEcho, 1, "…the HOISTED self gate recognises it as our own echo at the boundary…")
+    eq(Sync.stats.received, 0,
+       "…so the inbound counter is not inflated by our own outbound traffic")
+    eq(countOnWire("PT"), 1,
+       "THE OVERFLOW-EQUIVALENT, REFUSED: nothing re-broadcasts — one PT, not a ladder")
+    eq(Sync.recvDepth, 0, "…the receive depth unwinds to zero")
+    eq(Sync.inbound, false, "…the echo latch is restored, not left up")
+    ck(DISPATCH.maxDepth <= 2,
+       ("…and the observed nesting stays bounded (max depth %d)"):format(DISPATCH.maxDepth))
+    local recv = 0
+    for _, e in ipairs(Addon:GetEventLog() or {}) do
+        if e.event == "SYNC_RECV" then recv = recv + 1 end
+    end
+    eq(recv, 0,
+       "RED CONTROL: our own echo is NOT published on SYNC_RECV (shipped: it was — with our own "
+       .. "name as sender, ahead of every handler's self-check, and OUTSIDE the echo latch)")
+    Addon:SetEventRecording(false)
+end
+
+do  -- (C) THE LATCH COVERS THE WHOLE INBOUND SEQUENCE, NOT ONE HANDLER
+    resetC9()
+    local sawLatch, sawDepth
+    local function probe()
+        sawLatch, sawDepth = Sync.inbound, Sync.recvDepth
+    end
+    Addon:RegisterEngineCallback("SYNC_RECV", probe, "c9")
+    rx("A-Whitemane", "BT", 300)
+    Addon:UnregisterEngineCallback("SYNC_RECV", probe)
+    eq(sawLatch, true,
+       "RED CONTROL: the echo latch is UP for the SYNC_RECV fan-out (shipped: armed one call "
+       .. "later, inside the handler, so a listener answering by broadcasting was not suppressed)")
+    eq(sawDepth, 1, "…and inbound depth is counted from the boundary, so nesting is measurable")
+    eq(Sync.inbound, false, "…save/restore, so a nested receive cannot clear an outer one's latch")
+end
+
+do  -- (D) THE DEPTH FUSE: an unforeseen composition degrades to a refusal
+    resetC9()
+    Tele.Clear()
+    local fired = 0
+    local function reenter()
+        fired = fired + 1
+        Sync.Receive(Sync.PREFIX, Sync.Encode("B-Whitemane", "V", 1, 1, "x", 1), "RAID", "B-Whitemane")
+    end
+    Addon:RegisterEngineCallback("SYNC_RECV", reenter, "c9")
+    rx("A-Whitemane", "V", 1, 1, "x", 1)
+    Addon:UnregisterEngineCallback("SYNC_RECV", reenter)
+    eq(fired, Sync.RECV_MAX_DEPTH,
+       "a listener that re-enters the receive path is stopped at RECV_MAX_DEPTH — without the "
+       .. "fuse this composition has no bound at all")
+    ck(Sync.stats.fused >= 1, "…the refusal is counted…")
+    eq(Sync.recvDepth, 0, "…the depth unwinds all the way…")
+    local fuse = false
+    local r = Tele.Ring(false) or {}
+    for i = 1, #r do if r[i].kind == "sync.fuse" then fuse = true end end
+    ck(fuse, "…and it leaves a BUILD-STAMPED record, so an unforeseen composition is visible")
+end
+
+do  -- (E) THE RING IS FORENSICS, NOT WEATHER  (owner's live finding, raid 2026-08-10)
+    resetC9()
+    Tele.Clear()
+    -- One real engine record, written before the raid's ambient traffic starts.
+    Tele.Write("timer.refresh", { enc = "c9boss", key = "keepme", obs = 1 })
+    local N = 300
+    foreignTraffic("NWB", "sender\t1\tTS\t1", N)
+    ck(Tele.Count() <= 2,
+       ("RED CONTROL: %d foreign-prefix messages add AT MOST ONE ring entry (shipped: one per "
+        .. "message — the owner's ring came back 250/250 not_our_prefix key=NWB)"):format(N))
+    local kept, noise = false, nil
+    local r = Tele.Ring(false) or {}
+    for i = 1, #r do
+        if r[i].kind == "timer.refresh" and r[i].key == "keepme" then kept = true end
+        if r[i].kind == "sync.noise" then noise = r[i] end
+    end
+    ck(kept, "…so the night's actual engine record is STILL THERE, which is the whole point")
+    eq(noise and noise.n, N, "…and the single row carries the running count, updated in place")
+    eq(Sync.noise["not_our_prefix\tNWB"].n, N, "…with the live counter agreeing")
+    ck(table.concat(Tele.Export(), "\n"):find("sync.noise not_our_prefix=NWB", 1, true) ~= nil,
+       "…and the counted-not-recorded total rides in the export, so nothing is lost by aggregating")
+
+    -- OUR OWN prefix, malformed: real forensics, recorded every time.
+    Tele.Clear()
+    for _ = 1, 5 do
+        Sync.Receive(Sync.PREFIX, table.concat({ "Peer-Whitemane", 1, "PT", 7, 10, 533 }, "\t"),
+                     "RAID", "Peer-Whitemane")
+    end
+    eq(Tele.Count(), 5,
+       "a MALFORMED message on OUR OWN prefix is a peer running a broken build — recorded EVERY time")
+
+    -- The same flood from the other direction: class 9's own echo.
+    resetC9(); Tele.Clear()
+    for _ = 1, 20 do Sync.Send("BT", 300) end
+    advance(4)
+    ck(Sync.stats.selfEcho >= 10, "…20 of our own broadcasts really do echo back in-call…")
+    ck(Tele.Count() <= 1,
+       "…and they add at most ONE ring entry too — the class-9 flood the async-only sim could never show")
+end
+
+do  -- (F) THE COMPOSED LEG, UNDER BOTH POSTURES
+    -- engage -> pull-seeded schedule -> routed warning -> sound, through the shipping
+    -- path end to end. Both postures must agree: a client that answers our own
+    -- broadcast inside the call must not change one observable of the fight.
+    local function composed()
+        resetC9()
+        Life:StartCombat(C9ENC, 0, "combat")
+        advance(4)
+        local bars = 0
+        for _, bar in pairs(Timers.bars) do if bar.encId == "c9boss" then bars = bars + 1 end end
+        return {
+            engaged  = Life:IsEngaged("c9boss") and 1 or 0,
+            bars     = bars,
+            special  = Warn.specialStack:Count(),
+            sounds   = #SOUNDS,
+            wireC    = countOnWire("C"),
+            depth    = Sync.recvDepth,
+            latch    = Sync.inbound and 1 or 0,
+        }
+    end
+    local a = withPosture("sync", composed)
+    local b = withPosture("async", composed)
+    eq(a.engaged, 1, "SYNC: the fixture engages…")
+    eq(a.bars, 1,    "…its pull-seeded timer bar is up…")
+    ck(a.special >= 1, "…the scheduled tick routed its special warning…")
+    ck(a.sounds >= 1,  "…and the warning made a sound, through the real dispatch")
+    eq(a.wireC, 1,   "…with exactly one combat-start broadcast on the wire")
+    eq(a.depth, 0,   "…and no inbound work left in flight")
+    eq(a.latch, 0,   "…and the echo latch down")
+    local diff
+    for k, v in pairs(a) do if b[k] ~= v then diff = k .. " " .. tostring(v) .. "/" .. tostring(b[k]) end end
+    eq(diff, nil,
+       "BOTH POSTURES AGREE on every observable of the composed leg — which is what 'the fix is "
+       .. "at the mechanism' means (any disagreement here is a latent, never a reason to revert)")
+end
+
+do  -- the posture is handed back, always
+    eq(DISPATCH.posture, "sync", "every named-variant leg restores the unkind default")
 end
 endgate()
 

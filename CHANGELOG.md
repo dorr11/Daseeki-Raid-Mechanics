@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Your engine log is a log again
+
+- **Fixed: other addons' chat traffic was filling the engine log and pushing your own
+  raid's records out of it.** Raid Mechanics listens on the addon channel, and the
+  game hands it every addon message in your session — including the constant stream a
+  world-buff addon sends. Every one of those was written down as a separate entry, so
+  after one raid night the 250-entry log was 250 lines of "that wasn't for us" and the
+  timer, encounter and diagnostic records the night actually produced had all been
+  evicted. Ambient traffic like this is now **counted, not transcribed**: one line per
+  source, carrying a running total, with the count also printed at the top of
+  `/drm telemetry raw`. A malformed message on *our own* channel is still recorded in
+  full every time — that one is real evidence.
+
+### Sync hardening
+
+- **Our own broadcasts can come back to us inside the send call**, on this client, and
+  are now recognised as our own echo at the front door — before any counter, before the
+  inbound event goes out to the rest of the engine, and before any handler runs. The
+  echo suppression that stops a received sync being re-broadcast now covers the whole
+  of inbound handling rather than being switched on one call later, and a depth fuse
+  refuses an unforeseen re-entry (with a record) instead of letting it run away. Nothing
+  changes on screen; the traffic counters just stop counting our own messages as
+  somebody else's.
+
 ## 2.1.0 — 2026-08-10
 
 **The settings rework: placement you can find, categories that lead, and a sound
