@@ -2647,15 +2647,39 @@ do  -- §4.7 keep / fade, count text, the numeric readout, and the flash phase
     eq(BM.rows[kb2.id], nil, "…but never outlives the FIGHT (the end sweeps kept rows)")
 
     resetW2()
+    -- COUNTED LABELS (owner directive 2026-08-10): the count is EMBEDDED in the
+    -- label — "Meteor 3", not "Meteor (3)" with a corner badge.
     local c = Timers.New({ id = "BC", key = "c", kind = "cd", duration = 20,
                            count = true, text = "Meteor" })
     local cb = c:Start(20, 3)
-    eq(BM.DisplayText(BM.rows[cb.id]), "Meteor (3)",
-       "a count timer's identity argument becomes the displayed count")
+    eq(BM.DisplayText(BM.rows[cb.id]), "Meteor 3",
+       "a count timer's identity argument is embedded in the label ('Meteor 3')")
     local c2 = Timers.New({ id = "BC2", key = "c2", kind = "cd", duration = 20,
                             count = true, text = "Spore %d" })
     local cb2 = c2:Start(20, 5)
     eq(BM.DisplayText(BM.rows[cb2.id]), "Spore 5", "…and a %d template formats instead")
+    -- A GRAMMAR-DRIVEN count bar carries NO identity argument — Runtime:Act starts
+    -- it bare and publishes the upcoming occurrence into the Addon._mechCount mirror
+    -- one line before Start. The label reads that mirror.
+    Addon._mechCount = Addon._mechCount or {}
+    Addon._mechCount["fix:c3"] = 4
+    local c3 = Timers.New({ id = "fix:c3", key = "c3", encId = "fix", kind = "next",
+                            count = true, duration = 10, text = "Spore" })
+    local cb3 = c3:Start()
+    eq(BM.DisplayText(BM.rows[cb3.id]), "Spore 4",
+       "a grammar count bar (no identity argument) reads its number off the occurrence mirror")
+    Addon._mechCount["fix:c3"] = nil
+    local c4 = Timers.New({ id = "fix:c4", key = "c4", encId = "fix", kind = "next",
+                            count = true, duration = 10, text = "Bare" })
+    local cb4 = c4:Start()
+    eq(BM.DisplayText(BM.rows[cb4.id]), "Bare",
+       "…and with no mirror entry the label honestly carries no number at all")
+    -- THE BADGE IS RETIRED for counted bars. The view cannot draw headless, so the
+    -- pin is textual, the same way provenance comments are pinned: paint() must
+    -- never show the badge again — the number lives in the label now.
+    local src = readFile(P("ui_bars.lua")) or ""
+    ck(src:find("d.count:Hide()", 1, true) ~= nil and src:find("d.count:Show()", 1, true) == nil,
+       "the count BADGE is retired: paint never shows it (the label carries the number)")
 
     eq(BM.FormatTime(3.24, false, 10), "3.2", "readout: one decimal below the threshold")
     eq(BM.FormatTime(42.4, false, 10), "42", "…whole seconds up to 60")
@@ -4531,21 +4555,53 @@ do
         ck(rt ~= nil, "LOATHEB: engages off the combat sweep")
         near(bar(rt, "spore").total, 11.3, 0.01, "…the first spore is 11.3 s")
         near(bar(rt, "doom").total, 121.3, 0.01, "…the first doom is 121.3 s")
+        -- COUNTED LABELS (owner directive 2026-08-10): the bar names the occurrence
+        -- it runs TOWARD. The engine's occurrence counter is incremented at the
+        -- trigger and resolves the duration for the occurrence being counted toward
+        -- (occurrence 1 takes the PULL value), so it is used directly — no +1.
+        local function labelOf(key)
+            local b = bar(rt, key)
+            local r = b and BM.rows[b.id]
+            return r and BM.DisplayText(r)
+        end
+        local function announced(want)
+            for _, e in ipairs(Addon:GetEventLog() or {}) do
+                if e.event == "WARN_ANNOUNCE" and e[3] == want then return true end
+            end
+            return false
+        end
+        eq(labelOf("spore"), "Spore 1",
+           "the PULL bar reads 'Spore 1' — the spore about to spawn, not a fired count")
+        eq(labelOf("doom"), "Inevitable Doom 1", "…and the pull doom bar reads 'Inevitable Doom 1'")
         local mn, mx = barWindow(rt, "necroticaura")
         ck(mn == 0.5 and mx == 8.2, "…and the heal window opens on its 0.5-8.2 pull window")
+        Addon:ClearEventLog()
         Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29234, sourceId = 16011 })
         near(bar(rt, "spore").total, 12.9, 0.01, "…spores recur at 12.9 s")
+        -- WARN/LABEL CONSISTENCY: the announce for cast N confirms the number the
+        -- bar predicted while counting toward N — the whole point of the label.
+        ck(announced("Spore 1"),
+           "cast 1 announces 'Spore 1' — the number the bar wore while counting toward it")
+        eq(labelOf("spore"), "Spore 2", "…and the restarted bar reads 'Spore 2' (the UPCOMING spore)")
         Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 30281, sourceId = 16011 })
         near(bar(rt, "necroticaura").total, 30.7, 0.01, "…and the heal window at 30.7 s")
-        -- the doom cadence: alternating, then a different shape from the 7th
+        -- the doom cadence: alternating, then a different shape from the 7th —
+        -- AND the label keeps the sequence numbering through the sequenceFrom change
         local WANT = { 29.1, 32.4, 29.1, 32.4, 29.1, 9.7, 19.4, 11.3, 19.4, 11.3 }
-        local okAll = true
+        local okAll, okLabels, okWarns = true, true, true
         for i, want in ipairs(WANT) do
+            Addon:ClearEventLog()
             Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = 29204, sourceId = 16011 })
             local b = bar(rt, "doom")
             if not b or math.abs(b.total - want) > 0.01 then okAll = false end
+            if not announced(("Doom %d"):format(i)) then okWarns = false end
+            if labelOf("doom") ~= ("Inevitable Doom %d"):format(i + 1) then okLabels = false end
         end
         ck(okAll, "…doom alternates 29.1/32.4 and re-shapes at the 7th to 9.7 then 19.4/11.3")
+        ck(okLabels,
+           "…and the LABEL numbers every doom bar with the upcoming cast straight through the "
+           .. "sequenceFrom re-shape ('Inevitable Doom 7' rides the 9.7 s bar)")
+        ck(okWarns, "…while every 'Doom %d' announce confirms the number its bar predicted")
         Addon:ClearEventLog()
         Life:Deliver({ on = "SPELL_AURA_APPLIED", spellId = 29195, destIsPlayer = true,
                        destName = "Drew" })
@@ -4624,6 +4680,11 @@ do
         ck(Addon:GetEncounter("naxxramas:fourhorsemen").combat.highestHealth,
            "…reporting boss health as the HIGHEST of the four")
         near(bar(rt, "markcd").total, 21, 0.01, "…the first Mark is 21 s from pull")
+        -- COUNTED LABEL, the owner's own example: "it should show what mark number
+        -- is about to go out".
+        local mb = bar(rt, "markcd")
+        eq(mb and BM.rows[mb.id] and BM.DisplayText(BM.rows[mb.id]), "Mark 1",
+           "…and the pull bar reads 'Mark 1' — the mark about to go out")
         eq(rt:GetCount("horsemen"), 4, "…with the census seeded at four")
         Addon:ClearEventLog()
         -- all four marks land together; the 10 s anti-spam collapses them into one
@@ -4631,6 +4692,9 @@ do
             Life:Deliver({ on = "SPELL_CAST_SUCCESS", spellId = sid })
         end
         near(bar(rt, "markcd").total, 12.9, 0.01, "…recurring Marks are 12.9 s")
+        mb = bar(rt, "markcd")
+        eq(mb and BM.rows[mb.id] and BM.DisplayText(BM.rows[mb.id]), "Mark 2",
+           "…relabelled 'Mark 2' — the UPCOMING mark, one volley = one increment (anti-spam)")
         eq(Addon._mechCount["naxxramas:fourhorsemen:markcd"], 2,
            "…and the Mark count is published where the shipped tracker reads it")
         Addon:ClearEventLog()
@@ -9417,6 +9481,16 @@ do  -- CLICK AGAIN RESTARTS: the same bar, re-based, never a second one
     eq(n, 1, "…so two presses leave exactly one bar on screen")
 end
 
+do  -- A COUNTED ROW rehearses as its CHOSEN occurrence, never a stale fight's number
+    resetAnchors()
+    Addon._mechCount = Addon._mechCount or {}
+    Addon._mechCount["naxxramas:loatheb:spore"] = 23    -- residue of an earlier real fight
+    local _, b = Tst.Row("naxxramas:loatheb", "spore")
+    ck(b ~= nil, "play on a counted timer row starts its bar")
+    eq(BM.DisplayText(BM.rows[b.id]), "Spore 1",
+       "…labelled 'Spore 1' — the rehearsed occurrence, not the last real fight's residue")
+end
+
 do  -- A CUSTOM-ROUTED ROW goes to its own place, through the real resolver
     resetAnchors()
     Route.Set("naxxramas:noth:curse", "custom")
@@ -9701,7 +9775,7 @@ do  -- POPULATES EVERYTHING: every colour class, in BOTH buckets
         if row.count then hasCount = true end
     end
     ck(hasVariance, "a variance window is on screen to place against")
-    ck(hasCount, "…and a count bar, whose number sits beside its label")
+    ck(hasCount, "…and a count bar, whose number is embedded in its label")
 
     -- both warning tiers
     ck(Warn.announceStack:Count() > 0, "the Minor warning surface is populated")

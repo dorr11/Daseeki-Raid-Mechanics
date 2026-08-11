@@ -292,6 +292,16 @@ function T.FireTimer(encId, row, occurrence)
     -- rehearsal is always out of combat, so the row would be silent for the wrong
     -- reason. The test object is the runtime's own, so the relaxation is scoped to it.
     t.requiresCombat = nil
+    -- A COUNTED row's label embeds the occurrence it runs toward, read off the
+    -- `Addon._mechCount` mirror that `Runtime:Act` writes one line before Start.
+    -- This is that same write for the rehearsal's chosen occurrence — without it the
+    -- rehearsal bar would wear whatever number the LAST REAL FIGHT left behind
+    -- ("Spore 23" on a quiet Tuesday), which is exactly the kind of lie the preview
+    -- rules forbid.
+    if row.count then
+        Addon._mechCount = Addon._mechCount or {}
+        Addon._mechCount[API().OptionKey(encId, row.key)] = occurrence or 1
+    end
     return t:Start(dur), dur
 end
 
@@ -516,7 +526,7 @@ function T.PopulateLayout()
         if layoutBar("minor", i, spec, secs) then n = n + 1 end
     end
     -- The two shapes a placement pass otherwise never sees: a variance window, and a
-    -- count bar whose number sits beside the label.
+    -- count bar with its number embedded in the label ("Meteor 3").
     local v = syntheticTimer("layout:variance", {
         key = "layoutvariance", encId = "#layout", kind = "cd",
         text = "Breath (window)", color = 2,
