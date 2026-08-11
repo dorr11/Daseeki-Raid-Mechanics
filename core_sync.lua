@@ -70,6 +70,8 @@ if Addon.Telemetry and Addon.Telemetry.KINDS then
     Addon.Telemetry.KINDS["sync.firewall"] = true   -- a forbidden-prefix transmit was blocked
     Addon.Telemetry.KINDS["sync.drop"]     = true   -- an inbound message was refused
     Addon.Telemetry.KINDS["sync.recovery"] = true   -- a reload-recovery cascade step
+    Addon.Telemetry.KINDS["sync.noise"]    = true   -- AGGREGATE: ambient traffic we drop, one row per key
+    Addon.Telemetry.KINDS["sync.fuse"]     = true   -- the inbound re-entry depth fuse refused
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -459,8 +461,13 @@ function Sync.Channel()
     return nil
 end
 
--- Broadcast one sub-prefix to the group. SOLO loops back so the sender behaves
--- identically to a receiver (§7.1, §7.3).
+-- Broadcast one sub-prefix to the group. SOLO loops the payload straight back through
+-- the REAL receive path so there is one inbound boundary and not two — but it is our
+-- own name on it, so the self gate stops it there, exactly as the same message stops
+-- when the client echoes a RAID broadcast back into our own CHAT_MSG_ADDON handler
+-- (class 9). A loop-back therefore proves the round trip; it does NOT drive the
+-- corroboration machinery, and it must not — corroboration counts DISTINCT senders,
+-- and a client that corroborated itself would fire every three-sender rule alone.
 function Sync.Send(sub, ...)
     local meta = Sync.SUB[sub]
     if not meta then return false, "unknown_sub" end
@@ -497,10 +504,73 @@ Sync.peers        = {}    -- full name -> { rev =, release =, display =, at = }
 Sync.breakSeen    = {}    -- sender -> timestamp (break-timer throttle)
 Sync.replySeen    = {}    -- requester -> timestamp (recovery reply throttle)
 Sync.stats = { received = 0, dropped = 0, corroborated = 0, nagged = 0,
-               forceDisableSeen = 0, recovered = 0 }
+               forceDisableSeen = 0, recovered = 0, selfEcho = 0, fused = 0 }
+
+-- ── DROP BOOKKEEPING: FORENSICS vs AMBIENT TRAFFIC ────────────────────────────
+-- OWNER FINDING, live raid 2026-08-10. The telemetry ring is 250 entries and it is
+-- the ENGINE FORENSICS instrument — the tripwire dataset that says which shipped
+-- timer value is wrong. It came back from a raid night 250/250 full of
+-- `sync.drop reason=not_our_prefix key=NWB`, and every record the night actually
+-- produced had been evicted by it. Both CHAT_MSG_ADDON frames in this addon see EVERY
+-- addon message in the session, so a foreign prefix is not an event — it is weather.
+--
+-- Two drop classes are ambient rather than forensic:
+--
+--   not_our_prefix   another addon's traffic. Constant in a raid, tells us nothing we
+--                    did not already know the first time we saw that prefix.
+--   self             OUR OWN broadcast, echoed back to us. On this client family a
+--                    group addon message CAN be delivered to the sender's own
+--                    CHAT_MSG_ADDON handler INSIDE the SendAddonMessage call
+--                    (CLIENT_ASYNC_LESSONS.md class 9), so recording it per message is
+--                    one ring entry for every message WE send — the same flood from
+--                    the other direction, and one the async-only simulator could never
+--                    have shown.
+--
+-- Both are COUNTED FOREVER and RECORDED ONCE PER KEY PER SESSION. The ring still says
+-- "we hear NWB" and "our own echo comes back"; the count rides in that single row and
+-- is updated IN PLACE as the night goes on, so one row stays truthful instead of two
+-- hundred and fifty rows being redundant. If the ring evicts the row anyway, the live
+-- counter is still the record of truth and `Sync.NoiseReport()` prints it into the
+-- export. A malformed message on OUR OWN prefix is real forensics — a peer running a
+-- broken build — and is still recorded per message, unchanged.
+Sync.NOISE_DROP = { not_our_prefix = true, self = true }
+Sync.noise = {}        -- "reason\tkey" -> { reason, key, n, entry }
+
+local function noiseDrop(reason, key)
+    local k = reason .. "\t" .. tostring(key)
+    local rec = Sync.noise[k]
+    if not rec then
+        rec = { reason = reason, key = tostring(key), n = 0 }
+        Sync.noise[k] = rec
+        if Addon.Telemetry then
+            rec.entry = Addon.Telemetry.Write("sync.noise",
+                { reason = reason, key = tostring(key), n = 0 })
+        end
+    end
+    rec.n = rec.n + 1
+    if rec.entry then rec.entry.n = rec.n end
+    return rec.n
+end
+
+-- Sorted (lesson class 8) so the export does not reshuffle between reads.
+function Sync.NoiseReport()
+    local keys = {}
+    for k in pairs(Sync.noise) do keys[#keys + 1] = k end
+    table.sort(keys)
+    local out = {}
+    for _, k in ipairs(keys) do
+        local r = Sync.noise[k]
+        out[#out + 1] = ("sync.noise %s=%s n=%d"):format(r.reason, r.key, r.n)
+    end
+    return out
+end
 
 local function drop(reason, sub, sender)
     Sync.stats.dropped = Sync.stats.dropped + 1
+    if Sync.NOISE_DROP[reason] then
+        noiseDrop(reason, sub)
+        return nil, reason
+    end
     if Addon.Telemetry then
         Addon.Telemetry.Write("sync.drop", { reason = reason, key = sub, path = sender })
     end
@@ -584,15 +654,86 @@ Sync._withoutEcho = withoutEcho
 
 local HANDLERS = {}      -- filled in below
 
+-- ══════════════════════════════════════════════════════════════════════════════
+--  CLASS 9 — THE INBOUND BOUNDARY (self gate, echo latch, depth fuse)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- CLIENT_ASYNC_LESSONS.md class 9: the client does not always SCHEDULE the event a
+-- mutating API causes. On this client family a group/RAID addon message can be
+-- delivered to the SENDER'S OWN CHAT_MSG_ADDON handler from INSIDE the
+-- SendAddonMessage call, so every message we send is also a message we receive,
+-- synchronously, in the middle of `Sync.Drain`'s loop — or, on the SOLO path, in the
+-- middle of whatever engine call asked for the broadcast.
+--
+-- THE SELF GATE IS HOISTED. Recognising our own echo used to be each handler's own
+-- first line, which meant three things happened to a message of ours BEFORE anything
+-- decided it was ours: `stats.received` counted it, `SYNC_RECV` was published to every
+-- engine listener with our own name as its sender, and four of the thirteen handlers
+-- (CI/VI/TR/BTR) never checked at all — they relied on `AcceptReply`. Under in-call
+-- delivery that turns each of our broadcasts into a published inbound event from
+-- ourselves, and a listener that answered one by broadcasting would not have been
+-- echo-suppressed, because the latch was armed one call LATER, inside the handler.
+-- That is the class-9 arm-ordering fault exactly. One gate, at the boundary, before
+-- any bookkeeping and before any fan-out. The per-handler checks stay as defence in
+-- depth (they also guard direct calls).
+--
+-- THE LATCH COVERS THE WHOLE SEQUENCE. `Sync.inbound` is armed for the entire receive,
+-- not per handler, saved and restored rather than cleared to nil so nesting is safe,
+-- and pcall-protected so a handler error cannot wedge it up.
+--
+-- THE FUSE BOUNDS AN UNFORESEEN COMPOSITION. Legitimate nesting is 1 (a message being
+-- handled); 2 exists for a handler whose engine work SOLO-loops a second message back
+-- through here. Anything past `RECV_MAX_DEPTH` is refused with a build-stamped record,
+-- so a composition nobody predicted degrades to a refusal instead of a C stack
+-- overflow.
+Sync.RECV_MAX_DEPTH = 3
+Sync.recvDepth = 0
+
+local receiveInner
+
 -- THE one entry point. `channel` is the CHAT_MSG_ADDON channel; `rawSender` is the
 -- name the client reports (used only when the payload's own sender field is absent).
 function Sync.Receive(prefix, payload, channel, rawSender)
+    if Sync.recvDepth >= Sync.RECV_MAX_DEPTH then
+        Sync.stats.fused = Sync.stats.fused + 1
+        if Addon.Telemetry then
+            Addon.Telemetry.Write("sync.fuse", { reason = "recv_depth", key = tostring(prefix),
+                                                 queued = Sync.recvDepth,
+                                                 ceiling = Sync.RECV_MAX_DEPTH })
+        end
+        return nil, "recv_depth"
+    end
+    local prevDepth, prevInbound = Sync.recvDepth, Sync.inbound
+    Sync.recvDepth, Sync.inbound = prevDepth + 1, true
+    -- THREE values, because the corroboration handlers answer (result, reason, count)
+    -- and the count is the number every §7.3 caller reads.
+    local ok, a, b, c = pcall(receiveInner, prefix, payload, channel, rawSender)
+    Sync.recvDepth, Sync.inbound = prevDepth, prevInbound
+    if not ok then
+        -- A handler error IS forensics (a peer's payload reached code that could not
+        -- cope with it), so it is recorded per occurrence rather than aggregated.
+        Sync.stats.dropped = Sync.stats.dropped + 1
+        if Addon.Telemetry then
+            Addon.Telemetry.Write("sync.drop", { reason = "handler_error", key = tostring(prefix),
+                                                 path = tostring(a) })
+        end
+        return nil, "handler_error"
+    end
+    return a, b, c
+end
+
+function receiveInner(prefix, payload, channel, rawSender)
     if prefix ~= Sync.PREFIX then return drop("not_our_prefix", prefix, rawSender) end
     local f = Sync.Split(payload)
     local sender    = (f[1] ~= "" and f[1]) or rawSender
     local transport = tonumber(f[2])
     local sub       = f[3]
     local proto     = tonumber(f[4])
+
+    -- THE SELF GATE, hoisted above every counter, the SYNC_RECV fan-out and dispatch.
+    if sender ~= nil and sender == Sync.Me() then
+        Sync.stats.selfEcho = Sync.stats.selfEcho + 1
+        return drop("self", sub or prefix, sender)
+    end
 
     if not sub or not Sync.SUB[sub] then return drop("unknown_sub", sub, sender) end
     -- §7.1: "A message whose declared protocol version is lower than the receiver's
@@ -811,10 +952,17 @@ function Addon:StartPullTimer(seconds, source, target)
         end
     end
 
-    local t = ensurePullTimer()
-    t:Start(seconds)
+    -- ATTRIBUTION IS ARMED BEFORE THE START, not after it (CLIENT_ASYNC_LESSONS.md
+    -- class 9: "any latch/echo/guard armed at or after the first client call of a
+    -- sequence is armed too late"). `t:Start` publishes TIMER_START to every engine
+    -- consumer and puts a bar on screen; a consumer that asks WHOSE pull this is must
+    -- not be answered with the PREVIOUS pull's source because these two lines happened
+    -- to come after. Nothing reads it synchronously today; the ordering is the point,
+    -- and GATE C9 pins it with a red control that reads "layout" when it is undone.
     Addon.pullSource = source
     Addon.pullTarget = target
+    local t = ensurePullTimer()
+    t:Start(seconds)
     -- §11.4: "If the sender is targeting something that is not a group member, the
     -- announcement names that target."
     local text = ("Pull in %d"):format(math.floor(seconds + 0.5))
@@ -882,10 +1030,12 @@ function Addon:StartBreakTimer(seconds, source, silent)
     if seconds < 0 then return nil, "negative" end
     if seconds > Sync.BREAK_MAX then seconds = Sync.BREAK_MAX end    -- §11.4 60-minute maximum
 
-    local t = ensureBreakTimer()
-    t:Start(seconds)
+    -- Same ordering rule as the pull timer above: the break's own facts are true
+    -- BEFORE the bar exists, not two lines after it.
     Sync.breakStartedAt = Sync.env.Time()
     Sync.breakDuration  = seconds
+    local t = ensureBreakTimer()
+    t:Start(seconds)
 
     -- §9.2: persisted to disk as duration / wallclock-at-start.
     if Addon.db then
@@ -1449,6 +1599,11 @@ function Sync:Boot()
 
     S():AddHousekeeper(Sync.Prune, Sync)
 
+    -- The ambient-traffic counters are not in the ring, so they go in the export.
+    if Addon.Telemetry and Addon.Telemetry.AddSummary then
+        Addon.Telemetry.AddSummary("sync.noise", Sync.NoiseReport)
+    end
+
     if type(_G.CreateFrame) == "function" then
         local f = _G.CreateFrame("Frame")
         f:RegisterEvent("CHAT_MSG_ADDON")
@@ -1471,9 +1626,11 @@ function Sync:Reset()
     Sync.recovery = { active = false, asked = {}, order = {}, repliedBy = nil,
                       rearmed = false, rungs = #Sync.RECOVERY_ASK_AT }
     Sync.inbound = false
+    Sync.recvDepth = 0
+    Sync.noise = {}
     Sync.forbiddenTxBlocked = 0
     Sync.stats = { received = 0, dropped = 0, corroborated = 0, nagged = 0,
-                   forceDisableSeen = 0, recovered = 0 }
+                   forceDisableSeen = 0, recovered = 0, selfEcho = 0, fused = 0 }
     return true
 end
 

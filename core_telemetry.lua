@@ -62,6 +62,37 @@ T.KINDS = {
 }
 T.unknownKinds = 0
 
+-- ── AGGREGATE SUMMARIES ───────────────────────────────────────────────────────
+-- The ring is bounded and every slot it spends on a repeating, uninformative event is
+-- a slot a once-only observation cannot have. A subsystem that therefore COUNTS an
+-- ambient event instead of writing one row per occurrence registers a provider here,
+-- so the export still carries the number even though the ring does not carry the rows.
+-- (Owner finding, live raid 2026-08-10: foreign-prefix addon traffic filled the ring
+-- 250/250 and evicted the night's entire engine record. core_sync.lua is the first
+-- provider.) Providers return an array of plain lines; a provider that throws is
+-- skipped rather than taking the export down with it.
+T.summaries = {}          -- ordered { name, fn }
+
+function T.AddSummary(name, fn)
+    if type(fn) ~= "function" then return false end
+    for i = 1, #T.summaries do
+        if T.summaries[i].name == name then T.summaries[i].fn = fn; return true end
+    end
+    T.summaries[#T.summaries + 1] = { name = name, fn = fn }
+    return true
+end
+
+function T.SummaryLines()
+    local out = {}
+    for i = 1, #T.summaries do
+        local ok, lines = pcall(T.summaries[i].fn)
+        if ok and type(lines) == "table" then
+            for j = 1, #lines do out[#out + 1] = tostring(lines[j]) end
+        end
+    end
+    return out
+end
+
 local function nowServer()
     local f = _G.GetServerTime
     if type(f) == "function" then
@@ -155,12 +186,16 @@ end
 -- entry, newest last, so it can be pasted straight into a report.
 local ORDER = { "enc", "mod", "timer", "key", "spell", "bar", "stage",
                 "expMin", "expMax", "expVar", "total", "obs", "rem", "delta",
-                "verdict", "path", "trigger", "delay", "reason", "queued", "ceiling" }
+                "verdict", "path", "trigger", "delay", "reason", "queued", "ceiling", "n" }
 
 function T.Export()
     local r = T.Ring(false)
     local out = {}
     out[#out + 1] = ("-- Daseeki Raid Mechanics engine log (build %s) --"):format(T.BUILD)
+    -- The counted-not-recorded events, ahead of the rows, so the export is complete
+    -- even when the ring holds one aggregate row for a million occurrences.
+    local sums = T.SummaryLines()
+    for i = 1, #sums do out[#out + 1] = "-- " .. sums[i] end
     if not r then
         out[#out + 1] = "(empty)"
         return out
