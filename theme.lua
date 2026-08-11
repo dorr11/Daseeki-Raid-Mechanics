@@ -252,6 +252,7 @@ end
 
 function Addon:SetAnchorDressed(a, on)
     if not a then return false end
+    a._dressed = on and true or false   -- readable state for the placement surface + harness
     if on then
         Addon:ApplyDarkBackdrop(a)
         a:EnableMouse(true)
