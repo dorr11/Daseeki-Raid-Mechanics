@@ -2,7 +2,7 @@
 
 <!-- Canonical CurseForge project description. Update here first, then paste to
      https://www.curseforge.com/wow/addons/daseeki-raid-mechanics (project 1592413).
-     Last synced: 2026-08-08 (v2.0.0); 2.1.0 pending paste. 2.0.0 was the
+     Last synced: 2026-08-11 (v2.1.1); 2.1.0 pending paste. 2.0.0 was the
      first release the project page would carry, so the whole description below is
      new copy rather than a diff against something live. -->
 

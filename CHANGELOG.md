@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.1 — 2026-08-11
 
 ### Thaddius: "Polarity CHANGED" is its own alert now
 

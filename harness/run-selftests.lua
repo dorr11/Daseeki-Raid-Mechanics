@@ -8672,7 +8672,7 @@ do
     -- observation from an older engine is never mistaken for current behaviour.
     local raw = table.concat(Tele.Export(), "\n")
     ck(raw:find(Tele.BUILD, 1, true) ~= nil, "the raw export is build-stamped")
-    eq(Tele.BUILD, "2.1.0", "…and the build token is the release version, not a wave tag")
+    eq(Tele.BUILD, "2.1.1", "…and the build token is the release version, not a wave tag")
 
     -- Clearing is IN PLACE (the ring's own contract) and the viewer survives it.
     local ringRef = Tele.Ring(false)
@@ -8755,7 +8755,7 @@ do
 
     -- #12: toc ## Version matches the tag the owner will cut.
     local ver = toc:match("##%s*Version:%s*([%d%.]+)")
-    eq(ver, "2.1.0", "#12 the toc ## Version is 2.1.0")
+    eq(ver, "2.1.1", "#12 the toc ## Version is 2.1.1")
 
     -- #1: every SavedVariables global from the previous toc is still declared.
     -- Undeclared = deleted at next logout, and this addon has exactly one.
@@ -9145,7 +9145,7 @@ do  -- RM-3: "rank by version" was provably always -1; the ask-time read fixes i
 
     Sync.BeginRecovery("reload")
     advance(3)                        -- the hello replies land on their §7.4 debounce
-    rx("Echo-Whitemane", "V", 30000, Sync.VERSION.release, "2.1.0", 0)
+    rx("Echo-Whitemane", "V", 30000, Sync.VERSION.release, "2.1.1", 0)
     eq(Sync.peers["Echo-Whitemane"] and Sync.peers["Echo-Whitemane"].rev, 30000,
        "…a peer answers our hello three seconds in, well before the 7 s rung")
     advance(4.3)

@@ -47,7 +47,7 @@ Addon.Telemetry = T
 
 T.RING_KEY = "engineLog"
 T.MAX      = 250          -- bounded ring; oldest entries are dropped
-T.BUILD    = "2.1.0"      -- bumped per wave; every entry carries it
+T.BUILD    = "2.1.1"      -- bumped per wave; every entry carries it
 
 -- The enumerated kinds. A write with an unlisted kind still lands (we never drop
 -- data because of a typo) but is counted, so the harness can catch drift.
