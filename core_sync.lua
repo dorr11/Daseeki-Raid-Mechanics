@@ -155,7 +155,7 @@ Sync.SELF_DISABLE = false
 
 -- Our version identity. `release` is a plain YYYYMMDD integer so "newer" is an
 -- integer comparison with no date arithmetic and no per-month day table.
-Sync.VERSION = { rev = 20000, release = 20260807, display = "2.0.0" }
+Sync.VERSION = { rev = 20100, release = 20260810, display = "2.1.0" }
 
 -- ══════════════════════════════════════════════════════════════════════════════
 --  THE TRANSMIT FIREWALL (§7.5 interop boundary, SN-bridge precedent)

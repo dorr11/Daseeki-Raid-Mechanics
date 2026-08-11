@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-08-10
 
 **The settings rework: placement you can find, categories that lead, and a sound
 picker on every warning.** Three things you told us after 2.0.0 shipped — "I don't
