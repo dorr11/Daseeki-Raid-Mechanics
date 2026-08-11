@@ -50,6 +50,24 @@ release is those three answers. Your settings are kept; nothing changes shape.
   play this second — your pick, the tier default, or nothing — so you can always
   check the answer before the fight does.
 
+### Counted timer bars now say which one is coming
+
+- **The number is in the bar's label now** — "Spore 3", "Inevitable Doom 2",
+  "Mark 5" — and it names the occurrence the bar is running **toward**, so you can
+  read straight off the timer which spore is about to spawn or which mark is about
+  to go out. When the cast lands, the announcement ("Spore 3") confirms the exact
+  number the bar was showing, and the restarted bar moves on to the next one.
+- This applies to every counted timer in every raid — Loatheb's spores and dooms,
+  the Four Horsemen's marks, Viscidus's poison volleys — including through Loatheb's
+  late-fight doom speed-up, where the numbering carries straight across the cadence
+  change.
+- The little count badge in the bar's corner is retired: the same number printed
+  twice on one bar was clutter, and the label is where your eyes already are.
+- Timer bars whose ability declares only a display name now label with that name
+  ("Spore", not a lowercase internal key) — the fix that makes "Spore 3" read as
+  "Spore 3". And the rehearsal's play button always shows a counted bar as its
+  first occurrence instead of whatever number the last real fight left behind.
+
 Nothing here moves your existing setup: routes, sound modes, positions, attachments,
 sizes, statistics and every 2.0.0 setting load unchanged, and that is verified by a
 dedicated migration test that pushes a real 2.0.0 profile through the new panel.

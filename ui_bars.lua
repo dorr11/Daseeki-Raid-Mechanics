@@ -31,8 +31,8 @@
       * Bars are a FIXED-WIDTH band (settings.barWidth), never stretched to fill —
         principle 1. One block = one grid: every bar on an anchor shares width,
         height and column edges — principle 5.
-      * Icon sits flush against the bar's left edge, count badge inside the bar —
-        proximity is relationship, principle 2.
+      * Icon sits flush against the bar's left edge; a counted bar's number is part
+        of its LABEL ("Spore 3") — proximity is relationship, principle 2.
       * Row spacing is ONE configured pad. There is no unexplained gap anywhere in
         the stack — principle 4.
       * Growth direction and sort are fixed settings, not a responsive fallback —
@@ -185,15 +185,34 @@ Model.count = 0
 local function settingsOf() return Bars.Settings() end
 
 -- §4.1 identity is `timerObjectId + tab-joined stringified arguments`. For a COUNT
--- timer the trailing argument IS the count, which is what §4.5 broadcasts as "the
--- numeric count for count timers" and what the display text formats.
+-- timer started with an explicit count argument the trailing argument IS the count,
+-- which is what §4.5 broadcasts as "the numeric count for count timers" and what the
+-- display text formats.
+--
+-- GRAMMAR-DRIVEN COUNT TIMERS carry NO count argument: `Runtime:Act` starts them
+-- bare (only perTarget/nameplate/identBy ride the identity), so the tab parse finds
+-- nothing and, before the owner's counted-label directive (2026-08-10), these bars
+-- carried no number at all. The occurrence they run TOWARD is published by the same
+-- Act, one line before Start, into the legacy mirror `Addon._mechCount` under the
+-- row's option key — which IS the timer object id for a grammar timer. That is the
+-- fallback read here.
+--
+-- THE NUMBER IS THE UPCOMING OCCURRENCE, NOT THE LAST-FIRED ONE, by construction:
+-- Act increments `__occ:` at the trigger (pull, or cast k) and resolves the duration
+-- with `API.ResolveDuration(row, n)` — and occurrence 1 there takes the row's PULL
+-- value (the run-up to cast 1), while Loatheb's `sequenceFrom = { [7] = { 9.7 } }`
+-- resolves the 9.7 s run-IN to doom 7 at n = 7. So the n a bar starts under is the
+-- occurrence it is counting toward, and it is used directly — no +1 anywhere.
 function Model.CountOf(bar)
     local objs = T() and T().objects
     local timer = objs and objs[bar.timerId]
     if not (timer and timer.hasCount) then return nil end
     local last
     for part in tostring(bar.id):gmatch("[^\t]+") do last = part end
-    return tonumber(last)
+    local n = tonumber(last)
+    if n ~= nil then return n end
+    local mc = Addon._mechCount
+    return mc and tonumber(mc[bar.timerId]) or nil
 end
 
 function Model.ClassOf(bar)
@@ -206,6 +225,19 @@ end
 -- the bar surface does not have to reach into the encounter API for a string.
 function Model.OptionKeyOf(bar)
     return tostring(bar.encId) .. ":" .. tostring(bar.key)
+end
+
+-- The label a bar leads with. A declared `text` always wins; a grammar row that
+-- declares only `name` labels with THAT, not with its lowercase option key — the
+-- same `name or text or key` order every other user-facing surface already uses
+-- (ui_warnings' handle labels, core_api's options tree). Without this, the owner's
+-- counted labels would read "spore 3" instead of "Spore 3".
+function Model.LabelOf(bar)
+    if bar.text then return bar.text end
+    local encs = Addon.encountersById
+    local enc  = encs and bar.encId and encs[bar.encId]
+    local row  = enc and enc.rowsByKey and enc.rowsByKey[bar.key]
+    return (row and row.name) or bar.key or bar.timerId
 end
 
 -- Whether this bar would be DRAWN. §4.5: the broadcast fires even when this is
@@ -245,7 +277,7 @@ function Model.Adopt(bar)
     row.encId      = bar.encId
     row.category   = bar.category
     row.class      = Model.ClassOf(bar)
-    row.baseText   = bar.text or bar.key or bar.timerId
+    row.baseText   = Model.LabelOf(bar)
     row.icon       = bar.icon
     row.spellId    = bar.spellId
     row.nameplate  = bar.nameplate and true or false
@@ -481,13 +513,17 @@ function Model.TimeText(row, now)
     return Model.FormatTime(rem, row.approx, s.decimalBelow)
 end
 
--- §4.1 count timers read "Meteor (3)". A text carrying %d formats; otherwise the
--- count is appended, so encounter data never has to remember which shape it used.
+-- COUNTED LABELS (owner directive 2026-08-10): a count timer's label EMBEDS the
+-- number of the occurrence it runs toward — "Spore 3" is the spore that is ABOUT to
+-- spawn, "Mark 5" is the mark about to go out. Same shape as the announce texts
+-- ("Spore %d" fires as "Spore 3" at that cast), so the bar predicts exactly what the
+-- warning then confirms. A text carrying %d formats; otherwise the count is
+-- appended, so encounter data never has to remember which shape it used.
 function Model.DisplayText(row)
     local text = row.baseText or ""
     if row.count then
         if text:find("%%d") then return (text:format(row.count)) end
-        return ("%s (%d)"):format(text, row.count)
+        return ("%s %d"):format(text, row.count)
     end
     return text
 end
@@ -801,7 +837,10 @@ local function arrangeCustom(d, row, now)
 
     d:SetSize(w, h)
     d:ClearAllPoints()
-    local a = Bars.RowAnchor(row.optionKey, Model.DisplayText(row), w, h)
+    -- The drag handle is labelled with the row's NAME, not its momentary display
+    -- text: a counted label ("Spore 3") would freeze whatever number the anchor was
+    -- first created under, and a handle that says "Spore 3" all night is a lie.
+    local a = Bars.RowAnchor(row.optionKey, row.baseText, w, h)
     if a then
         d:SetPoint("CENTER", a, "CENTER", 0, 0)
     elseif Addon.Anchors then
@@ -816,7 +855,11 @@ local function paint(d, row, now)
     d.bar:SetStatusBarColor(Model.ColorAt(row, now))
     d.label:SetText(Model.DisplayText(row))
     d.time:SetText(Model.TimeText(row, now))
-    if row.count then d.count:SetText(tostring(row.count)); d.count:Show() else d.count:Hide() end
+    -- THE COUNT BADGE IS RETIRED for counted bars: the number now lives in the label
+    -- ("Spore 3"), and the same number stamped twice on one bar is noise, not
+    -- information. Nothing else ever fed the badge — it existed only for counts — so
+    -- it is simply never shown; the widget stays pooled for any future non-count use.
+    d.count:Hide()
 
     local bw = d.bar:GetWidth() or 0
     d.spark:ClearAllPoints()
