@@ -32,6 +32,10 @@
       6  VALIDATE          an in-game sweep of the WHOLE encounter registry against the
                            live client: every spell id, icon, sound path and voice cue.
                            Patch-day insurance, and a permanent keep.
+      7  PREVIEW           the Placement section's one-shot (owner rework 2026-08-10):
+                           a bar on each list and a line on each warning tier, all at
+                           once, through the same real paths — layout mode's little
+                           sibling, with no upkeep tick and no pull timer.
 
     ── THE QUARANTINE ───────────────────────────────────────────────────────────
     A test surface that can reach the raid is a liability, not a feature. Four rules,
@@ -103,7 +107,7 @@ T.BANNER_ROW = { key = "__test_engage", tier = "special", sound = 2 }
 
 -- ── State ─────────────────────────────────────────────────────────────────────
 T.active   = false          -- THE quarantine flag; every rule above reads this
-T.mode     = nil            -- nil | "row" | "boss" | "layout" | "playback"
+T.mode     = nil            -- nil | "row" | "boss" | "layout" | "playback" | "preview"
 T.encId    = nil            -- the encounter a boss test / playback is running
 T.speed    = nil            -- the live time scale, while one is installed
 T.runtimes = {}             -- encId -> the test runtime driving it
@@ -646,6 +650,59 @@ function T.Layout(on)
     end
     T.Stop("layout off")
     return false
+end
+
+-- ══════════════════════════════════════════════════════════════════════════════
+--  FEATURE 7 — PREVIEW (the Placement section's button, owner rework 2026-08-10)
+-- ══════════════════════════════════════════════════════════════════════════════
+-- One press, all four buckets at once: a bar on each list, a line on each warning
+-- tier, everything through the real dispatch with layout mode's own transient-route
+-- trick — and nothing more. No pull timer, no sample special, no upkeep tick: this
+-- is the one-shot the Placement section fires so a drag happens against real
+-- visuals, and Stop (Lock all / leaving the page / a real pull) sweeps it whole.
+-- The warning samples hold with LAYOUT_WARN_HOLD for the same reason layout mode's
+-- do: a line that fades in 1.5 s is not a thing you can place an anchor against.
+T.PREVIEW_BAR = 35            -- sample bar length, seconds — long enough to drag against
+
+function T.Preview()
+    if Addon.Lifecycle and Addon.Lifecycle:AnyEngaged() then return nil, "engaged" end
+    T.Stop("restart")
+    T.Begin("preview", nil)
+    local n = 0
+    -- One bar per LIST, routed by the transient table exactly as layout mode routes
+    -- its samples — a class-1 bar is Major by severity, so the transient is what
+    -- makes "one on each list" a fact rather than a coincidence.
+    local specs = {
+        { bucket = "major", color = 1, text = "Add wave (sample)" },
+        { bucket = "minor", color = 2, text = "Ground effect (sample)" },
+    }
+    for i, spec in ipairs(specs) do
+        local optionKey = "#preview:" .. spec.bucket
+        Addon.Route.SetTransient(optionKey, spec.bucket)
+        T.layoutKeys[#T.layoutKeys + 1] = optionKey
+        local t = syntheticTimer("preview:" .. spec.bucket, {
+            key = "preview" .. spec.bucket, encId = "#preview", kind = "cd",
+            text = spec.text, color = spec.color,
+        })
+        if t then t:Start(T.PREVIEW_BAR - i); n = n + 1 end   -- descending: sort visible
+    end
+    -- One line on each warning tier, through `Warn.Emit` — the router is the thing
+    -- the Placement section places the output of, so the surfaces are never driven
+    -- behind its back.
+    local Wn = Addon.Warnings
+    if Wn then
+        local ann = { key = "previewann",  tier = "announce", color = 2,
+                      duration = T.LAYOUT_WARN_HOLD }
+        local spc = { key = "previewspec", tier = "special",  sound = 2,
+                      duration = T.LAYOUT_WARN_HOLD }
+        local ka, ks = Wn.OptionKey("#preview", ann), Wn.OptionKey("#preview", spc)
+        Addon.Route.SetTransient(ka, "minor"); T.layoutKeys[#T.layoutKeys + 1] = ka
+        Addon.Route.SetTransient(ks, "major"); T.layoutKeys[#T.layoutKeys + 1] = ks
+        Wn.Emit("#preview", ann, "Announcement (sample)")
+        Wn.Emit("#preview", spc, "Special warning (sample)")
+        n = n + 2
+    end
+    return n
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════

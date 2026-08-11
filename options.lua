@@ -19,6 +19,23 @@
 
     The SavedVariables schema and every settings key are unchanged from the
     pre-migration panel (same Addon:SetMechanicOption / db.settings field names).
+
+    SETTINGS REWORK (owner, 2026-08-10). Three complaints, three answers, all in
+    this file plus one addition to ui_testing.lua:
+      1  "no way to place major or minor bars" — the PLACEMENT section now leads the
+         General page: the four bucket anchors (plus the specials pad), each with
+         Place / Reset / Attach, one Preview that fills all four at once, and a
+         master Unlock/Lock pair. It drives the SAME handles /drm unlock dresses.
+         The old Attachment section is absorbed by it.
+      2  "I don't understand the custom timer section" — every ability row now LEADS
+         with its Placement control (Major / Minor / Custom / Hidden), the follow
+         rule is stated at the control, and the Custom block opens with a hint that
+         explains the escape hatch before showing its controls.
+      3  "no way to choose sounds for a given mechanic" — a per-row sound picker sits
+         beside the three-state mode switch. It stores the pre-existing per-row
+         `sound` key, which the shipped resolution chain (Sound.Resolve →
+         Warn.RowSoundKey) already ranks above the policy default and below an
+         explicit Off — no schema change, no new engine seam.
 --]]
 
 local _, Addon = ...
@@ -66,10 +83,17 @@ end
 -- ONE control per row (Major / Minor / Hidden / Custom) and ONE control per anchor
 -- (Attach to). Both are plain labelled dropdowns over the tables ui_anchors.lua
 -- already publishes — the options surface names nothing the engine does not.
+-- The DISPLAY order of the four buckets (owner rework 2026-08-10): the two list
+-- buckets first, then the escape hatch, then Hidden — the order a raider actually
+-- reasons in ("big, or small… or its own spot… or not at all"). Published on the
+-- Addon so the harness can pin it. Route.ORDER (the engine's canonical order) is
+-- deliberately untouched; this is presentation, and it names nothing the engine
+-- does not.
+Addon.ROUTE_CHOICE_ORDER = { "major", "minor", "custom", "hidden" }
 local ROUTE_NAMES, ROUTE_KEY = {}, {}
 local function routeNames()
     if #ROUTE_NAMES == 0 and Addon.Route then
-        for _, k in ipairs(Addon.Route.ORDER) do
+        for _, k in ipairs(Addon.ROUTE_CHOICE_ORDER) do
             local label = Addon.Route.LABEL[k]
             ROUTE_NAMES[#ROUTE_NAMES + 1] = label
             ROUTE_KEY[label] = k
@@ -102,6 +126,46 @@ local function CurWarnRow(encId, rowKey)
     local enc = Addon.GetEncounter and Addon:GetEncounter(encId)
     local row = enc and enc.rowsByKey and enc.rowsByKey[rowKey]
     return row
+end
+
+-- ── The per-row sound override (owner rework 2026-08-10, directive 3) ──────────
+-- WHICH sound a warning row plays used to be tier data plus the global packs; the
+-- picker button on the row's Sound line now stores the user's own pick. The FIELD
+-- is the pre-existing `db.mechanics[key].sound` — the exact key ui_warnings.lua's
+-- RowSoundKey has read since W2, and the link Sound.HasCustomFile already ranks
+-- between the mode switch and the policy — so the engine seam is the shipped one,
+-- the storage is additive by construction, and DB_VERSION does not move.
+function Addon:RowSoundOverride(optionKey)
+    local db = Addon.db
+    if not optionKey or type(db) ~= "table" or type(db.mechanics) ~= "table" then return nil end
+    local o = db.mechanics[optionKey]
+    local s = (type(o) == "table") and o.sound or nil
+    if s == "none" then return nil end
+    return s
+end
+
+-- "None" in the picker CLEARS the override (stores nil — the absence of an
+-- opinion, the same discipline Sound.SetMode follows), so Default keeps meaning
+-- "follow the policy" rather than "follow a stored copy of it".
+function Addon:SetRowSound(optionKey, soundKey)
+    if not optionKey then return nil end
+    if soundKey == "none" then soundKey = nil end
+    Addon:SetMechanicOption(optionKey, "sound", soundKey)
+    return soundKey
+end
+
+-- What the Cue button will actually do, in data: plays?, why, and the key that
+-- plays. Mirrors Warn.DispatchSound's own decision order (the §5.4 special-sound
+-- suppressor, then the Sound chain, then the row-key lookup), so the hint under
+-- the control and the button beside it can never disagree.
+function Addon:DescribeRowSound(encId, row)
+    local S, Wn = Addon.Sound, Addon.Warnings
+    if not (S and Wn and row and encId) then return false, "policy", nil end
+    local special = (row.tier or "announce") == "special"
+    if special and Wn.Settings().suppressSpecialSound then return false, "suppressed", nil end
+    local plays, why = S.Resolve(encId, row, special)
+    if not plays then return false, why, nil end
+    return true, why, (Wn.RowSoundKey(encId, row))
 end
 
 local ATTACH_NAMES = {}
@@ -392,17 +456,19 @@ BuildMechDetail = function(panel)
     flow:AddSeparator()
     local pll = flow:Label("Placement")
     pll._label:SetFontObject(UI.fonts.accent)
-    -- ONE ROW: where this goes, and the two buttons that show you it going there
-    -- (principle 2 — the affordance sits with the thing it exercises). Both buttons
-    -- drive ui_testing.lua, which fires the row through the REAL dispatch, so what they
-    -- produce is routed by the dropdown beside them without any special casing.
-    -- WIDTHS. Four controls share this row now (the sound switch joined it), so the
-    -- two dropdowns and the two buttons are sized to fit the narrowest detail column
-    -- the drill-down produces rather than to their own comfort: 150 + 64 + 64 + 100
-    -- plus three 8 px gaps is 402, and the detail column is `width - 320 - 16`.
+    -- FIRST ROW, FIRST CONTROL: the category (owner rework 2026-08-10, directive 2).
+    -- It is labelled with the section it answers to — "Placement" — because what it
+    -- decides is which Placement surface this ability's output lands on. The two
+    -- rehearsal buttons share the row (principle 2 — the affordance sits with the
+    -- thing it exercises): both drive ui_testing.lua, which fires the row through
+    -- the REAL dispatch, so what they produce is routed by the dropdown beside them
+    -- without any special casing.
+    -- WIDTHS. 150 + 64 + 64 plus two 8 px gaps is 294 on this row, and 100 + 190
+    -- plus one gap is 298 on the sound row below — both inside the narrowest detail
+    -- column the drill-down produces (`width - 320 - 16`).
     local rr = flow:AddRow()
     d.routeDD = rr:Dropdown({
-        label = "Show this as", width = 150, choices = routeNames(),
+        label = "Placement", width = 150, choices = routeNames(),
         get = function()
             local key, mech = CurKey(panel), CurDef(panel)
             local R = Addon.Route
@@ -424,20 +490,31 @@ BuildMechDetail = function(panel)
         if not (Tst and enc and rowKey) then return end
         Tst.Row(enc, rowKey)
     end })
-    -- "Cue", not "Sound": the SWITCH beside it is what the word Sound now means in
-    -- this row, and two controls with one name is one control with extra steps.
+    -- "Cue", not "Sound": the sound LINE below is what the word Sound means on this
+    -- page, and two controls with one name is one control with extra steps.
     d.rowSound = rr:Button({ text = "Cue", width = 64, onClick = function()
         local Tst, enc, rowKey = Addon.Testing, CurEncId(panel), CurRowKey(panel)
         if not (Tst and enc and rowKey) then return end
         Tst.RowSound(enc, rowKey)
     end })
-    -- THE PER-ROW SOUND SWITCH (owner directive 2026-08-07). Three states, and it
-    -- sits in THIS row rather than down in the Sounds section because the question
-    -- "does this one alert make a noise" is asked about a row, not about the addon —
-    -- and because the Sound button beside it is how you check your answer. The
-    -- button plays what the CHAIN currently resolves to, so pressing it after
-    -- picking Off is silent and after picking On is not.
-    d.rowSoundMode = rr:Dropdown({
+    -- THE FOLLOW RULE, stated at the control that invokes it: what each choice
+    -- physically means, and where the two shared anchors live.
+    d.followHint = flow:Hint("Major and Minor follow the two bucket anchors in the "
+        .. "Placement section (top of the General page): a Minor bar is promoted "
+        .. "into the Major list as its time runs out. Custom places itself \226\128\148 "
+        .. "its own controls appear below when you pick it. Hidden draws nothing; the "
+        .. "sound and spoken countdown still play.")
+    -- The bucket's own one-liner PLUS what this row would do if left alone. A user
+    -- who has overridden a row needs to be able to see what they overrode.
+    d.routeHint = flow:Hint("")
+    -- THE SOUND LINE (owner directives 2026-08-07 + 2026-08-10). The three-state
+    -- switch says WHETHER this row makes a noise; the picker button beside it says
+    -- WHICH noise — a per-row sound key that beats the policy default whenever the
+    -- mode permits sound at all. Off still silences an override (pinned), and the
+    -- Cue button above plays whatever the pair currently resolves to, so the answer
+    -- is always checkable.
+    local sndRow = flow:AddRow()
+    d.rowSoundMode = sndRow:Dropdown({
         label = "Sound", width = 100, choices = soundModeNames(),
         get = function()
             local S, key = Addon.Sound, CurKey(panel)
@@ -451,12 +528,18 @@ BuildMechDetail = function(panel)
             PopulateDetail(panel)
         end,
     })
-    -- The bucket's own one-liner PLUS what this row would do if left alone. A user
-    -- who has overridden a row needs to be able to see what they overrode. It comes
-    -- FIRST because the dropdown is the primary control of the row above it.
-    d.routeHint = flow:Hint("")
-    -- What "Default" means FOR THIS ROW, in words, filled in by PopulateDetail. It
-    -- collapses for a timer row, which has no warning-sound policy to describe.
+    d.rowSoundBtn = sndRow:Button({ text = "Sound: Default", width = 190, onClick = function()
+        local key = CurKey(panel)
+        if not key then return end
+        Addon:ShowSoundPicker(Addon:RowSoundOverride(key) or "none", function(pick)
+            Addon:SetRowSound(key, pick)
+            PopulateDetail(panel)
+        end, d.rowSoundBtn)
+    end })
+    -- What "Default" means FOR THIS ROW plus what the Cue button will play right
+    -- now, filled in by PopulateDetail. It collapses for a timer row, which has no
+    -- warning-sound policy to describe (a timer's own sound is the Ability Tracker's
+    -- Sound control below, untouched).
     d.soundHint = flow:Hint("")
     d._soundHintH = lastHandle(flow)
     d.rowHint = flow:Hint("\"Play\" fires this one row exactly as the fight will \226\128\148 "
@@ -464,10 +547,17 @@ BuildMechDetail = function(panel)
         .. "\"Cue\" plays just the sound \226\128\148 whatever this row resolves to right "
         .. "now, which is nothing at all when it is silent.")
 
-    -- The Custom group: a Custom row gets its OWN placement record — position,
-    -- optional frame attachment, size — and none of it means anything for a row
-    -- that is in one of the two lists, so it collapses away for those.
+    -- THE CUSTOM BLOCK — the escape hatch, explaining itself (directive 2). A
+    -- Custom row gets its OWN placement record — position, optional frame
+    -- attachment, size — and none of it means anything for a row that is in one of
+    -- the two lists, so the whole block collapses away for those.
     d._routeGroup = {}
+    d.customHint = flow:Hint("Custom: this one ability ignores both lists and owns "
+        .. "its own spot on screen. Press Place to pick up its own handle and drag it "
+        .. "(press again or Esc to settle it), attach it to a game frame if you want "
+        .. "it riding one, and size it independently. Reset placement sends it back "
+        .. "to the shipped spot.")
+    addTo(d._routeGroup, lastHandle(flow))
     d.routeAttach = attachRow(flow, function() return CurKey(panel) end)
     addTo(d._routeGroup, lastHandle(flow))
     flow:Hint(ATTACH_HINT); addTo(d._routeGroup, lastHandle(flow))
@@ -487,8 +577,9 @@ BuildMechDetail = function(panel)
         format = function(v) return string.format("%d%%", math.floor(v * 100 + 0.5)) end,
     }); addTo(d._routeGroup, lastHandle(flow))
     local prow = flow:AddRow(); addTo(d._routeGroup, lastHandle(flow))
-    -- The place/drag affordance, and it is the SAME one `/drm anchors` uses: this
-    -- row's own labelled handle, dressed and draggable alongside the four buckets.
+    -- The place/drag affordance, and it is the SAME handle `/drm unlock` dresses:
+    -- this row's own labelled anchor, picked up ALONE through the placement
+    -- machinery, so placing one ability never turns the whole screen into handles.
     prow:Button({ text = "Place", width = 110, onClick = function()
         local key, mech = CurKey(panel), CurDef(panel)
         if not key then return end
@@ -497,7 +588,7 @@ BuildMechDetail = function(panel)
             Addon.Bars.RowAnchor(key, (mech and mech.name) or key)
         end
         if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
-        Addon:ShowHudAnchors()
+        if Addon:IsPlacing(key) then Addon:EndPlace(key) else Addon:BeginPlace(key) end
     end })
     prow:Button({ text = "Reset placement", width = 140, onClick = function()
         local key = CurKey(panel)
@@ -793,10 +884,10 @@ PopulateDetail = function(panel)
         end
         d.routeHint._label:SetText(line)
     end
-    -- THE SOUND SWITCH. Only WARNING rows have a warning-sound policy: a timer row's
+    -- THE SOUND LINE. Only WARNING rows have a warning-sound policy: a timer row's
     -- audible cue is the sound the user attached to it or its spoken countdown, both
-    -- of which the directive left alone, so the control collapses rather than
-    -- offering a choice that would do nothing.
+    -- of which live in the Ability Tracker block below, so both controls here go
+    -- quiet rather than offering a choice that would do nothing.
     do
         local S = Addon.Sound
         local row = CurWarnRow(CurEncId(panel), CurRowKey(panel))
@@ -810,6 +901,14 @@ PopulateDetail = function(panel)
             local b = d.rowSoundMode.button
             if b and b.SetEnabled then b:SetEnabled(isWarn) end
         end
+        -- The picker button wears the override it stores, so an overridden row says
+        -- so at a glance and an untouched one says Default.
+        if d.rowSoundBtn then
+            local override = isWarn and Addon:RowSoundOverride(panel.selMechKey) or nil
+            btnText(d.rowSoundBtn,
+                override and ("Sound: " .. Addon:GetSoundName(override)) or "Sound: Default")
+            if d.rowSoundBtn.SetEnabled then d.rowSoundBtn:SetEnabled(isWarn) end
+        end
         if d._soundHintH then setShown(d._soundHintH, isWarn) end
         if d.soundHint and isWarn then
             local mode = S.ModeOf(panel.selMechKey)
@@ -817,6 +916,11 @@ PopulateDetail = function(panel)
             if mode ~= "default" then
                 line = ("Forced %s here.  "):format(S.MODE_LABEL[mode]) .. line
             end
+            -- …and the checkable bottom line: what Cue will play this second.
+            local plays, _, effKey = Addon:DescribeRowSound(CurEncId(panel), row)
+            line = line .. (plays
+                and ("  Cue plays: %s."):format(Addon:GetSoundName(effKey))
+                or  "  Cue plays: nothing (this row is silent right now).")
             d.soundHint._label:SetText(line)
         elseif d.soundHint then
             d.soundHint._label:SetText("")
@@ -949,7 +1053,7 @@ BuildModuleDetail = function(panel)
     flow:Hint(ATTACH_HINT)
     m._hAttachHint = lastHandle(flow); addTo(m._placeGroup, m._hAttachHint)
     local mpr = flow:AddRow(); addTo(m._placeGroup, lastHandle(flow))
-    mpr:Button({ text = "Show anchors", width = 130, onClick = function()
+    mpr:Button({ text = "Unlock handles", width = 130, onClick = function()
         if Addon.Bars then Addon.Bars.EnsureAnchors() end
         if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
         local def = panel.selModule
@@ -1370,6 +1474,11 @@ function Addon:BuildGeneralOptions(flow)
     local panel = flow
     Addon.optFrames.general = flow
 
+    -- PLACEMENT FIRST (owner rework 2026-08-10, directive 1). "I don't see a way to
+    -- place major or minor bars" — because the way was three sections down and
+    -- coupled to the unlock flow. The four bucket anchors now lead the page.
+    Addon:BuildPlacementOptions(flow, panel)
+
     local gen = flow:AddSection("General")
     gen:Checkbox({
         label = "Enable Raid Mechanics",
@@ -1477,7 +1586,6 @@ function Addon:BuildGeneralOptions(flow)
 
     Addon:BuildBarOptions(flow, panel)
     Addon:BuildWarningOptions(flow, panel)
-    Addon:BuildAttachOptions(flow, panel)
     Addon:BuildSoundOptions(flow, panel)
     Addon:BuildTelemetryOptions(flow, panel)
 end
@@ -1501,8 +1609,9 @@ function Addon:BuildBarOptions(flow, panel)
     sec:Hint("Countdown bars for boss abilities. Two lists: MINOR is the normal stack, "
         .. "MAJOR holds the important ones \226\128\148 adds, interrupts and the pull timer "
         .. "\226\128\148 and a Minor bar is promoted into it as its time runs down. Each "
-        .. "ability's own page decides which bucket it lands in. Use Show anchors below "
-        .. "to drag either list where you want it.")
+        .. "ability's own page decides which list it lands in. Drag either list from the "
+        .. "Placement section at the top of this page \226\128\148 or unlock every handle "
+        .. "at once below.")
 
     sec:Checkbox({
         label = "Hide all timer bars",
@@ -1624,9 +1733,10 @@ function Addon:BuildBarOptions(flow, panel)
     })
 
     -- Placement affordances sit WITH the thing they place (principle 2), and the
-    -- button row shares one grid with itself (principle 5).
+    -- button row shares one grid with itself (principle 5). "Unlock handles" states
+    -- its consequence where "Show anchors" named an implementation detail.
     local place = sec:AddRow()
-    place:Button({ text = "Show anchors", width = 130, onClick = function()
+    place:Button({ text = "Unlock handles", width = 130, onClick = function()
         if Addon.Bars then Addon.Bars.EnsureAnchors() end
         if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
         Addon:ShowHudAnchors()
@@ -1649,7 +1759,7 @@ function Addon:BuildBarOptions(flow, panel)
         local on = Tst.Layout(nil)
         btnText(layoutBtn, on and "Exit layout" or "Layout mode")
     end })
-    place:Button({ text = "Lock", width = 130, onClick = function()
+    place:Button({ text = "Lock handles", width = 130, onClick = function()
         if Addon.Bars then Addon.Bars.StopDemo() end
         if Addon.Warnings then Addon.Warnings.Reset() end
         if Addon.Testing then Addon.Testing.Stop("lock") end
@@ -1658,45 +1768,201 @@ function Addon:BuildBarOptions(flow, panel)
     end })
     sec:Hint("\"Demo\" draws one of everything once. \"Layout mode\" fills every list and "
         .. "both warning tiers and KEEPS them filled while you drag, so a placement pass "
-        .. "never runs out of things to place. Also " .. "/drm layout" .. ".")
+        .. "never runs out of things to place (also /drm layout). \"Lock handles\" ends "
+        .. "either one and settles every handle.")
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
---  W5 + ANCHOR REWORK — ATTACHMENT (the five HUD anchors)
+--  PLACEMENT — the discoverable face of the anchor model (owner rework 2026-08-10)
 -- ══════════════════════════════════════════════════════════════════════════════
--- Every anchor in the addon can hang off a game frame instead of off the screen.
--- The five that always exist get their control here; a Custom row's and a special's
--- live on their own page, next to the thing they place (principle 2).
+-- The engine has owned the full placement model since 2.0 (ui_anchors.lua); what it
+-- never had was a surface a raider could FIND. This section is that surface, and it
+-- is deliberately thin: every button below drives the SAME handle frames `/drm
+-- unlock`, demo and layout mode dress — Addon._hudAnchors, keyed by the anchor key —
+-- so there is exactly ONE placement state and this page is just its face. It also
+-- absorbs the old Attachment section outright: attach-to-frame is one of the three
+-- affordances of a surface, not its own far-away page.
 --
--- ONE GRID (principle 5): each anchor is a titled block with the SAME two controls
--- in the SAME order, so five blocks read as one table rather than five paragraphs.
-function Addon:BuildAttachOptions(flow, panel)
-    local A = Addon.Anchors
-    if not A then return end
-    local B, W = Addon.Bars, Addon.Warnings
-    if not (B and W) then return end
+-- BeginPlace / EndPlace are the "pick one handle up" pair. Pressing Place unlocks
+-- JUST that handle and starts a sticky drag (the handle follows the cursor; a click
+-- drops and saves it through the anchor system's own OnMouseUp). Pressing the
+-- button again — or Esc, via a sentinel frame on UISpecialFrames — settles it. An
+-- Esc during an in-flight drag ABORTS that drag: EndPlace re-applies the saved
+-- answer rather than saving the cursor's, because Esc mid-drag means "put it back".
 
-    local sec = flow:AddSection("Attachment")
-    sec:Hint("Anchors normally sit at a fixed place on your screen. Any of them can "
-        .. "instead ride a game frame \226\128\148 your target frame, your player frame, "
-        .. "the minimap, or any frame you can name. " .. ATTACH_HINT)
+Addon._placing = nil          -- the ONE anchor key currently picked up, or nil
 
-    local blocks = {
-        { key = B.ANCHOR_SMALL, title = "Minor bars" },
-        { key = B.ANCHOR_LARGE, title = "Major bars" },
-        { key = W.ANCHOR_ANNOUNCE, title = "Announcements (Minor warnings)" },
-        { key = W.ANCHOR_SPECIAL,  title = "Special warnings (Major warnings)" },
-        { key = A.ANCHOR_SPECIALS, title = A.SPECIALS_LABEL
-                                          .. " \226\128\148 boss trackers dock here" },
-    }
-    for i, blk in ipairs(blocks) do
-        if i > 1 then sec:AddSeparator() end
-        sec:Label(blk.title)
-        attachRow(sec, function() return blk.key end)
-        sec:Button({ text = "Reset placement", width = 140, onClick = function()
-            A.Reset(blk.key)
-        end })
+local sentinelBusy = false    -- re-entry guard: EndPlace hides the frame that calls it
+
+local function placeSentinel()
+    if Addon._placeSentinel ~= nil then return Addon._placeSentinel end
+    if type(_G.CreateFrame) ~= "function" then return nil end
+    local f = _G.CreateFrame("Frame", "DaseekiRMPlaceCatcher", _G.UIParent)
+    f:SetSize(1, 1)                          -- both dimensions at creation (house rule)
+    f:Hide()
+    f:SetScript("OnHide", function()
+        if not sentinelBusy then Addon:EndAllPlace() end
+    end)
+    if type(_G.UISpecialFrames) == "table" then
+        table.insert(_G.UISpecialFrames, "DaseekiRMPlaceCatcher")    -- Esc settles
     end
+    Addon._placeSentinel = f
+    return f
+end
+
+function Addon:IsPlacing(key)
+    if key == nil then return Addon._placing ~= nil end
+    return Addon._placing == key
+end
+
+-- Unlock ONE handle and pick it up. Returns the live handle frame — the anchor
+-- system's own object, never a copy — or nil when no such anchor can exist.
+function Addon:BeginPlace(key)
+    if not key then return nil end
+    if Addon._placing and Addon._placing ~= key then Addon:EndPlace(Addon._placing) end
+    -- The handles are created lazily on the first bar; a placement pass on a quiet
+    -- night would otherwise have nothing to pick up.
+    if Addon.Bars then Addon.Bars.EnsureAnchors() end
+    if Addon.Warnings then Addon.Warnings.EnsureAnchors() end
+    if Addon.Anchors and key == Addon.Anchors.ANCHOR_SPECIALS then
+        Addon.Anchors.EnsureSpecialsAnchor()
+    end
+    local a = Addon._hudAnchors and Addon._hudAnchors[key]
+    if not a then return nil end
+    Addon._placing = key
+    Addon:SetAnchorDressed(a, true)
+    -- Begin dragging immediately: the frame tracks the cursor until the next click
+    -- on it (its own OnMouseUp stops the move and saves through Anchors.SaveDrag).
+    if type(a.StartMoving) == "function" then a:StartMoving() end
+    local s = placeSentinel()
+    if s then s:Show() end
+    return a
+end
+
+-- Settle one handle: stop any in-flight move, RE-APPLY the saved answer (an
+-- untouched settle changes nothing; an Esc mid-drag rolls the drag back), undress.
+function Addon:EndPlace(key)
+    if not key then return false end
+    local a = Addon._hudAnchors and Addon._hudAnchors[key]
+    if a then
+        if type(a.StopMovingOrSizing) == "function" then a:StopMovingOrSizing() end
+        if Addon.Anchors then Addon.Anchors.Reapply(key) end
+        Addon:SetAnchorDressed(a, false)
+    end
+    if Addon._placing == key then Addon._placing = nil end
+    if Addon._placeSentinel and not Addon._placing then
+        sentinelBusy = true
+        Addon._placeSentinel:Hide()
+        sentinelBusy = false
+    end
+    return true
+end
+
+function Addon:EndAllPlace()
+    if Addon._placing then Addon:EndPlace(Addon._placing) end
+    return true
+end
+
+-- The surfaces the section presents, in reading order. Published as data so the
+-- harness pins the list against the anchor keys the two view files own.
+function Addon:PlacementBuckets()
+    local A, B, Wn = Addon.Anchors, Addon.Bars, Addon.Warnings
+    if not (A and B and Wn) then return {} end
+    return {
+        { key = B.ANCHOR_SMALL,
+          title = "Minor bars \226\128\148 the normal countdown stack",
+          blurb = "Every ability placed Minor stacks its timer bar here." },
+        { key = B.ANCHOR_LARGE,
+          title = "Major bars \226\128\148 adds, interrupts and the pull timer",
+          blurb = "Abilities placed Major start here, and a Minor bar climbs in as "
+                  .. "its time runs out." },
+        { key = Wn.ANCHOR_ANNOUNCE,
+          title = "Announcements \226\128\148 the ordinary warning lines",
+          blurb = "The text warnings of abilities placed Minor." },
+        { key = Wn.ANCHOR_SPECIAL,
+          title = "Special warnings \226\128\148 the big centred text",
+          blurb = "The screen-flash warnings of abilities placed Major." },
+        { key = A.ANCHOR_SPECIALS,
+          title = A.SPECIALS_LABEL .. " \226\128\148 boss trackers dock here",
+          blurb = "The widgets some bosses bring (wave callers, rotation trackers) "
+                  .. "stack on this pad." },
+    }
+end
+
+function Addon:BuildPlacementOptions(flow, panel)
+    local A, B, Wn = Addon.Anchors, Addon.Bars, Addon.Warnings
+    if not (A and B and Wn) then return end
+
+    local sec = flow:AddSection("Placement")
+    sec:Hint("Where everything appears on your screen. Each block below is one "
+        .. "surface: press Place to pick its labelled handle up and drag it (a click "
+        .. "drops it, Esc or the button settles it), Reset placement to send it back "
+        .. "to the shipped spot, and Attach to when you want it riding a game frame "
+        .. "instead of sitting on the screen. WHICH surface an ability uses is that "
+        .. "ability's own Placement control, on its boss page.")
+
+    local top = sec:AddRow()
+    top:Button({ text = "Preview all", width = 120, onClick = function()
+        local Tst = Addon.Testing
+        if not Tst then return end
+        local _, why = Tst.Preview()
+        if why == "engaged" then
+            print(Addon:Tag("[DRM]") .. " " .. Addon:Wrap("danger", "Preview refused:")
+                  .. " a boss fight is in progress.")
+        end
+    end })
+    top:Button({ text = "Unlock all", width = 110, onClick = function()
+        B.EnsureAnchors(); Wn.EnsureAnchors(); A.EnsureSpecialsAnchor()
+        Addon:ShowHudAnchors()
+        if panel.RefreshPlaceButtons then panel.RefreshPlaceButtons() end
+    end })
+    top:Button({ text = "Lock all", width = 110, onClick = function()
+        Addon:EndAllPlace()
+        Addon:HideHudAnchors()
+        local Tst = Addon.Testing
+        if Tst and Tst.Mode() == "preview" then Tst.Stop("placement locked") end
+        if panel.RefreshPlaceButtons then panel.RefreshPlaceButtons() end
+    end })
+    sec:Hint("Preview all fires sample content into every surface at once \226\128\148 "
+        .. "bars in both sizes, an announcement and a special warning \226\128\148 so "
+        .. "you place against the real thing. Lock all clears the samples and settles "
+        .. "every handle. (/drm layout is the long-form version: it fills everything "
+        .. "and keeps it filled while you work.)")
+
+    panel._placeBtns = {}
+    function panel.RefreshPlaceButtons()
+        for _, b in ipairs(Addon:PlacementBuckets()) do
+            local btn = panel._placeBtns[b.key]
+            if btn then btnText(btn, Addon:IsPlacing(b.key) and "Settle" or "Place") end
+        end
+    end
+
+    for _, b in ipairs(Addon:PlacementBuckets()) do
+        sec:AddSeparator()
+        sec:Label(b.title)
+        if b.blurb then sec:Hint(b.blurb) end
+        local key = b.key
+        local r = sec:AddRow()
+        panel._placeBtns[key] = r:Button({ text = "Place", width = 110, onClick = function()
+            if Addon:IsPlacing(key) then Addon:EndPlace(key) else Addon:BeginPlace(key) end
+            panel.RefreshPlaceButtons()
+        end })
+        r:Button({ text = "Reset placement", width = 140, onClick = function()
+            A.Reset(key)
+        end })
+        attachRow(sec, function() return key end)
+    end
+    sec:Hint(ATTACH_HINT)
+
+    -- Leaving the page settles every handle and clears a running preview — a sample
+    -- screen must never outlive the page that asked for it. Layout mode is exempt on
+    -- purpose, exactly as it is on the raid pages: surviving navigation is its
+    -- whole point.
+    flow.pane:HookScript("OnHide", function()
+        Addon:EndAllPlace()
+        local Tst = Addon.Testing
+        if Tst and Tst.Mode() == "preview" then Tst.Stop("options closed") end
+    end)
 end
 
 -- ══════════════════════════════════════════════════════════════════════════════
@@ -1714,8 +1980,8 @@ function Addon:BuildWarningOptions(flow, panel)
     sec:Hint("Text warnings above the bars. ANNOUNCEMENTS are the ordinary line stack "
         .. "(the Minor bucket); SPECIAL WARNINGS are the big centred text with the screen "
         .. "flash (the Major bucket), used for the things that kill you. Each ability's "
-        .. "own page can move its warning between the two. Drag either with Show anchors "
-        .. "under Timer Bars.")
+        .. "own page can move its warning between the two. Drag either from the Placement "
+        .. "section at the top of this page.")
 
     sec:Checkbox({
         label = "Hide all warnings",

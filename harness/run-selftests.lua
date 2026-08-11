@@ -10731,6 +10731,503 @@ Tst.Stop("gate end")
 endgate()
 
 ----------------------------------------------------------------------
+-- THE SETTINGS REWORK (owner, 2026-08-10). Six gates for the four directives:
+-- the Placement section (PLACE), its Preview button (PREVIEW), the category-first
+-- ability row (ROW-FIRST), the per-row sound choice (ROW-SOUND), the 2.0.0
+-- profile-continuity red control (MIG-2.0), and the tofu-lesson glyph pin (GLYPH).
+-- Same discipline as everything above: the placement machinery, the preview and
+-- the sound helpers are the SHIPPING options.lua / ui_testing.lua code, driven
+-- headless; only the frame-building flow functions stay untestable, and those are
+-- pinned textually where the pin is the rule ("the section leads the page").
+----------------------------------------------------------------------
+gate("PLACE  the placement section drives the anchor system's own handles")
+do  -- the published bucket list is the anchor model's own keys, in reading order
+    resetAnchors()
+    local bl = Addon:PlacementBuckets()
+    eq(#bl, 5, "the placement section presents five surfaces")
+    eq(bl[1].key, Bars.ANCHOR_SMALL, "…Minor bars first")
+    eq(bl[2].key, Bars.ANCHOR_LARGE, "…then Major bars")
+    eq(bl[3].key, Warn.ANCHOR_ANNOUNCE, "…then announcements")
+    eq(bl[4].key, Warn.ANCHOR_SPECIAL, "…then special warnings")
+    eq(bl[5].key, Anchors.ANCHOR_SPECIALS, "…then the boss-specials pad")
+    for _, b in ipairs(bl) do
+        ck(type(b.title) == "string" and #b.title > 0,
+           ("bucket %s carries a title"):format(b.key))
+        ck(type(b.blurb) == "string" and #b.blurb > 0,
+           ("…and a hint saying what lands on it"):format(b.key))
+    end
+end
+do  -- IDENTITY: Place drives the SAME frame object the anchor system owns
+    resetAnchors()
+    -- Headless, the bar/warning views honestly refuse to draw (the frame stub
+    -- cannot texture), so Bars.EnsureAnchors creates nothing. The handles are
+    -- therefore pre-created here through the SAME seam the surfaces use in-game —
+    -- Addon:HudAnchor — and the machinery under test (BeginPlace / EndPlace) is
+    -- asserted over those very objects.
+    Addon:HudAnchor(Bars.ANCHOR_SMALL, "Timer bars", { point = "CENTER",
+        relPoint = "CENTER", x = -300, y = 60 }, 200, 20)
+    Addon:HudAnchor(Warn.ANCHOR_SPECIAL, "Special warnings", { point = "CENTER",
+        relPoint = "CENTER", x = 0, y = 220 }, 260, 22)
+    local h = Addon:BeginPlace(Bars.ANCHOR_SMALL)
+    ck(h ~= nil, "Place picks up a handle")
+    ck(h == Addon._hudAnchors[Bars.ANCHOR_SMALL],
+       "…and it IS the /drm unlock handle (same object, not a parallel frame)")
+    ck(h == Anchors.installed[Bars.ANCHOR_SMALL].frame,
+       "…and the frame the anchor resolver owns (no parallel state)")
+    eq(Addon:IsPlacing(Bars.ANCHOR_SMALL), true, "…reported as placing")
+    eq(h._dressed, true, "…dressed for dragging")
+    local others = 0
+    for k, a in pairs(Addon._hudAnchors) do
+        if k ~= Bars.ANCHOR_SMALL and a._dressed then others = others + 1 end
+    end
+    eq(others, 0, "…and NO other handle is unlocked by it (one at a time)")
+    -- pressing Place on ANOTHER surface settles the first (single-place semantics —
+    -- the "click elsewhere" of the design)
+    local h2 = Addon:BeginPlace(Warn.ANCHOR_SPECIAL)
+    eq(Addon:IsPlacing(Bars.ANCHOR_SMALL), false,
+       "picking up a second surface settles the first")
+    eq(h._dressed, false, "…undressing its handle")
+    eq(h2._dressed, true, "…and unlocks the second")
+    Addon:EndAllPlace()
+    eq(Addon:IsPlacing(), false, "EndAllPlace settles everything")
+    eq(h2._dressed, false, "…and undresses the handle it settles")
+    -- settling an untouched handle is a NO-OP on the profile (Esc aborts, it does
+    -- not commit): the placement machinery reapplies, never re-saves
+    eq(Addon.db.mechanics[Bars.ANCHOR_SMALL], nil,
+       "an untouched pick-up-and-settle writes NOTHING into the profile")
+    eq(Anchors.Peek(Bars.ANCHOR_SMALL), nil, "…not even an anchor record")
+end
+do  -- the specials pad is placeable through the same pair (it has no bar to create it)
+    resetAnchors()
+    local h = Addon:BeginPlace(Anchors.ANCHOR_SPECIALS)
+    ck(h ~= nil, "the specials pad's handle is created on demand and picked up")
+    ck(h == Addon._hudAnchors[Anchors.ANCHOR_SPECIALS], "…and is the anchor system's own")
+    Addon:EndAllPlace()
+end
+do  -- attach + reset wiring per bucket key — the same seam the old section used
+    resetAnchors()
+    for _, b in ipairs(Addon:PlacementBuckets()) do
+        Anchors.SetAttach(b.key, "minimap")
+        eq((Anchors.Peek(b.key) or {}).attach, "minimap",
+           ("attach-to writes through for %s"):format(b.key))
+        Anchors.Reset(b.key)
+        eq(Anchors.Peek(b.key), nil, ("…and Reset clears the record for %s"):format(b.key))
+    end
+end
+do  -- textual pins: the section leads the General page; the old surfaces are gone
+    local opts = readFile(P("options.lua")) or ""
+    local pPlace = opts:find("BuildPlacementOptions", 1, true)
+    local pGen   = opts:find('flow:AddSection("General")', 1, true)
+    ck(pPlace and pGen and pPlace < pGen,
+       "the Placement section is built BEFORE the General section (top of the page)")
+    ck(opts:find('flow:AddSection("Placement")', 1, true) ~= nil
+       or opts:find('AddSection("Placement")', 1, true) ~= nil,
+       "…as its own titled section")
+    ck(opts:find("BuildAttachOptions", 1, true) == nil,
+       "the old Attachment section is absorbed, not duplicated")
+    ck(opts:find('text = "Show anchors"', 1, true) == nil,
+       "…and the old \"Show anchors\" caption is renamed to state its consequence")
+    ck(opts:find('text = "Unlock handles"', 1, true) ~= nil,
+       "…as \"Unlock handles\"")
+end
+endgate()
+
+----------------------------------------------------------------------
+gate("PREVIEW  one press fills all four buckets, quarantined, and cleans up")
+do
+    resetAnchors()
+    clearWire()
+    local stats0, ring0 = statsDump(), ringDump()
+    clearSounds()
+    local n = Tst.Preview()
+    ck(type(n) == "number" and n >= 4, "Preview fires content (two bars + two warnings)")
+    eq(Tst.Mode(), "preview", "…as its own testing-suite mode")
+    eq(Tst.IsActive(), true, "…inside the quarantine")
+    local L = BM.Layout(Sched:Now())
+    ck(#L.small >= 1, "a sample bar lands on the MINOR list")
+    ck(#L.large >= 1, "…and one on the MAJOR list")
+    ck(Warn.announceStack:Count() >= 1, "…an announcement on the Minor warning surface")
+    ck(Warn.specialStack:Count() >= 1, "…and a special warning on the Major one")
+    ck(lastSound() ~= nil,
+       "…and the special sample makes its tier sound — the preview is the real dispatch")
+    -- re-press RESTARTS, never doubles (the same timer objects are re-adopted)
+    local s1, l1 = #L.small, #L.large
+    Tst.Preview()
+    local L2 = BM.Layout(Sched:Now())
+    eq(#L2.small, s1, "pressing Preview again restarts the samples (Minor count unchanged)")
+    eq(#L2.large, l1, "…not a second population (Major count unchanged)")
+    -- QUARANTINE: nothing a preview does reaches the wire, the stats, or the ring
+    eq(#WIRE, 0, "nothing reached the sync wire")
+    eq(statsDump(), stats0, "…or the kill statistics")
+    eq(ringDump(), ring0, "…or the timer-arbitration ring")
+    -- CLEANUP: Stop sweeps it whole
+    Tst.Stop("preview gate")
+    local barsLeft = 0
+    for _ in pairs(Timers.bars) do barsLeft = barsLeft + 1 end
+    eq(barsLeft, 0, "Stop sweeps every sample bar")
+    eq(Warn.announceStack:Count() + Warn.specialStack:Count(), 0, "…and both warning stacks")
+    eq(next(Route.transient), nil, "…and every transient route (no profile residue)")
+    eq(Tst.IsActive(), false, "…and the quarantine flag drops")
+end
+do  -- a real fight always wins: Preview refuses while engaged (same rule as Boss/Layout)
+    resetAnchors()
+    loadNaxx()
+    local rt = engage("naxxramas:patchwerk", 16028)
+    ck(rt ~= nil, "a real fight is running")
+    local _, why = Tst.Preview()
+    eq(why, "engaged", "Preview refuses to start over a live boss fight")
+    resetLife()
+    resetAnchors()
+end
+endgate()
+
+----------------------------------------------------------------------
+gate("ROW-FIRST  the ability page leads with Placement, and Custom explains itself")
+do  -- the published choice order is the directive's, over the engine's own buckets
+    local order = Addon.ROUTE_CHOICE_ORDER
+    ck(type(order) == "table", "the options surface publishes its choice order")
+    eq(table.concat(order, ","), "major,minor,custom,hidden",
+       "…Major / Minor / Custom / Hidden, in that order")
+    for _, k in ipairs(order) do
+        ck(Route.VALID[k], ("…%s is a bucket the engine accepts"):format(k))
+        ck(type(Route.LABEL[k]) == "string", ("…and %s carries a label"):format(k))
+    end
+    ck(#order == #Route.ORDER, "…and it covers every bucket Route.ORDER declares")
+end
+do  -- textual pins on the page structure options.lua's flow builds
+    local opts = readFile(P("options.lua")) or ""
+    ck(opts:find('label = "Placement"', 1, true) ~= nil,
+       "the route control is labelled Placement")
+    ck(opts:find('"Show this as"', 1, true) == nil, "…and the old label is gone")
+    local pRoute   = opts:find('label = "Placement"', 1, true)
+    local pTracker = opts:find('"Ability Tracker"', 1, true)
+    ck(pRoute and pTracker and pRoute < pTracker,
+       "…and it is built BEFORE the Ability Tracker block (category first)")
+    ck(opts:find("Major and Minor follow the two bucket anchors", 1, true) ~= nil,
+       "the follow rule is stated at the control")
+    ck(opts:find("promoted", 1, true) ~= nil,
+       "…including the promote-to-Major rule where it applies")
+    ck(opts:find("Custom places itself", 1, true) ~= nil, "…and what Custom does")
+    ck(opts:find("Custom: this one ability ignores both lists", 1, true) ~= nil,
+       "the Custom block opens by explaining the escape hatch")
+    ck(opts:find('groupShown(d._routeGroup, bucket == "custom")', 1, true) ~= nil,
+       "…and it expands exactly when the row is Custom (the collapse predicate)")
+    ck(opts:find("ROUTE_CHOICE_ORDER", 1, true) ~= nil,
+       "the dropdown is built over the published order, not a second list")
+end
+endgate()
+
+----------------------------------------------------------------------
+gate("ROW-SOUND  choose the sound per mechanic: override wins where the mode permits")
+do
+    resetAnchors()
+    ck(loadAllZones(), "zones loaded for the per-row sound rows")
+    API.PublishOptionsTree()
+    local encId, rowKey = "naxxramas:heigan", "fever"     -- policy verdict: SILENT
+    local key = encId .. ":" .. rowKey
+    local row = Addon:GetEncounter(encId).rowsByKey[rowKey]
+
+    -- the reader/writer pair the picker button drives
+    eq(Addon:RowSoundOverride(key), nil, "an untouched row has no override")
+    Addon:SetRowSound(key, "raidwarning")
+    eq(Addon:RowSoundOverride(key), "raidwarning",
+       "the picker's choice stores as the per-row sound key")
+
+    -- THE RESOLUTION MATRIX, through the real dispatch
+    clearSounds()
+    eq(Warn.DispatchSound(encId, row, false), "sound",
+       "override + mode Default: the policy-silent row now sounds")
+    eq(Warn.RowSoundKey(encId, row), "raidwarning",
+       "…and the key that plays IS the override, not the tier default")
+    Snd.SetMode(key, "on")
+    clearSounds()
+    eq(Warn.DispatchSound(encId, row, false), "sound", "override + On: sounds")
+    eq(Warn.RowSoundKey(encId, row), "raidwarning", "…with the override key")
+    Snd.SetMode(key, "off")
+    clearSounds()
+    eq(Warn.DispatchSound(encId, row, false), nil,
+       "override + Off: SILENT — an explicit Off still beats the file (pinned)")
+    eq(lastSound(), nil, "…having genuinely played nothing")
+    Snd.SetMode(key, "default")
+
+    -- clearing: the picker's None entry stores NOTHING and the policy returns
+    Addon:SetRowSound(key, "none")
+    eq(Addon:RowSoundOverride(key), nil, "picking None removes the override entirely")
+    eq(Warn.DispatchSound(encId, row, false), nil,
+       "…and the row falls back to the policy default (silent here)")
+
+    -- fallback on a LOUD row goes back to its own tier-default key
+    local loudEnc, loudKey = "naxxramas:kelthuzad", "fissureyou"
+    local loudRow = Addon:GetEncounter(loudEnc).rowsByKey[loudKey]
+    local tierKey = Warn.RowSoundKey(loudEnc, loudRow)
+    Addon:SetRowSound(loudEnc .. ":" .. loudKey, "raidwarning")
+    eq(Warn.RowSoundKey(loudEnc, loudRow), "raidwarning",
+       "a loud row's override replaces its tier default")
+    Addon:SetRowSound(loudEnc .. ":" .. loudKey, nil)
+    eq(Warn.RowSoundKey(loudEnc, loudRow), tierKey,
+       "…and clearing it restores the tier-default key exactly")
+
+    -- THE CUE IS THE ANSWER: the same button, both directions
+    Addon:SetRowSound(key, "raidwarning")
+    clearSounds()
+    eq(Tst.RowSound(encId, rowKey), "sound", "Cue on an overridden row plays")
+    ck(lastSound() ~= nil, "…for real")
+    Snd.SetMode(key, "off")
+    clearSounds()
+    eq(select(2, Tst.RowSound(encId, rowKey)), "silent",
+       "…and with the mode Off, the SAME button is honestly silent")
+    eq(lastSound(), nil, "…having played nothing")
+    Snd.SetMode(key, "default")
+
+    -- the hint's description agrees with the dispatch, both ways
+    local plays, why, eff = Addon:DescribeRowSound(encId, row)
+    eq(plays, true, "the description agrees the overridden row plays")
+    eq(why, "customfile", "…because of the user's file")
+    eq(eff, "raidwarning", "…naming exactly the key the Cue button will play")
+    Addon:SetRowSound(key, nil)
+    plays = Addon:DescribeRowSound(encId, row)
+    eq(plays, false, "…and with no override the silent policy answer comes back")
+    -- …and it mirrors the §5.4 special-sound suppressor the dispatch checks first
+    local spWarn = Addon:GetEncounter(loudEnc).rowsByKey[loudKey]
+    Warn.Settings().suppressSpecialSound = true
+    local p2, w2 = Addon:DescribeRowSound(loudEnc, spWarn)
+    eq(p2, false, "the description honours the special-sound suppressor")
+    eq(w2, "suppressed", "…and says which link silenced it")
+    Warn.Settings().suppressSpecialSound = false
+
+    -- ADDITIVE: the override rides the record beside route / mode / enable
+    Addon.db.mechanics[key] = { route = "major", soundMode = "on", enabled = true }
+    Addon:SetRowSound(key, "raidwarning")
+    eq(Addon.db.mechanics[key].route, "major", "storing a sound leaves the route alone")
+    eq(Addon.db.mechanics[key].soundMode, "on", "…and the mode")
+    eq(Addon.db.mechanics[key].enabled, true, "…and the enable flag")
+    Addon:SetRowSound(key, nil)
+    eq(Addon.db.mechanics[key].sound, nil, "…and clearing stores nothing")
+    Addon.db.mechanics[key] = nil
+end
+Tst.Stop("gate end")
+endgate()
+
+----------------------------------------------------------------------
+gate("MIG-2.0  a 2.0.0 profile through the reworked panel \226\128\148 nothing lost")
+do
+    local saved = Addon.db
+    local function at(t, ...)
+        for _, k in ipairs({ ... }) do
+            if type(t) ~= "table" then return nil end
+            t = t[k]
+        end
+        return t
+    end
+    -- A faithful 2.0.0 profile: settings incl. the lazily-added bars/warnings
+    -- tables, per-row routes / sound modes / sound files / placements, anchor
+    -- records incl. a bucket attachment and a Custom row's size, and kill stats.
+    -- THE RED CONTROL of this gate is exactly the task's: the OLD blob, through the
+    -- NEW code — Init, then every reworked writer — with nothing lost.
+    local function v200DB()
+        return {
+            dbVersion = 3,
+            settings = {
+                enabled = true, locked = true, soundEnabled = true,
+                barWidth = 240, barHeight = 18, autoDebug = false,
+                deathSound = true, deathSoundKey = "raidwarning", debugOnly = false,
+                soundPack = "pk:DBM-Core", voiceCountKey = "pk:DBM-Core/Alexander",
+                specialWarnings = true, countdownVoice = true, mirrorDBMPull = false,
+                bars = { pad = 3, icons = true, enlargeAt = 14,
+                         small = { grow = "DOWN", sort = "asc" },
+                         large = { grow = "UP",   sort = "desc" } },
+                warnings = { suppressTargetAnnounce = true, mirrorToChat = true },
+            },
+            mechanics = {
+                ["naxxramas:heigan:fever"]      = { soundMode = "on", route = "major" },
+                ["naxxramas:noth:curse"]        = { route = "custom", sound = "raidwarning",
+                    pos = { point = "CENTER", relPoint = "CENTER", x = 50, y = -80 } },
+                ["naxxramas:patchwerk:hateful"] = { masterEnabled = false },
+            },
+            anchors = {
+                ["#bars.small"]          = { attach = "minimap" },
+                ["naxxramas:noth:curse"] = { size = 1.6, attach = "frame",
+                                             frameName = "MyFrame" },
+            },
+            stats = { naxxramas = { patchwerk = { kills = 3, wipes = 1 } } },
+        }
+    end
+
+    resetAnchors()
+    _G.DaseekiRaidMechanicsDB = v200DB()
+    Addon:Init()
+    local d = Addon.db
+    eq(d.dbVersion, 3, "a 2.0.0 profile stays at v3 (no gratuitous bump)")
+    eq(at(d, "mechanics", "naxxramas:heigan:fever", "soundMode"), "on",
+       "a per-row sound mode survives")
+    eq(at(d, "mechanics", "naxxramas:heigan:fever", "route"), "major",
+       "…beside its route")
+    eq(at(d, "mechanics", "naxxramas:noth:curse", "route"), "custom",
+       "a Custom route survives")
+    eq(at(d, "mechanics", "naxxramas:noth:curse", "sound"), "raidwarning",
+       "…with its per-row sound file")
+    eq(at(d, "mechanics", "naxxramas:noth:curse", "pos", "y"), -80,
+       "…and its own placement")
+    eq(at(d, "anchors", "#bars.small", "attach"), "minimap",
+       "a bucket attachment survives")
+    eq(at(d, "anchors", "naxxramas:noth:curse", "size"), 1.6,
+       "…and a Custom row's size multiplier")
+    eq(at(d, "settings", "bars", "enlargeAt"), 14, "the promote point survives")
+    eq(at(d, "settings", "warnings", "mirrorToChat"), true, "…and the warning settings")
+    eq(at(d, "stats", "naxxramas", "patchwerk", "kills"), 3, "…and the kill statistics")
+    eq(at(d, "mechanics", "naxxramas:patchwerk:hateful", "masterEnabled"), false,
+       "…and a row switched off stays off")
+
+    -- the reworked writers touch ONLY their own additive field
+    local otherRow = dumpTable(d.mechanics["naxxramas:noth:curse"])
+    Addon:SetRowSound("naxxramas:heigan:fever", "raidwarning")
+    eq(dumpTable(d.mechanics["naxxramas:noth:curse"]), otherRow,
+       "writing one row's sound touches no other row")
+    eq(at(d, "mechanics", "naxxramas:heigan:fever", "route"), "major",
+       "…and nothing else on its own row")
+    Addon:SetRowSound("naxxramas:heigan:fever", nil)
+
+    -- Preview + a pick-up-and-settle leave the profile byte-identical
+    local mechs0, anch0 = dumpTable(d.mechanics), dumpTable(d.anchors)
+    Tst.Preview()
+    Tst.Stop("mig gate")
+    eq(dumpTable(d.mechanics), mechs0, "a Preview writes NOTHING into the profile")
+    eq(dumpTable(d.anchors), anch0, "…not even an anchor record")
+    Addon:HudAnchor(Bars.ANCHOR_SMALL, "Timer bars", { point = "CENTER",
+        relPoint = "CENTER", x = -300, y = 60 }, 200, 20)   -- headless: see gate PLACE
+    ck(Addon:BeginPlace(Bars.ANCHOR_SMALL) ~= nil, "a handle really was picked up")
+    Addon:EndAllPlace()
+    eq(dumpTable(d.mechanics), mechs0,
+       "picking a handle up and settling it untouched writes nothing either")
+    eq(dumpTable(d.anchors), anch0, "…and leaves every anchor record alone")
+    eq(at(d, "anchors", "#bars.small", "attach"), "minimap",
+       "…including the attachment it was picked up under")
+
+    _G.DaseekiRaidMechanicsDB = {}
+    Addon:Init()
+    Addon.db = saved
+    resetAnchors()
+end
+endgate()
+
+----------------------------------------------------------------------
+gate("GLYPH  every glyph the rework can display is ASCII or cmap-verified")
+do
+    -- THE TOFU LESSON. Display strings in this addon carry non-ASCII only as
+    -- decimal escapes (\226\128\148 …), so the enforceable rule is: every escaped
+    -- byte sequence in the reworked files decodes to a codepoint on the verified
+    -- list. The list is verified against the suite face's cmap when the font is
+    -- reachable from this checkout; when it is not, the pinned list still holds the
+    -- line (nothing new can ride in on an unverified codepoint either way).
+    local VERIFIED = {
+        [0x2014] = "em dash",     [0x2026] = "ellipsis",
+        [0x00BB] = "guillemet",   [0x00B7] = "middle dot",
+        [0x2192] = "right arrow",
+    }
+    local function checkFile(rel)
+        local src = readFile(P(rel)) or ""
+        local bad = 0
+        for run in src:gmatch("\\%d%d%d[\\%d]*") do
+            local bytes = {}
+            for dgt in run:gmatch("\\(%d+)") do bytes[#bytes + 1] = tonumber(dgt) end
+            local i = 1
+            while i <= #bytes do
+                local b = bytes[i]
+                local cp, len
+                if b < 0x80 then cp, len = b, 1
+                elseif b >= 0xC0 and b < 0xE0 then cp, len = b - 0xC0, 2
+                elseif b >= 0xE0 and b < 0xF0 then cp, len = b - 0xE0, 3
+                else cp, len = b - 0xF0, 4 end
+                for j = 1, len - 1 do
+                    local nb = bytes[i + j]
+                    if not nb then cp = -1 break end
+                    cp = cp * 64 + (nb - 0x80)
+                end
+                if cp >= 0x80 and not VERIFIED[cp] then
+                    bad = bad + 1
+                    fail(("%s: unverified display codepoint U+%04X"):format(rel, cp))
+                end
+                i = i + len
+            end
+        end
+        if bad == 0 then ok(rel .. ": every escaped display glyph is on the verified list") end
+    end
+    checkFile("options.lua")
+    checkFile("ui_testing.lua")
+    checkFile("ui_anchors.lua")
+
+    -- cmap verification against the shipped face, when reachable. Read BINARY:
+    -- the shared readFile opens in text mode, and on Windows that truncates a TTF
+    -- at the first 0x1A byte (found the hard way — the arithmetic below hits nil).
+    local font
+    do
+        local fh = io.open(P("../Daseeki-Core/fonts/FiraSansCondensed-Medium.ttf"), "rb")
+        if fh then font = fh:read("*a"); fh:close() end
+    end
+    if not font then
+        realprint("  note  suite font not reachable from this checkout; the pinned list stands")
+    else
+        local function u16(s, off) return s:byte(off) * 256 + s:byte(off + 1) end
+        local function u32(s, off) return u16(s, off) * 65536 + u16(s, off + 2) end
+        local cmapOff
+        for i = 0, u16(font, 5) - 1 do
+            local rec = 13 + i * 16
+            if font:sub(rec, rec + 3) == "cmap" then cmapOff = u32(font, rec + 8) + 1 end
+        end
+        ck(cmapOff ~= nil, "the suite font carries a cmap table")
+        local sub
+        if cmapOff then
+            for i = 0, u16(font, cmapOff + 2) - 1 do
+                local rec = cmapOff + 4 + i * 8
+                local pid, eid = u16(font, rec), u16(font, rec + 2)
+                if pid == 0 or (pid == 3 and (eid == 1 or eid == 10)) then
+                    sub = cmapOff + u32(font, rec + 4)
+                end
+            end
+        end
+        ck(sub ~= nil, "…with a Unicode subtable")
+        local fmt = sub and u16(font, sub) or nil
+        local hasGlyph
+        if fmt == 4 then                    -- BMP segments: start/end arrays
+            local segX2 = u16(font, sub + 6)
+            local endBase, startBase = sub + 14, sub + 14 + segX2 + 2
+            hasGlyph = function(cp)
+                for s = 0, segX2 / 2 - 1 do
+                    if cp <= u16(font, endBase + s * 2) then
+                        return cp >= u16(font, startBase + s * 2)
+                    end
+                end
+                return false
+            end
+        elseif fmt == 12 then               -- sequential groups: sorted (start,end) pairs
+            local nGroups = u32(font, sub + 12)
+            hasGlyph = function(cp)
+                for g = 0, nGroups - 1 do
+                    local rec = sub + 16 + g * 12
+                    if cp < u32(font, rec) then return false end
+                    if cp <= u32(font, rec + 4) then return true end
+                end
+                return false
+            end
+        end
+        if hasGlyph then
+            local cps = {}
+            for cp in pairs(VERIFIED) do cps[#cps + 1] = cp end
+            table.sort(cps)
+            for _, cp in ipairs(cps) do
+                ck(hasGlyph(cp), ("U+%04X (%s) is in the font's cmap"):format(cp, VERIFIED[cp]))
+            end
+            ck(not hasGlyph(0x1F600),
+               "…and the probe is not a yes-machine (an emoji the face lacks says no)")
+        elseif sub then
+            realprint(("  note  cmap subtable format %s is not parsed; the pinned list stands")
+                :format(tostring(fmt)))
+        end
+    end
+end
+endgate()
+
+----------------------------------------------------------------------
 realprint("############################################################")
 realprint("# Daseeki-Raid-Mechanics 2.0 engine self-tests (waves 1-5 — RELEASE)")
 for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolition holds",
@@ -10780,7 +11277,13 @@ for _, g in ipairs({ "0  toc parse", "FW  clean-room firewall", "RETIRE  demolit
                      "TEST-PLAYBACK  the scaled clock, Noth's tail and Gothik's wave order at 5x",
                      "TEST-VALIDATE  every spell id, icon, sound and voice cue in the registry",
                      "TEST-QUARANTINE  no sync, no stats, no tripwire, and a real pull always wins",
-                     "SOUND  quiet by default: the policy table, the override, the preview" }) do
+                     "SOUND  quiet by default: the policy table, the override, the preview",
+                     "PLACE  the placement section drives the anchor system's own handles",
+                     "PREVIEW  one press fills all four buckets, quarantined, and cleans up",
+                     "ROW-FIRST  the ability page leads with Placement, and Custom explains itself",
+                     "ROW-SOUND  choose the sound per mechanic: override wins where the mode permits",
+                     "MIG-2.0  a 2.0.0 profile through the reworked panel \226\128\148 nothing lost",
+                     "GLYPH  every glyph the rework can display is ASCII or cmap-verified" }) do
     local n = GATE_FAILS[g] or 0
     realprint(("#   %-52s %s"):format(g, n == 0 and "PASS" or (n .. " FAIL")))
 end

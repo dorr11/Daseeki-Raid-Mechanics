@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+**The settings rework: placement you can find, categories that lead, and a sound
+picker on every warning.** Three things you told us after 2.0.0 shipped — "I don't
+see a way to place major or minor bars", "I don't understand the custom timer
+section", and "there's no way to choose sounds for a given mechanic" — and this
+release is those three answers. Your settings are kept; nothing changes shape.
+
+### Placement, front and centre
+
+- **A new Placement section leads the General page.** All five on-screen surfaces —
+  Minor bars, Major bars, Announcements, Special warnings, and the boss-specials
+  pad — each with three controls: **Place** (picks up that one labelled handle and
+  starts dragging it immediately; click drops it, Esc or the button settles it),
+  **Reset placement**, and the **Attach to** frame control. These are the same
+  handles `/drm unlock`, demo and layout mode have always dressed — one placement
+  state, now with a front door.
+- **Preview all** fires sample content into every surface at once — a bar on each
+  list, an announcement, and a special warning — so you place things against the
+  real visuals, not empty boxes. It runs inside the testing suite's quarantine
+  (no stats, no sync, no timer telemetry) and cleans up completely when you press
+  **Lock all**, leave the page, or pull a boss.
+- The old **Attachment** section is absorbed into Placement — attaching a surface
+  to your target frame or the minimap is part of placing it, not a separate page.
+  The buttons formerly called "Show anchors" now say **Unlock handles**, which is
+  what they do.
+
+### Every ability leads with where it goes
+
+- Each ability's page now opens with one control labelled **Placement** — Major /
+  Minor / Custom / Hidden — with the follow rule stated right there: Major and
+  Minor follow the two bucket anchors in Placement, a Minor bar is promoted into
+  the Major list as its time runs out, Custom places itself, and Hidden draws
+  nothing while its sound still plays.
+- **Custom explains itself.** Picking Custom opens a block that says what it is —
+  this one ability owns its own spot — before showing its controls: Place (the
+  ability's own handle, unlocked alone), Reset placement, frame attachment, and
+  size. Same controls as before, no more mystery.
+
+### Choose the sound per mechanic
+
+- Beside each warning's Default / On / Off switch there is now a **Sound:** button
+  that opens the sound picker for that one ability. Your pick beats the built-in
+  default whenever the row is allowed to make noise at all; **Off still silences
+  everything**, exactly as before. Picking **None** clears your choice and returns
+  the row to Default.
+- The hint under the switch now tells you exactly what the **Cue** button will
+  play this second — your pick, the tier default, or nothing — so you can always
+  check the answer before the fight does.
+
+Nothing here moves your existing setup: routes, sound modes, positions, attachments,
+sizes, statistics and every 2.0.0 setting load unchanged, and that is verified by a
+dedicated migration test that pushes a real 2.0.0 profile through the new panel.
+
 ## 2.0.0 — 2026-08-08
 
 **Raid Mechanics has been rebuilt from the ground up, and it now covers every raid in
